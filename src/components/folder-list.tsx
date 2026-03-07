@@ -1,0 +1,59 @@
+"use client";
+
+import { useEffect, useState, useCallback, useImperativeHandle, forwardRef } from "react";
+import Link from "next/link";
+
+type Folder = {
+  folder: string;
+  count: number;
+  latest: string;
+};
+
+export type FolderListRef = {
+  refresh: () => void;
+};
+
+export const FolderList = forwardRef<FolderListRef>(function FolderList(_, ref) {
+  const [folders, setFolders] = useState<Folder[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  const loadFolders = useCallback(() => {
+    fetch("/api/folders")
+      .then((r) => r.json())
+      .then((data) => setFolders(data.folders))
+      .finally(() => setLoading(false));
+  }, []);
+
+  useEffect(() => {
+    loadFolders();
+  }, [loadFolders]);
+
+  useImperativeHandle(ref, () => ({ refresh: loadFolders }));
+
+  if (loading) {
+    return <p className="text-sm text-zinc-500">Loading folders...</p>;
+  }
+
+  if (!folders.length) {
+    return <p className="text-sm text-zinc-500">No folders yet. Upload some photos to get started.</p>;
+  }
+
+  return (
+    <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+      {folders.map((f) => (
+        <Link
+          key={f.folder}
+          href={`/folders/${encodeURIComponent(f.folder)}`}
+          className="group flex flex-col gap-1 rounded-lg border border-zinc-200 p-4 transition-colors hover:border-zinc-400 dark:border-zinc-800 dark:hover:border-zinc-600"
+        >
+          <span className="font-mono text-sm font-medium text-black dark:text-zinc-100 group-hover:underline">
+            {f.folder}
+          </span>
+          <span className="text-xs text-zinc-500">
+            {f.count} {f.count === 1 ? "photo" : "photos"}
+          </span>
+        </Link>
+      ))}
+    </div>
+  );
+});
