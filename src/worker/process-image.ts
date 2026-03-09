@@ -1,4 +1,4 @@
-import "dotenv/config";
+import "./env";
 import { Worker, Job } from "bullmq";
 import sharp from "sharp";
 import exifReader from "exif-reader";
@@ -7,6 +7,11 @@ import { s3, S3_BUCKET } from "../lib/s3";
 import { db } from "../db";
 import { photos } from "../db/schema";
 import { eq } from "drizzle-orm";
+
+function formatShutterSpeed(exposureTime: number): string {
+  if (exposureTime >= 1) return `${exposureTime}s`;
+  return `1/${Math.round(1 / exposureTime)}s`;
+}
 
 const VARIANTS = [
   { width: 128, suffix: "128" },
@@ -106,7 +111,7 @@ async function processImage(job: Job<JobData>) {
         : null,
       aperture: exifData.FNumber ? `f/${exifData.FNumber}` : null,
       shutterSpeed: exifData.ExposureTime
-        ? `${exifData.ExposureTime}s`
+        ? formatShutterSpeed(exifData.ExposureTime as number)
         : null,
       iso: (exifData.ISOSpeedRatings as number) || null,
       takenAt: exifData.DateTimeOriginal

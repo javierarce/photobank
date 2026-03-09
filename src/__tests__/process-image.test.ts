@@ -19,6 +19,25 @@ async function createTestImage(width = 4000, height = 3000) {
     .toBuffer();
 }
 
+function formatShutterSpeed(exposureTime: number): string {
+  if (exposureTime >= 1) return `${exposureTime}s`;
+  return `1/${Math.round(1 / exposureTime)}s`;
+}
+
+describe("formatShutterSpeed", () => {
+  it("formats fractional exposures as 1/x", () => {
+    expect(formatShutterSpeed(1 / 60)).toBe("1/60s");
+    expect(formatShutterSpeed(1 / 250)).toBe("1/250s");
+    expect(formatShutterSpeed(1 / 8000)).toBe("1/8000s");
+    expect(formatShutterSpeed(0.01)).toBe("1/100s");
+  });
+
+  it("formats exposures >= 1 second as plain numbers", () => {
+    expect(formatShutterSpeed(1)).toBe("1s");
+    expect(formatShutterSpeed(30)).toBe("30s");
+  });
+});
+
 describe("image processing pipeline", () => {
   it("generates all 8 variants (4 resolutions × 2 formats)", async () => {
     const original = await createTestImage();

@@ -19,7 +19,14 @@ const photo: Photo = {
   processingStatus: "completed",
   cameraMake: "Ricoh",
   cameraModel: "GR III",
+  lens: "GR Lens 18.3mm f/2.8",
+  focalLength: "18.3mm",
+  aperture: "f/2.8",
+  shutterSpeed: "1/250s",
+  iso: 200,
   takenAt: "2026-01-15T12:00:00Z",
+  gpsLatitude: null,
+  gpsLongitude: null,
 };
 
 afterEach(() => {
@@ -33,6 +40,8 @@ describe("PhotoLightbox", () => {
     expect(screen.getByText("test.jpg")).toBeInTheDocument();
     expect(screen.getByText("inbox/")).toBeInTheDocument();
     expect(screen.getByText("Ricoh GR III")).toBeInTheDocument();
+    expect(screen.getByText("GR Lens 18.3mm f/2.8")).toBeInTheDocument();
+    expect(screen.getByText("18.3mm · f/2.8 · 1/250s · ISO 200")).toBeInTheDocument();
     expect(screen.getByText(/1920/)).toBeInTheDocument();
   });
 

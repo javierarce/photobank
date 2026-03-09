@@ -85,20 +85,83 @@ export function PhotoLightbox({
             <p className="mt-1 text-xs text-zinc-500">{photo.folder}/</p>
           </div>
 
-          {(photo.cameraModel || photo.width) && (
-            <div className="flex flex-col gap-1 text-xs text-zinc-500">
+          {(photo.cameraModel || photo.width || photo.takenAt) && (
+            <div className="flex flex-col gap-3 text-xs text-zinc-500">
               {photo.cameraModel && (
-                <p>
-                  {photo.cameraMake} {photo.cameraModel}
-                </p>
+                <div>
+                  <p className="mb-1 font-medium text-zinc-700 dark:text-zinc-300">
+                    Camera
+                  </p>
+                  <p>
+                    {photo.cameraMake} {photo.cameraModel}
+                  </p>
+                  {photo.lens && <p>{photo.lens}</p>}
+                </div>
               )}
+
+              {(photo.focalLength ||
+                photo.aperture ||
+                photo.shutterSpeed ||
+                photo.iso) && (
+                <div>
+                  <p className="mb-1 font-medium text-zinc-700 dark:text-zinc-300">
+                    Settings
+                  </p>
+                  <p>
+                    {[
+                      photo.focalLength,
+                      photo.aperture,
+                      photo.shutterSpeed,
+                      photo.iso ? `ISO ${photo.iso}` : null,
+                    ]
+                      .filter(Boolean)
+                      .join(" · ")}
+                  </p>
+                </div>
+              )}
+
               {photo.width && photo.height && (
-                <p>
-                  {photo.width} &times; {photo.height}
-                </p>
+                <div>
+                  <p className="mb-1 font-medium text-zinc-700 dark:text-zinc-300">
+                    Dimensions
+                  </p>
+                  <p>
+                    {photo.width} &times; {photo.height}
+                  </p>
+                </div>
               )}
+
               {photo.takenAt && (
-                <p>{new Date(photo.takenAt).toLocaleDateString()}</p>
+                <div>
+                  <p className="mb-1 font-medium text-zinc-700 dark:text-zinc-300">
+                    Date
+                  </p>
+                  <p>
+                    {new Date(photo.takenAt).toLocaleDateString(undefined, {
+                      year: "numeric",
+                      month: "long",
+                      day: "numeric",
+                      hour: "2-digit",
+                      minute: "2-digit",
+                    })}
+                  </p>
+                </div>
+              )}
+
+              {photo.gpsLatitude && photo.gpsLongitude && (
+                <div>
+                  <p className="mb-1 font-medium text-zinc-700 dark:text-zinc-300">
+                    Location
+                  </p>
+                  <a
+                    href={`https://maps.google.com/?q=${photo.gpsLatitude},${photo.gpsLongitude}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-blue-600 hover:underline dark:text-blue-400"
+                  >
+                    {photo.gpsLatitude.toFixed(4)}, {photo.gpsLongitude.toFixed(4)}
+                  </a>
+                </div>
               )}
             </div>
           )}
