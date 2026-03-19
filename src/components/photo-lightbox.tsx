@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { imageUrl } from "@/lib/image-url";
 import { PhotoTags } from "@/components/photo-tags";
 import type { Photo } from "@/lib/types";
@@ -10,8 +10,14 @@ type Props = {
   onClose: () => void;
   onDelete?: (photo: Photo) => void;
   onMove?: (photo: Photo) => void;
-  onRename?: (photo: Photo) => void;
+  onRename?: (photo: Photo, newFilename: string) => Promise<void>;
 };
+
+function splitFilename(filename: string): [string, string] {
+  const dotIndex = filename.lastIndexOf(".");
+  if (dotIndex <= 0) return [filename, ""];
+  return [filename.slice(0, dotIndex), filename.slice(dotIndex)];
+}
 
 export function PhotoLightbox({
   photo,
@@ -21,18 +27,37 @@ export function PhotoLightbox({
   onRename,
 }: Props) {
   const [loaded, setLoaded] = useState(false);
+  const [editing, setEditing] = useState(false);
+  const [renaming, setRenaming] = useState(false);
+  const [name, ext] = splitFilename(photo.filename);
+  const [editValue, setEditValue] = useState(name);
+  const [error, setError] = useState<string | null>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     setLoaded(false);
   }, [photo.id]);
 
   useEffect(() => {
+    const [n] = splitFilename(photo.filename);
+    setEditValue(n);
+    setEditing(false);
+  }, [photo.filename]);
+
+  useEffect(() => {
+    if (editing && inputRef.current) {
+      inputRef.current.focus();
+      inputRef.current.select();
+    }
+  }, [editing]);
+
+  useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
+      if (e.key === "Escape" && !editing) onClose();
     };
     document.addEventListener("keydown", handleKeyDown);
     return () => document.removeEventListener("keydown", handleKeyDown);
-  }, [onClose]);
+  }, [onClose, editing]);
 
   return (
     <div
@@ -79,9 +104,60 @@ export function PhotoLightbox({
         </div>
         <div className="flex w-72 shrink-0 flex-col gap-4 overflow-y-auto p-4">
           <div>
-            <p className="font-mono text-sm font-medium text-black dark:text-zinc-100">
-              {photo.filename}
-            </p>
+            {editing ? (
+              <div className="flex items-baseline font-mono text-sm font-medium text-black dark:text-zinc-100">
+                <input
+                  ref={inputRef}
+                  value={editValue}
+                  onChange={(e) => setEditValue(e.target.value)}
+                  onKeyDown={(e) => {
+                    e.stopPropagation();
+                    if (e.key === "Enter") {
+                      e.currentTarget.blur();
+                    } else if (e.key === "Escape") {
+                      setEditValue(name);
+                      setEditing(false);
+                    }
+                  }}
+                  onBlur={async () => {
+                    const trimmed = editValue.trim();
+                    if (!trimmed || trimmed === name || !onRename) {
+                      setEditValue(name);
+                      setEditing(false);
+                      return;
+                    }
+                    setEditing(false);
+                    setError(null);
+                    setRenaming(true);
+                    setLoaded(false);
+                    try {
+                      await onRename(photo, trimmed + ext);
+                    } catch {
+                      setEditValue(name);
+                      setError("Failed to rename file");
+                    } finally {
+                      setRenaming(false);
+                    }
+                  }}
+                  className="min-w-0 flex-1 rounded border border-zinc-300 bg-white px-1 py-0.5 text-sm outline-none focus:border-blue-500 dark:border-zinc-600 dark:bg-zinc-800"
+                  data-testid="filename-input"
+                />
+                <span className="shrink-0 text-zinc-400">{ext}</span>
+              </div>
+            ) : (
+              <p
+                className={`font-mono text-sm font-medium text-black dark:text-zinc-100 ${onRename && !renaming ? "cursor-pointer rounded px-1 py-0.5 hover:bg-zinc-100 dark:hover:bg-zinc-800" : ""}`}
+                onClick={() => onRename && !renaming && setEditing(true)}
+                data-testid="filename-display"
+              >
+                {editValue}{ext}
+              </p>
+            )}
+            {error && (
+              <p className="mt-1 text-xs text-red-600 dark:text-red-400" data-testid="rename-error">
+                {error}
+              </p>
+            )}
             <p className="mt-1 text-xs text-zinc-500">{photo.folder}/</p>
           </div>
 
@@ -170,37 +246,39 @@ export function PhotoLightbox({
             <p className="mb-2 text-xs font-medium text-zinc-700 dark:text-zinc-300">
               Tags
             </p>
-            <PhotoTags photoId={photo.id} />
+            <PhotoTags photoId={photo.id} disabled={renaming} />
           </div>
 
           <div className="mt-auto flex flex-col gap-2">
-            {onRename && (
-              <button
-                onClick={() => onRename(photo)}
-                className="w-full rounded-md bg-zinc-100 px-3 py-1.5 text-xs font-medium text-zinc-700 hover:bg-zinc-200 dark:bg-zinc-800 dark:text-zinc-300 dark:hover:bg-zinc-700"
-              >
-                Rename
-              </button>
-            )}
             {onMove && (
               <button
                 onClick={() => onMove(photo)}
-                className="w-full rounded-md bg-zinc-100 px-3 py-1.5 text-xs font-medium text-zinc-700 hover:bg-zinc-200 dark:bg-zinc-800 dark:text-zinc-300 dark:hover:bg-zinc-700"
+                disabled={renaming}
+                className="w-full rounded-md bg-zinc-100 px-3 py-1.5 text-xs font-medium text-zinc-700 hover:bg-zinc-200 disabled:opacity-50 disabled:pointer-events-none dark:bg-zinc-800 dark:text-zinc-300 dark:hover:bg-zinc-700"
               >
                 Move
               </button>
             )}
-            <a
-              href={imageUrl(photo.s3Key, "2880", "jpg")}
-              download
-              className="block w-full rounded-md bg-zinc-100 px-3 py-1.5 text-center text-xs font-medium text-zinc-700 hover:bg-zinc-200 dark:bg-zinc-800 dark:text-zinc-300 dark:hover:bg-zinc-700"
-            >
-              Download
-            </a>
+            {renaming ? (
+              <span
+                className="block w-full rounded-md bg-zinc-100 px-3 py-1.5 text-center text-xs font-medium text-zinc-700 opacity-50 dark:bg-zinc-800 dark:text-zinc-300"
+              >
+                Download
+              </span>
+            ) : (
+              <a
+                href={imageUrl(photo.s3Key, "2880", "jpg")}
+                download
+                className="block w-full rounded-md bg-zinc-100 px-3 py-1.5 text-center text-xs font-medium text-zinc-700 hover:bg-zinc-200 dark:bg-zinc-800 dark:text-zinc-300 dark:hover:bg-zinc-700"
+              >
+                Download
+              </a>
+            )}
             {onDelete && (
               <button
                 onClick={() => onDelete(photo)}
-                className="w-full rounded-md bg-red-100 px-3 py-1.5 text-xs font-medium text-red-700 hover:bg-red-200 dark:bg-red-900/30 dark:text-red-400 dark:hover:bg-red-900/50"
+                disabled={renaming}
+                className="w-full rounded-md bg-red-100 px-3 py-1.5 text-xs font-medium text-red-700 hover:bg-red-200 disabled:opacity-50 disabled:pointer-events-none dark:bg-red-900/30 dark:text-red-400 dark:hover:bg-red-900/50"
               >
                 Delete
               </button>
