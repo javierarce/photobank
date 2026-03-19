@@ -14,6 +14,18 @@ pnpm dev
 bun dev
 ```
 
+Then, in a separate terminal, start the image processing worker:
+
+```bash
+npm run worker
+# or
+yarn worker
+# or
+pnpm worker
+# or
+bun run worker
+```
+
 Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
 
 You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
