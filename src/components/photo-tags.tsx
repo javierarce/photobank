@@ -4,7 +4,7 @@ import { useEffect, useState, useRef } from "react";
 
 type Tag = { id: string; name: string };
 
-export function PhotoTags({ photoId }: { photoId: string }) {
+export function PhotoTags({ photoId, disabled = false }: { photoId: string; disabled?: boolean }) {
   const [tags, setTags] = useState<Tag[]>([]);
   const [input, setInput] = useState("");
   const [allTags, setAllTags] = useState<Tag[]>([]);
@@ -66,16 +66,18 @@ export function PhotoTags({ photoId }: { photoId: string }) {
             className="inline-flex items-center gap-1 rounded-full bg-blue-100 px-2.5 py-0.5 text-xs font-medium text-blue-800 dark:bg-blue-900/30 dark:text-blue-300"
           >
             {tag.name}
-            <button
-              onClick={() => removeTag(tag.id)}
-              className="ml-0.5 hover:text-blue-600 dark:hover:text-blue-100"
-            >
-              &times;
-            </button>
+            {!disabled && (
+              <button
+                onClick={() => removeTag(tag.id)}
+                className="ml-0.5 hover:text-blue-600 dark:hover:text-blue-100"
+              >
+                &times;
+              </button>
+            )}
           </span>
         ))}
       </div>
-      <div className="relative">
+      {!disabled && <div className="relative">
         <input
           ref={inputRef}
           type="text"
@@ -110,7 +112,7 @@ export function PhotoTags({ photoId }: { photoId: string }) {
             ))}
           </ul>
         )}
-      </div>
+      </div>}
     </div>
   );
 }
