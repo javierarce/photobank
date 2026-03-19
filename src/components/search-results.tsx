@@ -38,18 +38,20 @@ export function SearchResults() {
     }
   };
 
-  const handleRename = async (photo: Photo) => {
-    const newName = prompt("Rename to:", photo.filename);
-    if (!newName || newName === photo.filename) return;
+  const handleRename = async (photo: Photo, newFilename: string) => {
     const res = await fetch(`/api/photos/${photo.id}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ filename: newName }),
+      body: JSON.stringify({ filename: newFilename }),
     });
     if (res.ok) {
       const { photo: updated } = await res.json();
       setPhotos((prev) => prev.map((p) => (p.id === photo.id ? updated : p)));
       if (viewed?.id === photo.id) setViewed(updated);
+    } else {
+      setPhotos((prev) => prev.map((p) => (p.id === photo.id ? photo : p)));
+      if (viewed?.id === photo.id) setViewed(photo);
+      throw new Error("Failed to rename");
     }
   };
 

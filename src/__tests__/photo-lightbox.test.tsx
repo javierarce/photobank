@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { render, screen, fireEvent, cleanup } from "@testing-library/react";
+import { render, screen, fireEvent, cleanup, act, waitFor } from "@testing-library/react";
 import { PhotoLightbox } from "@/components/photo-lightbox";
 import type { Photo } from "@/lib/types";
 
@@ -66,7 +66,6 @@ describe("PhotoLightbox", () => {
 
     expect(screen.getByText("Delete")).toBeInTheDocument();
     expect(screen.getByText("Move")).toBeInTheDocument();
-    expect(screen.getByText("Rename")).toBeInTheDocument();
     expect(screen.getByText("Download")).toBeInTheDocument();
   });
 
@@ -75,7 +74,6 @@ describe("PhotoLightbox", () => {
 
     expect(screen.queryByText("Delete")).not.toBeInTheDocument();
     expect(screen.queryByText("Move")).not.toBeInTheDocument();
-    expect(screen.queryByText("Rename")).not.toBeInTheDocument();
     expect(screen.getByText("Download")).toBeInTheDocument();
   });
 
@@ -99,5 +97,228 @@ describe("PhotoLightbox", () => {
 
     fireEvent.click(screen.getByText("Delete"));
     expect(onDelete).toHaveBeenCalledWith(photo);
+  });
+
+  describe("inline filename editing", () => {
+    it("displays filename as static text by default", () => {
+      render(
+        <PhotoLightbox photo={photo} onClose={vi.fn()} onRename={vi.fn()} />
+      );
+
+      expect(screen.getByTestId("filename-display")).toHaveTextContent("test.jpg");
+      expect(screen.queryByTestId("filename-input")).not.toBeInTheDocument();
+    });
+
+    it("enters edit mode when clicking the filename", () => {
+      render(
+        <PhotoLightbox photo={photo} onClose={vi.fn()} onRename={vi.fn()} />
+      );
+
+      fireEvent.click(screen.getByTestId("filename-display"));
+
+      const input = screen.getByTestId("filename-input");
+      expect(input).toBeInTheDocument();
+      expect(input).toHaveValue("test");
+      expect(screen.getByText(".jpg")).toBeInTheDocument();
+    });
+
+    it("does not enter edit mode when onRename is not provided", () => {
+      render(<PhotoLightbox photo={photo} onClose={vi.fn()} />);
+
+      fireEvent.click(screen.getByTestId("filename-display"));
+      expect(screen.queryByTestId("filename-input")).not.toBeInTheDocument();
+    });
+
+    it("calls onRename with full filename on blur", async () => {
+      const onRename = vi.fn().mockResolvedValue(undefined);
+      render(
+        <PhotoLightbox photo={photo} onClose={vi.fn()} onRename={onRename} />
+      );
+
+      fireEvent.click(screen.getByTestId("filename-display"));
+
+      const input = screen.getByTestId("filename-input");
+      fireEvent.change(input, { target: { value: "vacation-photo" } });
+      await act(() => fireEvent.blur(input));
+
+      expect(onRename).toHaveBeenCalledWith(photo, "vacation-photo.jpg");
+    });
+
+    it("calls onRename with full filename on Enter", async () => {
+      const onRename = vi.fn().mockResolvedValue(undefined);
+      render(
+        <PhotoLightbox photo={photo} onClose={vi.fn()} onRename={onRename} />
+      );
+
+      fireEvent.click(screen.getByTestId("filename-display"));
+
+      const input = screen.getByTestId("filename-input");
+      fireEvent.change(input, { target: { value: "new-name" } });
+      await act(() => fireEvent.keyDown(input, { key: "Enter" }));
+
+      expect(onRename).toHaveBeenCalledWith(photo, "new-name.jpg");
+    });
+
+    it("shows new name optimistically after confirming", async () => {
+      const onRename = vi.fn().mockResolvedValue(undefined);
+      render(
+        <PhotoLightbox photo={photo} onClose={vi.fn()} onRename={onRename} />
+      );
+
+      fireEvent.click(screen.getByTestId("filename-display"));
+      const input = screen.getByTestId("filename-input");
+      fireEvent.change(input, { target: { value: "new-name" } });
+      await act(() => fireEvent.blur(input));
+
+      expect(screen.getByTestId("filename-display")).toHaveTextContent("new-name.jpg");
+    });
+
+    it("reverts name and shows error when rename fails", async () => {
+      const onRename = vi.fn().mockRejectedValue(new Error("Failed to rename"));
+      render(
+        <PhotoLightbox photo={photo} onClose={vi.fn()} onRename={onRename} />
+      );
+
+      fireEvent.click(screen.getByTestId("filename-display"));
+      const input = screen.getByTestId("filename-input");
+      fireEvent.change(input, { target: { value: "bad-name" } });
+      await act(() => fireEvent.blur(input));
+
+      await waitFor(() => {
+        expect(screen.getByTestId("rename-error")).toHaveTextContent("Failed to rename file");
+      });
+      expect(screen.getByTestId("filename-display")).toHaveTextContent("test.jpg");
+    });
+
+    it("clears error when starting a new edit", async () => {
+      const onRename = vi.fn()
+        .mockRejectedValueOnce(new Error("fail"))
+        .mockResolvedValueOnce(undefined);
+      render(
+        <PhotoLightbox photo={photo} onClose={vi.fn()} onRename={onRename} />
+      );
+
+      // First attempt fails
+      fireEvent.click(screen.getByTestId("filename-display"));
+      fireEvent.change(screen.getByTestId("filename-input"), { target: { value: "bad" } });
+      await act(() => fireEvent.blur(screen.getByTestId("filename-input")));
+
+      await waitFor(() => {
+        expect(screen.getByTestId("rename-error")).toBeInTheDocument();
+      });
+
+      // Second attempt — error should clear
+      fireEvent.click(screen.getByTestId("filename-display"));
+      fireEvent.change(screen.getByTestId("filename-input"), { target: { value: "good" } });
+      await act(() => fireEvent.blur(screen.getByTestId("filename-input")));
+
+      expect(screen.queryByTestId("rename-error")).not.toBeInTheDocument();
+    });
+
+    it("shows spinner and disables buttons while rename is in progress", async () => {
+      let resolveRename!: () => void;
+      const onRename = vi.fn().mockImplementation(
+        () => new Promise<void>((resolve) => { resolveRename = resolve; })
+      );
+      render(
+        <PhotoLightbox
+          photo={photo}
+          onClose={vi.fn()}
+          onDelete={vi.fn()}
+          onMove={vi.fn()}
+          onRename={onRename}
+        />
+      );
+
+      // Load image first
+      fireEvent.load(screen.getByAltText("test.jpg"));
+      expect(document.querySelector("svg.animate-spin")).not.toBeInTheDocument();
+
+      // Start rename
+      fireEvent.click(screen.getByTestId("filename-display"));
+      fireEvent.change(screen.getByTestId("filename-input"), { target: { value: "new" } });
+      // Don't await — we want to inspect mid-rename state
+      act(() => { fireEvent.blur(screen.getByTestId("filename-input")); });
+
+      // Spinner should be visible
+      expect(document.querySelector("svg.animate-spin")).toBeInTheDocument();
+      // Buttons should be disabled
+      expect(screen.getByText("Move")).toBeDisabled();
+      expect(screen.getByText("Delete")).toBeDisabled();
+      // Filename should not be clickable (no edit mode)
+      fireEvent.click(screen.getByTestId("filename-display"));
+      expect(screen.queryByTestId("filename-input")).not.toBeInTheDocument();
+
+      // Resolve the rename
+      await act(() => { resolveRename(); });
+
+      // Buttons should be re-enabled
+      expect(screen.getByText("Move")).not.toBeDisabled();
+      expect(screen.getByText("Delete")).not.toBeDisabled();
+    });
+
+    it("cancels editing on Escape without calling onRename", () => {
+      const onRename = vi.fn();
+      const onClose = vi.fn();
+      render(
+        <PhotoLightbox photo={photo} onClose={onClose} onRename={onRename} />
+      );
+
+      fireEvent.click(screen.getByTestId("filename-display"));
+
+      const input = screen.getByTestId("filename-input");
+      fireEvent.change(input, { target: { value: "changed" } });
+      fireEvent.keyDown(input, { key: "Escape" });
+
+      expect(onRename).not.toHaveBeenCalled();
+      expect(onClose).not.toHaveBeenCalled();
+      expect(screen.getByTestId("filename-display")).toHaveTextContent("test.jpg");
+    });
+
+    it("does not call onRename when name is unchanged", async () => {
+      const onRename = vi.fn();
+      render(
+        <PhotoLightbox photo={photo} onClose={vi.fn()} onRename={onRename} />
+      );
+
+      fireEvent.click(screen.getByTestId("filename-display"));
+
+      const input = screen.getByTestId("filename-input");
+      await act(() => fireEvent.blur(input));
+
+      expect(onRename).not.toHaveBeenCalled();
+    });
+
+    it("does not call onRename when name is empty or whitespace", async () => {
+      const onRename = vi.fn();
+      render(
+        <PhotoLightbox photo={photo} onClose={vi.fn()} onRename={onRename} />
+      );
+
+      fireEvent.click(screen.getByTestId("filename-display"));
+
+      const input = screen.getByTestId("filename-input");
+      fireEvent.change(input, { target: { value: "   " } });
+      await act(() => fireEvent.blur(input));
+
+      expect(onRename).not.toHaveBeenCalled();
+    });
+
+    it("preserves the original file extension", async () => {
+      const pngPhoto = { ...photo, filename: "image.png", s3Key: "inbox/image.png" };
+      const onRename = vi.fn().mockResolvedValue(undefined);
+      render(
+        <PhotoLightbox photo={pngPhoto} onClose={vi.fn()} onRename={onRename} />
+      );
+
+      fireEvent.click(screen.getByTestId("filename-display"));
+
+      expect(screen.getByText(".png")).toBeInTheDocument();
+      const input = screen.getByTestId("filename-input");
+      fireEvent.change(input, { target: { value: "renamed" } });
+      await act(() => fireEvent.blur(input));
+
+      expect(onRename).toHaveBeenCalledWith(pngPhoto, "renamed.png");
+    });
   });
 });
