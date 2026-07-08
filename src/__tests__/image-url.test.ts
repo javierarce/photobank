@@ -23,12 +23,21 @@ describe("image-url", () => {
     );
   });
 
+  it("percent-encodes special characters in CDN URLs", async () => {
+    vi.stubEnv("NEXT_PUBLIC_CDN_URL", "https://img.example.com");
+    const { imageUrl } = await import("@/lib/image-url");
+
+    expect(imageUrl("my photos/café #1.jpg", "640", "webp")).toBe(
+      "https://img.example.com/my%20photos/caf%C3%A9%20%231_640.webp"
+    );
+  });
+
   it("builds correct variant keys for different resolutions and formats", async () => {
     vi.stubEnv("NEXT_PUBLIC_CDN_URL", "");
     const { imageUrl } = await import("@/lib/image-url");
 
-    expect(imageUrl("folder/img.png", "128", "jpg")).toBe(
-      "/api/images?key=folder%2Fimg_128.jpg"
+    expect(imageUrl("folder/img.png", "1280", "jpg")).toBe(
+      "/api/images?key=folder%2Fimg_1280.jpg"
     );
     expect(imageUrl("folder/img.png", "2880", "webp")).toBe(
       "/api/images?key=folder%2Fimg_2880.webp"

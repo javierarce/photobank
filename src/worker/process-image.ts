@@ -4,23 +4,14 @@ import sharp from "sharp";
 import exifReader from "exif-reader";
 import { GetObjectCommand, PutObjectCommand } from "@aws-sdk/client-s3";
 import { s3, S3_BUCKET } from "../lib/s3";
+import { redisConnection } from "../lib/redis";
+import { VARIANT_WIDTHS, VARIANT_FORMATS, variantKey } from "../lib/keys";
+import { formatShutterSpeed, gpsToDecimal } from "./exif";
 import { db } from "../db";
 import { photos } from "../db/schema";
 import { eq } from "drizzle-orm";
 
-function formatShutterSpeed(exposureTime: number): string {
-  if (exposureTime >= 1) return `${exposureTime}s`;
-  return `1/${Math.round(1 / exposureTime)}s`;
-}
-
-const VARIANTS = [
-  { width: 128, suffix: "128" },
-  { width: 640, suffix: "640" },
-  { width: 1280, suffix: "1280" },
-  { width: 2880, suffix: "2880" },
-] as const;
-
-const FORMATS = ["jpeg", "webp"] as const;
+const CONTENT_TYPES = { jpg: "image/jpeg", webp: "image/webp" } as const;
 
 type JobData = {
   photoId: string;
@@ -36,58 +27,53 @@ async function processImage(job: Job<JobData>) {
     .where(eq(photos.id, photoId));
 
   // Download original from S3
-  const getCommand = new GetObjectCommand({
-    Bucket: S3_BUCKET,
-    Key: s3Key,
-  });
-  const response = await s3.send(getCommand);
+  const response = await s3.send(
+    new GetObjectCommand({ Bucket: S3_BUCKET, Key: s3Key })
+  );
   const originalBuffer = Buffer.from(
     await response.Body!.transformToByteArray()
   );
 
   // Extract metadata and EXIF
-  const image = sharp(originalBuffer);
-  const metadata = await image.metadata();
+  const metadata = await sharp(originalBuffer).metadata();
 
-  let exifData: Record<string, unknown> = {};
+  let exif: Record<string, unknown> = {};
+  let gps: Record<string, unknown> = {};
   if (metadata.exif) {
     try {
       const parsed = exifReader(metadata.exif);
-      exifData = {
-        ...parsed.Image,
-        ...parsed.Photo,
-        ...parsed.GPSInfo,
-      };
+      exif = { ...parsed.Image, ...parsed.Photo };
+      gps = { ...parsed.GPSInfo };
     } catch {
       // EXIF parsing failed, continue without it
     }
   }
 
-  // Generate all variants
-  const baseName = s3Key.replace(/\.[^.]+$/, "");
-  const totalSteps = VARIANTS.length * FORMATS.length;
+  // Generate all variants. autoOrient() bakes the EXIF orientation into the
+  // pixels (output formats strip EXIF, so without it portraits render
+  // sideways); keepIccProfile() preserves color profiles like Display P3.
+  const totalSteps = VARIANT_WIDTHS.length * VARIANT_FORMATS.length;
   let completed = 0;
 
-  for (const variant of VARIANTS) {
-    const resized = sharp(originalBuffer).resize(variant.width, undefined, {
-      withoutEnlargement: true,
-    });
+  for (const width of VARIANT_WIDTHS) {
+    const resized = sharp(originalBuffer)
+      .autoOrient()
+      .keepIccProfile()
+      .resize(width, undefined, { withoutEnlargement: true });
 
-    for (const format of FORMATS) {
-      const ext = format === "jpeg" ? "jpg" : "webp";
-      const key = `${baseName}_${variant.suffix}.${ext}`;
-
+    for (const format of VARIANT_FORMATS) {
       const buffer =
-        format === "jpeg"
+        format === "jpg"
           ? await resized.clone().jpeg({ quality: 85 }).toBuffer()
           : await resized.clone().webp({ quality: 85 }).toBuffer();
 
       await s3.send(
         new PutObjectCommand({
           Bucket: S3_BUCKET,
-          Key: key,
+          Key: variantKey(s3Key, width, format),
           Body: buffer,
-          ContentType: format === "jpeg" ? "image/jpeg" : "image/webp",
+          ContentType: CONTENT_TYPES[format],
+          CacheControl: "public, max-age=31536000",
         })
       );
 
@@ -96,42 +82,39 @@ async function processImage(job: Job<JobData>) {
     }
   }
 
-  // Update DB with metadata and EXIF
+  const takenAt =
+    exif.DateTimeOriginal instanceof Date &&
+    !Number.isNaN(exif.DateTimeOriginal.getTime())
+      ? exif.DateTimeOriginal
+      : null;
+
+  // Update DB with metadata and EXIF (dimensions as displayed, i.e. after
+  // EXIF orientation is applied)
   await db
     .update(photos)
     .set({
-      width: metadata.width,
-      height: metadata.height,
+      width: metadata.autoOrient?.width ?? metadata.width,
+      height: metadata.autoOrient?.height ?? metadata.height,
       processingStatus: "completed",
-      cameraMake: (exifData.Make as string) || null,
-      cameraModel: (exifData.Model as string) || null,
-      lens: (exifData.LensModel as string) || null,
-      focalLength: exifData.FocalLength
-        ? `${exifData.FocalLength}mm`
+      cameraMake: (exif.Make as string) || null,
+      cameraModel: (exif.Model as string) || null,
+      lens: (exif.LensModel as string) || null,
+      focalLength: exif.FocalLength ? `${exif.FocalLength}mm` : null,
+      aperture: exif.FNumber ? `f/${exif.FNumber}` : null,
+      shutterSpeed: exif.ExposureTime
+        ? formatShutterSpeed(exif.ExposureTime as number)
         : null,
-      aperture: exifData.FNumber ? `f/${exifData.FNumber}` : null,
-      shutterSpeed: exifData.ExposureTime
-        ? formatShutterSpeed(exifData.ExposureTime as number)
-        : null,
-      iso: (exifData.ISOSpeedRatings as number) || null,
-      takenAt: exifData.DateTimeOriginal
-        ? new Date(exifData.DateTimeOriginal as string)
-        : null,
-      gpsLatitude: (exifData.GPSLatitude as number) || null,
-      gpsLongitude: (exifData.GPSLongitude as number) || null,
+      iso: (exif.ISOSpeedRatings as number) || null,
+      takenAt,
+      gpsLatitude: gpsToDecimal(gps.GPSLatitude, gps.GPSLatitudeRef),
+      gpsLongitude: gpsToDecimal(gps.GPSLongitude, gps.GPSLongitudeRef),
       updatedAt: new Date(),
     })
     .where(eq(photos.id, photoId));
 }
 
-const connection = {
-  host: process.env.REDIS_HOST || "localhost",
-  port: Number(process.env.REDIS_PORT) || 6379,
-  password: process.env.REDIS_PASSWORD || undefined,
-};
-
 const worker = new Worker<JobData>("image-processing", processImage, {
-  connection,
+  connection: redisConnection,
   concurrency: 2,
 });
 
@@ -141,7 +124,8 @@ worker.on("completed", (job) => {
 
 worker.on("failed", async (job, err) => {
   console.error(`Failed: ${job?.data.s3Key}`, err.message);
-  if (job) {
+  // Only mark the photo failed once BullMQ has exhausted all retry attempts
+  if (job && job.attemptsMade >= (job.opts.attempts ?? 1)) {
     await db
       .update(photos)
       .set({ processingStatus: "failed", updatedAt: new Date() })

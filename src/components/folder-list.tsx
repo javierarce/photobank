@@ -6,7 +6,6 @@ import Link from "next/link";
 type Folder = {
   folder: string;
   count: number;
-  latest: string;
 };
 
 export type FolderListRef = {
@@ -16,11 +15,19 @@ export type FolderListRef = {
 export const FolderList = forwardRef<FolderListRef>(function FolderList(_, ref) {
   const [folders, setFolders] = useState<Folder[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
   const loadFolders = useCallback(() => {
     fetch("/api/folders")
-      .then((r) => r.json())
-      .then((data) => setFolders(data.folders))
+      .then((r) => {
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        return r.json();
+      })
+      .then((data) => {
+        setFolders(data.folders);
+        setError(null);
+      })
+      .catch(() => setError("Failed to load folders."))
       .finally(() => setLoading(false));
   }, []);
 
@@ -32,6 +39,10 @@ export const FolderList = forwardRef<FolderListRef>(function FolderList(_, ref) 
 
   if (loading) {
     return <p className="text-sm text-zinc-500">Loading folders...</p>;
+  }
+
+  if (error) {
+    return <p className="text-sm text-red-600 dark:text-red-400">{error}</p>;
   }
 
   if (!folders.length) {

@@ -4,15 +4,23 @@ import { photos } from "../db/schema";
 import { inArray } from "drizzle-orm";
 import { imageQueue } from "../lib/queue";
 
+// Usage:
+//   pnpm requeue          re-queue photos stuck in pending/failed
+//   pnpm requeue --all    re-process every photo (e.g. after pipeline changes)
 async function main() {
-  const pending = await db
+  const all = process.argv.includes("--all");
+
+  const query = db
     .select({ id: photos.id, s3Key: photos.s3Key })
-    .from(photos)
-    .where(inArray(photos.processingStatus, ["pending", "failed"]));
+    .from(photos);
 
-  console.log(`Found ${pending.length} photos to requeue`);
+  const rows = all
+    ? await query
+    : await query.where(inArray(photos.processingStatus, ["pending", "failed"]));
 
-  for (const photo of pending) {
+  console.log(`Found ${rows.length} photos to requeue${all ? " (all)" : ""}`);
+
+  for (const photo of rows) {
     await imageQueue.add("process", { photoId: photo.id, s3Key: photo.s3Key });
     console.log(`Queued: ${photo.s3Key}`);
   }

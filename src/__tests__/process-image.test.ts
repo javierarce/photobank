@@ -1,14 +1,12 @@
 import { describe, it, expect } from "vitest";
 import sharp from "sharp";
-
-const VARIANTS = [
-  { width: 128, suffix: "128" },
-  { width: 640, suffix: "640" },
-  { width: 1280, suffix: "1280" },
-  { width: 2880, suffix: "2880" },
-] as const;
-
-const FORMATS = ["jpeg", "webp"] as const;
+import {
+  VARIANT_WIDTHS,
+  VARIANT_FORMATS,
+  VARIANT_SUFFIXES,
+  variantKey,
+} from "@/lib/keys";
+import { formatShutterSpeed, gpsToDecimal } from "@/worker/exif";
 
 // Create a test image buffer (red 4000x3000 pixel image)
 async function createTestImage(width = 4000, height = 3000) {
@@ -17,11 +15,6 @@ async function createTestImage(width = 4000, height = 3000) {
   })
     .jpeg()
     .toBuffer();
-}
-
-function formatShutterSpeed(exposureTime: number): string {
-  if (exposureTime >= 1) return `${exposureTime}s`;
-  return `1/${Math.round(1 / exposureTime)}s`;
 }
 
 describe("formatShutterSpeed", () => {
@@ -38,45 +31,62 @@ describe("formatShutterSpeed", () => {
   });
 });
 
+describe("gpsToDecimal", () => {
+  it("converts [deg, min, sec] to decimal degrees", () => {
+    expect(gpsToDecimal([49, 1, 3.12], "N")).toBeCloseTo(49.017533, 5);
+    expect(gpsToDecimal([11, 1, 4.56], "E")).toBeCloseTo(11.017933, 5);
+  });
+
+  it("negates southern and western hemispheres", () => {
+    expect(gpsToDecimal([33, 52, 4], "S")).toBeCloseTo(-33.867778, 5);
+    expect(gpsToDecimal([70, 40, 0], "W")).toBeCloseTo(-70.666667, 5);
+  });
+
+  it("returns null for missing or malformed coordinates", () => {
+    expect(gpsToDecimal(undefined, "N")).toBeNull();
+    expect(gpsToDecimal(49.5, "N")).toBeNull();
+    expect(gpsToDecimal([49, 1], "N")).toBeNull();
+    expect(gpsToDecimal([49, "x", 3], "N")).toBeNull();
+    expect(gpsToDecimal([NaN, 1, 3], "N")).toBeNull();
+  });
+});
+
 describe("image processing pipeline", () => {
-  it("generates all 8 variants (4 resolutions × 2 formats)", async () => {
+  it("generates all 6 variants (3 resolutions × 2 formats)", async () => {
     const original = await createTestImage();
-    const results: { suffix: string; format: string; width: number }[] = [];
+    const results: { width: number }[] = [];
 
-    for (const variant of VARIANTS) {
-      const resized = sharp(original).resize(variant.width, undefined, {
-        withoutEnlargement: true,
-      });
+    for (const width of VARIANT_WIDTHS) {
+      const resized = sharp(original)
+        .autoOrient()
+        .keepIccProfile()
+        .resize(width, undefined, { withoutEnlargement: true });
 
-      for (const format of FORMATS) {
+      for (const format of VARIANT_FORMATS) {
         const buffer =
-          format === "jpeg"
+          format === "jpg"
             ? await resized.clone().jpeg({ quality: 85 }).toBuffer()
             : await resized.clone().webp({ quality: 85 }).toBuffer();
 
         const meta = await sharp(buffer).metadata();
-        results.push({
-          suffix: variant.suffix,
-          format,
-          width: meta.width!,
-        });
+        results.push({ width: meta.width! });
       }
     }
 
-    expect(results).toHaveLength(8);
+    expect(results).toHaveLength(6);
   });
 
   it("resizes to exact target widths", async () => {
     const original = await createTestImage(4000, 3000);
 
-    for (const variant of VARIANTS) {
+    for (const width of VARIANT_WIDTHS) {
       const buffer = await sharp(original)
-        .resize(variant.width, undefined, { withoutEnlargement: true })
+        .resize(width, undefined, { withoutEnlargement: true })
         .jpeg()
         .toBuffer();
 
       const meta = await sharp(buffer).metadata();
-      expect(meta.width).toBe(variant.width);
+      expect(meta.width).toBe(width);
     }
   });
 
@@ -95,16 +105,43 @@ describe("image processing pipeline", () => {
   it("preserves aspect ratio when resizing", async () => {
     const original = await createTestImage(4000, 3000); // 4:3 ratio
 
-    for (const variant of VARIANTS) {
+    for (const width of VARIANT_WIDTHS) {
       const buffer = await sharp(original)
-        .resize(variant.width, undefined, { withoutEnlargement: true })
+        .resize(width, undefined, { withoutEnlargement: true })
         .jpeg()
         .toBuffer();
 
       const meta = await sharp(buffer).metadata();
-      const expectedHeight = Math.round((variant.width * 3000) / 4000);
+      const expectedHeight = Math.round((width * 3000) / 4000);
       expect(meta.height).toBe(expectedHeight);
     }
+  });
+
+  it("bakes EXIF orientation into the output pixels", async () => {
+    // 400x300 image tagged orientation 6 (rotate 90° CW) displays as 300x400
+    const rotated = await sharp({
+      create: {
+        width: 400,
+        height: 300,
+        channels: 3,
+        background: { r: 0, g: 255, b: 0 },
+      },
+    })
+      .jpeg()
+      .withMetadata({ orientation: 6 })
+      .toBuffer();
+
+    const buffer = await sharp(rotated)
+      .autoOrient()
+      .resize(150, undefined, { withoutEnlargement: true })
+      .jpeg()
+      .toBuffer();
+
+    const meta = await sharp(buffer).metadata();
+    // Width/height swapped: the orientation was applied, not stripped
+    expect(meta.width).toBe(150);
+    expect(meta.height).toBe(200);
+    expect(meta.orientation).toBeUndefined();
   });
 
   it("produces valid JPEG output", async () => {
@@ -131,27 +168,27 @@ describe("image processing pipeline", () => {
 
   it("generates correct S3 keys for variants", () => {
     const s3Key = "barcelona/2026-03-06-R0018076.jpg";
-    const baseName = s3Key.replace(/\.[^.]+$/, "");
 
-    const expectedKeys = [
-      "barcelona/2026-03-06-R0018076_128.jpg",
-      "barcelona/2026-03-06-R0018076_128.webp",
+    const generatedKeys: string[] = [];
+    for (const width of VARIANT_WIDTHS) {
+      for (const format of VARIANT_FORMATS) {
+        generatedKeys.push(variantKey(s3Key, width, format));
+      }
+    }
+
+    expect(generatedKeys).toEqual([
       "barcelona/2026-03-06-R0018076_640.jpg",
       "barcelona/2026-03-06-R0018076_640.webp",
       "barcelona/2026-03-06-R0018076_1280.jpg",
       "barcelona/2026-03-06-R0018076_1280.webp",
       "barcelona/2026-03-06-R0018076_2880.jpg",
       "barcelona/2026-03-06-R0018076_2880.webp",
-    ];
+    ]);
+  });
 
-    const generatedKeys: string[] = [];
-    for (const variant of VARIANTS) {
-      for (const format of FORMATS) {
-        const ext = format === "jpeg" ? "jpg" : "webp";
-        generatedKeys.push(`${baseName}_${variant.suffix}.${ext}`);
-      }
-    }
-
-    expect(generatedKeys).toEqual(expectedKeys);
+  it("keeps legacy 128px variants in the cleanup suffix list", () => {
+    expect(VARIANT_SUFFIXES).toContain("_128.jpg");
+    expect(VARIANT_SUFFIXES).toContain("_128.webp");
+    expect(VARIANT_SUFFIXES).toHaveLength(8);
   });
 });

@@ -14,10 +14,12 @@ export function PhotoTags({ photoId, disabled = false }: { photoId: string; disa
   useEffect(() => {
     fetch(`/api/photos/${photoId}/tags`)
       .then((r) => r.json())
-      .then((data) => setTags(data.tags));
+      .then((data) => setTags(data.tags))
+      .catch(() => {});
     fetch("/api/tags")
       .then((r) => r.json())
-      .then((data) => setAllTags(data.tags));
+      .then((data) => setAllTags(data.tags))
+      .catch(() => {});
   }, [photoId]);
 
   const addTag = async (name: string) => {
