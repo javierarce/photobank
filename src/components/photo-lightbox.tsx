@@ -34,15 +34,20 @@ export function PhotoLightbox({
   const [error, setError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
-  useEffect(() => {
+  // Reset transient state when a different photo (or filename) comes in.
+  // Adjusting state during render avoids an extra effect-driven render pass.
+  const [prevPhotoId, setPrevPhotoId] = useState(photo.id);
+  if (prevPhotoId !== photo.id) {
+    setPrevPhotoId(photo.id);
     setLoaded(false);
-  }, [photo.id]);
+  }
 
-  useEffect(() => {
-    const [n] = splitFilename(photo.filename);
-    setEditValue(n);
+  const [prevFilename, setPrevFilename] = useState(photo.filename);
+  if (prevFilename !== photo.filename) {
+    setPrevFilename(photo.filename);
+    setEditValue(splitFilename(photo.filename)[0]);
     setEditing(false);
-  }, [photo.filename]);
+  }
 
   useEffect(() => {
     if (editing && inputRef.current) {

@@ -1,11 +1,12 @@
+import { baseKey, encodeKey, type VariantWidth, type VariantFormat } from "./keys";
+
 const CDN_BASE = process.env.NEXT_PUBLIC_CDN_URL;
 
-type Resolution = "128" | "640" | "1280" | "2880";
-type Format = "jpg" | "webp";
+type Resolution = `${VariantWidth}`;
 
 function resolveUrl(key: string) {
   if (CDN_BASE) {
-    return `${CDN_BASE}/${key}`;
+    return `${CDN_BASE}/${encodeKey(key)}`;
   }
   return `/api/images?key=${encodeURIComponent(key)}`;
 }
@@ -13,10 +14,9 @@ function resolveUrl(key: string) {
 export function imageUrl(
   s3Key: string,
   resolution: Resolution = "640",
-  format: Format = "webp"
+  format: VariantFormat = "webp"
 ) {
-  const base = s3Key.replace(/\.[^.]+$/, "");
-  return resolveUrl(`${base}_${resolution}.${format}`);
+  return resolveUrl(`${baseKey(s3Key)}_${resolution}.${format}`);
 }
 
 export function originalUrl(s3Key: string) {

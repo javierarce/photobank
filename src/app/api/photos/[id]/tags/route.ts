@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { eq, and } from "drizzle-orm";
 import { db } from "@/db";
 import { tags, photoTags } from "@/db/schema";
+import { upsertTag } from "@/lib/tags";
 
 type Context = { params: Promise<{ id: string }> };
 
@@ -27,21 +28,8 @@ export async function POST(request: NextRequest, context: Context) {
     return NextResponse.json({ error: "name is required" }, { status: 400 });
   }
 
-  // Upsert the tag
-  let [tag] = await db
-    .insert(tags)
-    .values({ name: name.trim() })
-    .onConflictDoNothing()
-    .returning();
+  const { tag } = await upsertTag(name.trim());
 
-  if (!tag) {
-    [tag] = await db
-      .select()
-      .from(tags)
-      .where(eq(tags.name, name.trim()));
-  }
-
-  // Link photo to tag
   await db
     .insert(photoTags)
     .values({ photoId: id, tagId: tag.id })

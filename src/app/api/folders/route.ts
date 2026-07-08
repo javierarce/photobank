@@ -8,7 +8,6 @@ export async function GET() {
     .select({
       folder: photos.folder,
       count: sql<number>`count(*)::int`,
-      latest: sql<string>`max(${photos.createdAt})`,
     })
     .from(photos)
     .groupBy(photos.folder)
