@@ -38,7 +38,7 @@ export const FolderList = forwardRef<FolderListRef>(function FolderList(_, ref) 
   useImperativeHandle(ref, () => ({ refresh: loadFolders }));
 
   if (loading) {
-    return <p className="text-sm text-zinc-500">Loading folders...</p>;
+    return <p className="text-sm text-foreground/60">Loading folders...</p>;
   }
 
   if (error) {
@@ -46,21 +46,21 @@ export const FolderList = forwardRef<FolderListRef>(function FolderList(_, ref) 
   }
 
   if (!folders.length) {
-    return <p className="text-sm text-zinc-500">No folders yet. Upload some photos to get started.</p>;
+    return <p className="text-sm text-foreground/60">No folders yet. Upload some photos to get started.</p>;
   }
 
   return (
-    <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+    <div className="fade-in grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
       {folders.map((f) => (
         <Link
           key={f.folder}
           href={`/folders/${encodeURIComponent(f.folder)}`}
-          className="group flex flex-col gap-1 rounded-lg border border-zinc-200 p-4 transition-colors hover:border-zinc-400 dark:border-zinc-800 dark:hover:border-zinc-600"
+          className="group flex flex-col gap-1 rounded-lg border border-border p-4 transition-colors hover:border-foreground/35"
         >
-          <span className="font-mono text-sm font-medium text-black dark:text-zinc-100 group-hover:underline">
+          <span className="font-mono text-sm font-medium text-foreground group-hover:underline">
             {f.folder}
           </span>
-          <span className="text-xs text-zinc-500">
+          <span className="text-xs text-foreground/60">
             {f.count} {f.count === 1 ? "photo" : "photos"}
           </span>
         </Link>

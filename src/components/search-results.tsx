@@ -101,7 +101,7 @@ export function SearchResults() {
   };
 
   if (status.state === "loading") {
-    return <p className="text-sm text-zinc-500">Searching...</p>;
+    return <p className="text-sm text-foreground/60">Searching...</p>;
   }
 
   if (status.state === "error") {
@@ -109,11 +109,11 @@ export function SearchResults() {
   }
 
   if (!q && !tag) {
-    return <p className="text-sm text-zinc-500">Enter a search term.</p>;
+    return <p className="text-sm text-foreground/60">Enter a search term.</p>;
   }
 
   if (!photos.length) {
-    return <p className="text-sm text-zinc-500">No results found.</p>;
+    return <p className="text-sm text-foreground/60">No results found.</p>;
   }
 
   return (
@@ -121,25 +121,25 @@ export function SearchResults() {
       if (e.target === e.currentTarget) clearSelection();
     }}>
       <div className="flex items-center justify-between">
-        <p className="text-sm text-zinc-500">
+        <p className="text-sm text-foreground/60">
           {photos.length} {photos.length === 1 ? "result" : "results"}
         </p>
         {selectedIds.size > 0 && (
           <button
             onClick={handleBulkDownload}
-            className="rounded-md bg-zinc-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-zinc-800 dark:bg-zinc-100 dark:text-black dark:hover:bg-zinc-200"
+            className="rounded-md bg-foreground px-3 py-1.5 text-xs font-medium text-background hover:bg-foreground/85"
           >
             Download {selectedIds.size} selected
           </button>
         )}
       </div>
-      <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 md:grid-cols-4">
+      <div className="fade-in grid grid-cols-2 gap-2 sm:grid-cols-3 md:grid-cols-4">
         {photos.map((photo) => (
           <div
             key={photo.id}
-            className={`group relative aspect-square overflow-hidden rounded-md bg-zinc-100 dark:bg-zinc-900 ${
+            className={`group relative aspect-square overflow-hidden rounded-md bg-foreground/5 ${
               selectedIds.has(photo.id)
-                ? "ring-2 ring-blue-500 ring-offset-2 dark:ring-offset-black"
+                ? "ring-2 ring-accent ring-offset-2 ring-offset-background"
                 : ""
             }`}
           >
@@ -156,7 +156,7 @@ export function SearchResults() {
                 />
               ) : (
                 <div className="flex h-full items-center justify-center">
-                  <span className="text-xs text-zinc-400">
+                  <span className="text-xs text-foreground/40">
                     {photo.processingStatus}
                   </span>
                 </div>
@@ -173,7 +173,7 @@ export function SearchResults() {
                 type="checkbox"
                 checked={selectedIds.has(photo.id)}
                 onChange={() => toggleSelect(photo.id)}
-                className="h-4 w-4 rounded border-zinc-300 accent-blue-500"
+                className="h-4 w-4 rounded border-border accent-accent"
               />
             </label>
           </div>
