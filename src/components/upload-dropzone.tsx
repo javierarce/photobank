@@ -144,40 +144,40 @@ export function UploadDropzone({ folder = "inbox", onUploadComplete }: Props) {
         }}
         className={`flex min-h-48 cursor-pointer items-center justify-center rounded-lg border-2 border-dashed p-8 transition-colors ${
           isDragging
-            ? "border-blue-500 bg-blue-50 dark:bg-blue-950/20"
-            : "border-zinc-300 hover:border-zinc-400 dark:border-zinc-700 dark:hover:border-zinc-600"
+            ? "border-accent bg-accent/5"
+            : "border-foreground/20 hover:border-foreground/35"
         }`}
       >
         <div className="text-center">
-          <p className="text-lg font-medium text-zinc-700 dark:text-zinc-300">
+          <p className="text-base font-medium text-foreground/80">
             Drop images here or click to select
           </p>
-          <p className="mt-1 text-sm text-zinc-500">
+          <p className="mt-1 text-sm text-foreground/50">
             Uploading to <span className="font-mono">{folder}/</span>
           </p>
         </div>
       </div>
 
       {files.length > 0 && (
-        <ul className="flex flex-col gap-2">
+        <ul className="divide-y divide-border overflow-hidden rounded-lg border border-border">
           {files.map((f, i) => (
             <li
               key={i}
-              className="flex items-center gap-3 rounded-md bg-zinc-100 px-4 py-3 dark:bg-zinc-900"
+              className="flex items-center gap-3 px-4 py-2.5"
             >
-              <span className="flex-1 truncate text-sm font-mono">
+              <span className="flex-1 truncate font-mono text-sm">
                 {f.file.name}
               </span>
-              <span className="text-xs text-zinc-500 tabular-nums">
+              <span className="text-xs tabular-nums text-foreground/50">
                 {f.status === "uploading" && `${f.progress}%`}
                 {f.status === "done" && "Done"}
                 {f.status === "error" && "Failed"}
                 {f.status === "pending" && "Waiting..."}
               </span>
               {f.status === "uploading" && (
-                <div className="h-1.5 w-24 overflow-hidden rounded-full bg-zinc-300 dark:bg-zinc-700">
+                <div className="h-1.5 w-24 overflow-hidden rounded-full bg-foreground/10">
                   <div
-                    className="h-full rounded-full bg-blue-500 transition-all"
+                    className="h-full rounded-full bg-accent transition-all"
                     style={{ width: `${f.progress}%` }}
                   />
                 </div>

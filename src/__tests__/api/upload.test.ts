@@ -94,6 +94,44 @@ describe("POST /api/upload", () => {
     });
   });
 
+  it("strips directory components from filenames", async () => {
+    const { PutObjectCommand } = await import("@aws-sdk/client-s3");
+
+    const req = new NextRequest("http://localhost/api/upload", {
+      method: "POST",
+      body: JSON.stringify({
+        files: [
+          { filename: "../../etc/passwd.jpg", contentType: "image/jpeg", size: 1 },
+        ],
+      }),
+    });
+
+    const res = await POST(req);
+    expect(res.status).toBe(200);
+    expect(PutObjectCommand).toHaveBeenCalledWith(
+      expect.objectContaining({ Key: "inbox/passwd.jpg" })
+    );
+  });
+
+  it("rejects invalid folders and filenames", async () => {
+    const badFolder = new NextRequest("http://localhost/api/upload", {
+      method: "POST",
+      body: JSON.stringify({
+        folder: "a/b",
+        files: [{ filename: "ok.jpg", contentType: "image/jpeg", size: 1 }],
+      }),
+    });
+    expect((await POST(badFolder)).status).toBe(400);
+
+    const badFilename = new NextRequest("http://localhost/api/upload", {
+      method: "POST",
+      body: JSON.stringify({
+        files: [{ filename: "..", contentType: "image/jpeg", size: 1 }],
+      }),
+    });
+    expect((await POST(badFilename)).status).toBe(400);
+  });
+
   it("handles multiple files in a single request", async () => {
     const req = new NextRequest("http://localhost/api/upload", {
       method: "POST",
