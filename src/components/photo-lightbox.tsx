@@ -1,5 +1,3 @@
-"use client";
-
 import { useEffect, useRef, useState } from "react";
 import { imageUrl } from "@/lib/image-url";
 import { PhotoTags } from "@/components/photo-tags";

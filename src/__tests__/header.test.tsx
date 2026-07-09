@@ -1,29 +1,23 @@
-import { describe, it, expect, vi, afterEach } from "vitest";
+import { describe, it, expect, afterEach } from "vitest";
 import { render, screen, cleanup } from "@testing-library/react";
+import { MemoryRouter } from "react-router-dom";
 import { Header } from "@/components/header";
-
-vi.mock("next/link", () => ({
-  default: ({
-    children,
-    href,
-  }: {
-    children: React.ReactNode;
-    href: string;
-  }) => <a href={href}>{children}</a>,
-}));
-
-vi.mock("next/navigation", () => ({
-  useRouter: () => ({ push: vi.fn() }),
-  useSearchParams: () => ({ get: () => null }),
-}));
 
 afterEach(() => {
   cleanup();
 });
 
+function renderHeader() {
+  return render(
+    <MemoryRouter>
+      <Header />
+    </MemoryRouter>
+  );
+}
+
 describe("Header", () => {
   it("renders the Photobank link", () => {
-    render(<Header />);
+    renderHeader();
 
     const link = screen.getByText("Photobank");
     expect(link).toBeInTheDocument();
@@ -31,7 +25,7 @@ describe("Header", () => {
   });
 
   it("renders the search bar", () => {
-    render(<Header />);
+    renderHeader();
 
     expect(screen.getByPlaceholderText(/search/i)).toBeInTheDocument();
   });

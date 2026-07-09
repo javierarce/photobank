@@ -1,5 +1,3 @@
-"use client";
-
 import {
   useEffect,
   useState,
@@ -8,6 +6,7 @@ import {
   forwardRef,
 } from "react";
 import { imageUrl } from "@/lib/image-url";
+import { listPhotos } from "@/lib/api";
 import { PhotoLightbox } from "@/components/photo-lightbox";
 import { usePhotoActions } from "@/hooks/use-photo-actions";
 import type { UploadFile } from "@/hooks/use-upload";
@@ -40,13 +39,9 @@ export const PhotoGrid = forwardRef<PhotoGridRef, Props>(function PhotoGrid(
   const [error, setError] = useState<string | null>(null);
 
   const loadPhotos = useCallback(() => {
-    return fetch(`/api/photos?folder=${encodeURIComponent(folder)}`)
-      .then((r) => {
-        if (!r.ok) throw new Error(`HTTP ${r.status}`);
-        return r.json();
-      })
-      .then((data) => {
-        setPhotos(data.photos);
+    return listPhotos(folder)
+      .then((photos) => {
+        setPhotos(photos);
         setError(null);
       })
       .catch(() => setError("Failed to load photos."))

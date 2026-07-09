@@ -1,12 +1,21 @@
 import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
 import { render, screen, cleanup, waitFor } from "@testing-library/react";
 import { PhotoGrid } from "@/components/photo-grid";
+import { listPhotos } from "@/lib/api";
 import type { Photo } from "@/lib/types";
 import { makePhoto } from "./fixtures";
+
+vi.mock("@/lib/api", () => ({
+  listPhotos: vi.fn(),
+  deletePhoto: vi.fn(),
+  updatePhoto: vi.fn(),
+}));
 
 vi.mock("@/components/photo-lightbox", () => ({
   PhotoLightbox: () => <div data-testid="lightbox" />,
 }));
+
+const mockListPhotos = vi.mocked(listPhotos);
 
 const mockPhotos: Photo[] = [
   makePhoto({
@@ -36,7 +45,7 @@ const mockPhotos: Photo[] = [
 ];
 
 beforeEach(() => {
-  vi.restoreAllMocks();
+  vi.clearAllMocks();
 });
 
 afterEach(() => {
@@ -45,17 +54,14 @@ afterEach(() => {
 
 describe("PhotoGrid", () => {
   it("shows loading state initially", () => {
-    vi.spyOn(global, "fetch").mockReturnValueOnce(new Promise(() => {}));
+    mockListPhotos.mockReturnValueOnce(new Promise(() => {}));
     render(<PhotoGrid folder="vacation" />);
 
     expect(screen.getByText("Loading photos...")).toBeInTheDocument();
   });
 
   it("shows empty state when folder has no photos", async () => {
-    vi.spyOn(global, "fetch").mockResolvedValueOnce({
-      ok: true,
-      json: () => Promise.resolve({ photos: [] }),
-    } as Response);
+    mockListPhotos.mockResolvedValueOnce([]);
 
     render(<PhotoGrid folder="empty" />);
 
@@ -67,10 +73,7 @@ describe("PhotoGrid", () => {
   });
 
   it("renders completed photos as images", async () => {
-    vi.spyOn(global, "fetch").mockResolvedValueOnce({
-      ok: true,
-      json: () => Promise.resolve({ photos: [mockPhotos[0]] }),
-    } as Response);
+    mockListPhotos.mockResolvedValueOnce([mockPhotos[0]]);
 
     render(<PhotoGrid folder="vacation" />);
 
@@ -80,10 +83,7 @@ describe("PhotoGrid", () => {
   });
 
   it("shows processing status for non-completed photos", async () => {
-    vi.spyOn(global, "fetch").mockResolvedValueOnce({
-      ok: true,
-      json: () => Promise.resolve({ photos: mockPhotos }),
-    } as Response);
+    mockListPhotos.mockResolvedValueOnce(mockPhotos);
 
     render(<PhotoGrid folder="vacation" />);
 
@@ -93,33 +93,23 @@ describe("PhotoGrid", () => {
     });
   });
 
-  it("fetches photos for the correct folder", async () => {
-    const fetchSpy = vi.spyOn(global, "fetch").mockResolvedValueOnce({
-      ok: true,
-      json: () => Promise.resolve({ photos: [] }),
-    } as Response);
+  it("loads photos for the correct folder", async () => {
+    mockListPhotos.mockResolvedValueOnce([]);
 
     render(<PhotoGrid folder="barcelona" />);
 
     await waitFor(() => {
-      expect(fetchSpy).toHaveBeenCalledWith(
-        "/api/photos?folder=barcelona"
-      );
+      expect(mockListPhotos).toHaveBeenCalledWith("barcelona");
     });
   });
 
-  it("encodes folder name in API request", async () => {
-    const fetchSpy = vi.spyOn(global, "fetch").mockResolvedValueOnce({
-      ok: true,
-      json: () => Promise.resolve({ photos: [] }),
-    } as Response);
+  it("shows an error message when loading fails", async () => {
+    mockListPhotos.mockRejectedValueOnce("boom");
 
-    render(<PhotoGrid folder="my photos" />);
+    render(<PhotoGrid folder="vacation" />);
 
     await waitFor(() => {
-      expect(fetchSpy).toHaveBeenCalledWith(
-        "/api/photos?folder=my%20photos"
-      );
+      expect(screen.getByText("Failed to load photos.")).toBeInTheDocument();
     });
   });
 });

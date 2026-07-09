@@ -1,19 +1,25 @@
 import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
 import { render, screen, cleanup, waitFor } from "@testing-library/react";
+import { MemoryRouter } from "react-router-dom";
 import { FolderList } from "@/components/folder-list";
+import { listFolders } from "@/lib/api";
 
-vi.mock("next/link", () => ({
-  default: ({
-    children,
-    href,
-  }: {
-    children: React.ReactNode;
-    href: string;
-  }) => <a href={href}>{children}</a>,
+vi.mock("@/lib/api", () => ({
+  listFolders: vi.fn(),
 }));
 
+const mockListFolders = vi.mocked(listFolders);
+
+function renderFolderList() {
+  return render(
+    <MemoryRouter>
+      <FolderList />
+    </MemoryRouter>
+  );
+}
+
 beforeEach(() => {
-  vi.restoreAllMocks();
+  vi.clearAllMocks();
 });
 
 afterEach(() => {
@@ -22,19 +28,16 @@ afterEach(() => {
 
 describe("FolderList", () => {
   it("shows loading state initially", () => {
-    vi.spyOn(global, "fetch").mockReturnValueOnce(new Promise(() => {}));
-    render(<FolderList />);
+    mockListFolders.mockReturnValueOnce(new Promise(() => {}));
+    renderFolderList();
 
     expect(screen.getByText("Loading folders...")).toBeInTheDocument();
   });
 
   it("shows empty state when no folders exist", async () => {
-    vi.spyOn(global, "fetch").mockResolvedValueOnce({
-      ok: true,
-      json: () => Promise.resolve({ folders: [] }),
-    } as Response);
+    mockListFolders.mockResolvedValueOnce([]);
 
-    render(<FolderList />);
+    renderFolderList();
 
     await waitFor(() => {
       expect(
@@ -44,60 +47,41 @@ describe("FolderList", () => {
   });
 
   it("renders folders with counts", async () => {
-    vi.spyOn(global, "fetch").mockResolvedValueOnce({
-      ok: true,
-      json: () =>
-        Promise.resolve({
-          folders: [
-            { folder: "vacation", count: 12, latest: "2026-01-01" },
-            { folder: "barcelona", count: 1, latest: "2026-02-01" },
-          ],
-        }),
-    } as Response);
+    mockListFolders.mockResolvedValueOnce([
+      { folder: "vacation", count: 12 },
+      { folder: "barcelona", count: 1 },
+    ]);
 
-    render(<FolderList />);
+    renderFolderList();
 
     await waitFor(() => {
       expect(screen.getByText("vacation")).toBeInTheDocument();
-      expect(screen.getByText("12 photos")).toBeInTheDocument();
-      expect(screen.getByText("barcelona")).toBeInTheDocument();
-      expect(screen.getByText("1 photo")).toBeInTheDocument();
     });
+    expect(screen.getByText("12 photos")).toBeInTheDocument();
+    expect(screen.getByText("barcelona")).toBeInTheDocument();
+    expect(screen.getByText("1 photo")).toBeInTheDocument();
   });
 
-  it("links to the correct folder pages", async () => {
-    vi.spyOn(global, "fetch").mockResolvedValueOnce({
-      ok: true,
-      json: () =>
-        Promise.resolve({
-          folders: [{ folder: "inbox", count: 5, latest: "2026-01-01" }],
-        }),
-    } as Response);
+  it("links each folder to its page, encoding the name", async () => {
+    mockListFolders.mockResolvedValueOnce([{ folder: "my photos", count: 3 }]);
 
-    render(<FolderList />);
+    renderFolderList();
 
     await waitFor(() => {
-      const link = screen.getByText("inbox").closest("a");
-      expect(link?.getAttribute("href")).toBe("/folders/inbox");
+      expect(screen.getByText("my photos")).toBeInTheDocument();
     });
+    expect(
+      screen.getByText("my photos").closest("a")?.getAttribute("href")
+    ).toBe("/folders/my%20photos");
   });
 
-  it("encodes folder names with special characters in links", async () => {
-    vi.spyOn(global, "fetch").mockResolvedValueOnce({
-      ok: true,
-      json: () =>
-        Promise.resolve({
-          folders: [
-            { folder: "my photos", count: 3, latest: "2026-01-01" },
-          ],
-        }),
-    } as Response);
+  it("shows an error message when loading fails", async () => {
+    mockListFolders.mockRejectedValueOnce("boom");
 
-    render(<FolderList />);
+    renderFolderList();
 
     await waitFor(() => {
-      const link = screen.getByText("my photos").closest("a");
-      expect(link?.getAttribute("href")).toBe("/folders/my%20photos");
+      expect(screen.getByText("Failed to load folders.")).toBeInTheDocument();
     });
   });
 });
