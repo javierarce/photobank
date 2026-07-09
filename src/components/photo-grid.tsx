@@ -70,20 +70,39 @@ export const PhotoGrid = forwardRef<PhotoGridRef, Props>(function PhotoGrid(
 
   useImperativeHandle(ref, () => ({ refresh: loadPhotos }));
 
-  // Hide uploads whose real photo has already arrived from the API so the tile
-  // hands off seamlessly instead of briefly showing a duplicate.
-  const photoIds = new Set(photos.map((p) => p.id));
-  const pendingUploads = uploads.filter((u) => !u.id || !photoIds.has(u.id));
+  // Keep showing the local preview while the photo is pending/processing —
+  // the real tile has nothing to render until the worker finishes. Hand off
+  // only once the 640px variant has actually loaded (preloaded below), so the
+  // preview is never replaced by a blank tile.
+  const photoById = new Map(photos.map((p) => [p.id, p]));
+  const activeUploads = uploads.filter(
+    (u) => !u.id || photoById.get(u.id)?.processingStatus !== "failed"
+  );
+  const activeUploadIds = new Set(activeUploads.map((u) => u.id));
+  const visiblePhotos = photos.filter((p) => !activeUploadIds.has(p.id));
+  const uploadsAwaitingThumbnail = activeUploads.filter(
+    (u) => u.id && photoById.get(u.id)?.processingStatus === "completed"
+  );
 
-  if (loading && !pendingUploads.length) {
+  // Failed processing hands off to the photo tile, which owns the error state.
+  useEffect(() => {
+    if (!onDismissUpload) return;
+    for (const u of uploads) {
+      if (!u.id) continue;
+      const photo = photos.find((p) => p.id === u.id);
+      if (photo?.processingStatus === "failed") onDismissUpload(u.key);
+    }
+  }, [uploads, photos, onDismissUpload]);
+
+  if (loading && !activeUploads.length) {
     return <p className="text-sm text-foreground/60">Loading photos...</p>;
   }
 
-  if (error && !pendingUploads.length) {
+  if (error && !activeUploads.length) {
     return <p className="text-sm text-red-600 dark:text-red-400">{error}</p>;
   }
 
-  if (!photos.length && !pendingUploads.length) {
+  if (!photos.length && !activeUploads.length) {
     return (
       <p className="text-sm text-foreground/60">No photos in this folder.</p>
     );
@@ -91,15 +110,26 @@ export const PhotoGrid = forwardRef<PhotoGridRef, Props>(function PhotoGrid(
 
   return (
     <>
+      {onDismissUpload &&
+        uploadsAwaitingThumbnail.map((upload) => (
+          <img
+            key={upload.key}
+            src={imageUrl(photoById.get(upload.id!)!.s3Key, "640", "webp")}
+            alt=""
+            className="hidden"
+            onLoad={() => onDismissUpload(upload.key)}
+            onError={() => onDismissUpload(upload.key)}
+          />
+        ))}
       <div className="fade-in grid grid-cols-2 gap-2 sm:grid-cols-3 md:grid-cols-4">
-        {pendingUploads.map((upload) => (
+        {activeUploads.map((upload) => (
           <UploadTile
             key={upload.key}
             upload={upload}
             onDismiss={onDismissUpload}
           />
         ))}
-        {photos.map((photo) => (
+        {visiblePhotos.map((photo) => (
           <button
             key={photo.id}
             onClick={() => setActive(photo)}
@@ -109,7 +139,7 @@ export const PhotoGrid = forwardRef<PhotoGridRef, Props>(function PhotoGrid(
               <img
                 src={imageUrl(photo.s3Key, "640", "webp")}
                 alt={photo.filename}
-                className="h-full w-full object-cover transition-transform group-hover:scale-105"
+                className="h-full w-full object-cover"
                 loading="lazy"
               />
             ) : (
@@ -173,6 +203,10 @@ function UploadTile({
             </button>
           )}
         </div>
+      ) : upload.status === "done" ? (
+        <span className="absolute left-2 top-2 rounded bg-background/70 px-1.5 py-0.5 text-[11px] font-medium text-foreground/70">
+          Processing…
+        </span>
       ) : (
         <>
           <span className="absolute left-2 top-2 rounded bg-background/70 px-1.5 py-0.5 text-[11px] font-medium tabular-nums text-foreground/70">
