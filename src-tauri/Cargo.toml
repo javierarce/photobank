@@ -24,6 +24,11 @@ aws-sdk-s3 = "1"
 aws-smithy-types = "1"
 keyring = { version = "3", features = ["apple-native"] }
 percent-encoding = "2"
+image = "0.25"
+fast_image_resize = "5"
+webp = "0.3"
+img-parts = "0.3"
+kamadak-exif = "0.6"
 
 [features]
 default = ["custom-protocol"]

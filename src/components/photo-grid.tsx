@@ -134,7 +134,9 @@ export const PhotoGrid = forwardRef<PhotoGridRef, Props>(function PhotoGrid(
   );
 });
 
-/** A grid tile for an in-flight upload: image preview + inline progress. */
+/** A grid tile for an in-flight import: filename + inline progress. The
+ * pixels arrive when the finished photo replaces this tile, so the preview
+ * is a quiet placeholder rather than a local file read. */
 function UploadTile({
   upload,
   onDismiss,
@@ -146,17 +148,14 @@ function UploadTile({
 
   return (
     <div className="fade-in relative aspect-square overflow-hidden rounded-md bg-foreground/5">
-      <img
-        src={upload.previewUrl}
-        alt={upload.file.name}
-        className="h-full w-full object-cover"
-      />
-      <div
-        className={`absolute inset-0 ${failed ? "bg-red-950/50" : "bg-background/40"}`}
-      />
+      <div className="flex h-full items-center justify-center p-3">
+        <span className="max-w-full truncate font-mono text-xs text-foreground/50">
+          {upload.filename}
+        </span>
+      </div>
 
       {failed ? (
-        <div className="absolute inset-0 flex flex-col items-center justify-center gap-2">
+        <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-red-950/50">
           <span className="text-xs font-medium text-red-100">Failed</span>
           {onDismiss && (
             <button

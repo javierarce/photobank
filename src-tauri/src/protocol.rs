@@ -130,6 +130,12 @@ fn is_pinned(key: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// Seed the cache from elsewhere in the app (the importer writes freshly
+/// generated variants here so the grid renders without refetching from S3).
+pub async fn cache_put(app: &AppHandle, key: &str, data: &[u8]) {
+    write_cache(&cache_dir(app).join(key), data).await;
+}
+
 async fn write_cache(path: &Path, data: &[u8]) {
     if let Some(parent) = path.parent() {
         if tokio::fs::create_dir_all(parent).await.is_err() {
