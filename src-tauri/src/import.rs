@@ -108,6 +108,7 @@ async fn import_one(app: &AppHandle, path: &str, folder: &str) -> Option<Photo> 
     match run_import(app, path, folder, &filename, &s3_key, &reporter).await {
         Ok(photo) => {
             reporter.emit(Some(&photo.id), 100, "done", None);
+            crate::manifest::schedule_upload(app);
             Some(photo)
         }
         Err((photo_id, err)) => {

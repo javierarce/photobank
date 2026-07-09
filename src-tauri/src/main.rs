@@ -7,6 +7,7 @@ mod error;
 mod exif;
 mod import;
 mod keys;
+mod manifest;
 mod photos;
 mod pipeline;
 mod protocol;
@@ -31,6 +32,7 @@ fn main() {
             let conn = db::init(app.handle())?;
             app.manage(db::Db(Mutex::new(conn)));
             app.manage(settings::S3State::default());
+            app.manage(manifest::ManifestState::default());
             // Build the S3 client from saved settings + Keychain off the main
             // thread; the UI shows "not configured" states until it lands.
             let handle = app.handle().clone();
@@ -54,6 +56,7 @@ fn main() {
             settings::get_settings,
             settings::save_settings,
             settings::test_connection,
+            manifest::rebuild_from_bucket,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
