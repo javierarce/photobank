@@ -42,6 +42,7 @@ export function sanitizeFilename(filename: unknown): string | null {
   if (typeof filename !== "string") return null;
   const name = filename.split(/[/\\]/).pop()?.trim() ?? "";
   if (!name || name === "." || name === "..") return null;
+  // eslint-disable-next-line no-control-regex -- reject control chars in names
   if (/[\x00-\x1f]/.test(name)) return null;
   return name;
 }
@@ -53,6 +54,7 @@ export function sanitizeFolder(folder: unknown): string | null {
   if (typeof folder !== "string") return null;
   const name = folder.trim();
   if (!name || name === "." || name === "..") return null;
+  // eslint-disable-next-line no-control-regex -- reject control chars in names
   if (/[/\\\x00-\x1f]/.test(name)) return null;
   return name;
 }

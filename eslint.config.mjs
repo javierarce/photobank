@@ -1,25 +1,45 @@
-import { defineConfig, globalIgnores } from "eslint/config";
-import nextVitals from "eslint-config-next/core-web-vitals";
-import nextTs from "eslint-config-next/typescript";
+import js from "@eslint/js";
+import globals from "globals";
+import reactHooks from "eslint-plugin-react-hooks";
+import reactRefresh from "eslint-plugin-react-refresh";
+import tseslint from "typescript-eslint";
 
-const eslintConfig = defineConfig([
-  ...nextVitals,
-  ...nextTs,
+export default tseslint.config(
   {
-    rules: {
-      // Images are pre-sized variants served from S3/CDN; next/image's
-      // optimization proxy adds nothing here
-      "@next/next/no-img-element": "off",
-    },
+    ignores: [
+      "dist",
+      "src-tauri",
+      "node_modules",
+      "drizzle",
+      "next.config.ts",
+      "drizzle.config.ts",
+      // Legacy Next.js code, removed once the desktop app reaches parity
+      "src/app",
+      "src/db",
+      "src/worker",
+      "src/proxy.ts",
+      "src/lib/auth.ts",
+      "src/lib/queue.ts",
+      "src/lib/redis.ts",
+      "src/lib/s3.ts",
+      "src/lib/tags.ts",
+      "src/__tests__/api",
+      "src/__tests__/auth.test.ts",
+      "src/__tests__/process-image.test.ts",
+      "src/__tests__/use-upload.test.tsx",
+    ],
   },
-  // Override default ignores of eslint-config-next.
-  globalIgnores([
-    // Default ignores of eslint-config-next:
-    ".next/**",
-    "out/**",
-    "build/**",
-    "next-env.d.ts",
-  ]),
-]);
-
-export default eslintConfig;
+  {
+    files: ["**/*.{ts,tsx}", "**/*.mjs"],
+    extends: [
+      js.configs.recommended,
+      ...tseslint.configs.recommended,
+      reactHooks.configs.flat["recommended-latest"],
+      reactRefresh.configs.vite,
+    ],
+    languageOptions: {
+      ecmaVersion: 2022,
+      globals: { ...globals.browser, ...globals.node },
+    },
+  }
+);

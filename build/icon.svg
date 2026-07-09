@@ -1,0 +1,23 @@
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
+  <!-- Editable design source. Render the PNG master with `npm run icons`. -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#1d4ed8"/>
+      <stop offset="1" stop-color="#0f172a"/>
+    </linearGradient>
+    <linearGradient id="sun" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#fde68a"/>
+      <stop offset="1" stop-color="#f59e0b"/>
+    </linearGradient>
+  </defs>
+  <!-- macOS icon shape: rounded rect with ~10% transparent margin -->
+  <rect x="100" y="100" width="824" height="824" rx="186" fill="url(#bg)"/>
+  <!-- photo frame -->
+  <rect x="242" y="282" width="540" height="460" rx="48" fill="#f8fafc"/>
+  <rect x="278" y="318" width="468" height="388" rx="24" fill="#bfdbfe"/>
+  <!-- sun -->
+  <circle cx="420" cy="450" r="58" fill="url(#sun)"/>
+  <!-- mountains -->
+  <path d="M278 706 L470 512 L586 630 L668 546 L746 630 L746 682 A24 24 0 0 1 722 706 Z" fill="#1e3a8a"/>
+  <path d="M278 682 L278 706 L722 706 A24 24 0 0 0 746 682 L746 664 L640 560 L522 680 L430 588 Z" fill="#3b82f6" opacity="0.85"/>
+</svg>

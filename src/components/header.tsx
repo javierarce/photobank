@@ -1,23 +1,26 @@
-"use client";
-
-import { Suspense } from "react";
-import Link from "next/link";
+import { Link } from "react-router-dom";
 import { SearchBar } from "@/components/search-bar";
 
 export function Header() {
   return (
-    <header className="border-b border-border bg-background">
-      <div className="mx-auto flex max-w-5xl items-center gap-6 px-6 py-4">
+    // data-tauri-drag-region: the window uses an overlay title bar, so the
+    // header doubles as the draggable region. pl-24 clears the traffic lights.
+    <header
+      data-tauri-drag-region
+      className="border-b border-border bg-background"
+    >
+      <div
+        data-tauri-drag-region
+        className="mx-auto flex max-w-5xl items-center gap-6 py-4 pl-24 pr-6"
+      >
         <Link
-          href="/"
+          to="/"
           className="text-lg font-semibold tracking-tight text-foreground"
         >
           Photobank
         </Link>
         <div className="flex-1">
-          <Suspense>
-            <SearchBar />
-          </Suspense>
+          <SearchBar />
         </div>
       </div>
     </header>
