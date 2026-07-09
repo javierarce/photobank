@@ -1,8 +1,26 @@
 import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
-import { render, screen, cleanup, waitFor } from "@testing-library/react";
+import {
+  render,
+  screen,
+  cleanup,
+  waitFor,
+  fireEvent,
+} from "@testing-library/react";
 import { PhotoGrid } from "@/components/photo-grid";
 import type { Photo } from "@/lib/types";
+import type { UploadFile } from "@/hooks/use-upload";
 import { makePhoto } from "./fixtures";
+
+function makeUpload(overrides: Partial<UploadFile> = {}): UploadFile {
+  return {
+    key: "u1",
+    file: new File(["x"], "beach.jpg", { type: "image/jpeg" }),
+    previewUrl: "blob:preview-1",
+    status: "done",
+    progress: 100,
+    ...overrides,
+  };
+}
 
 vi.mock("@/components/photo-lightbox", () => ({
   PhotoLightbox: () => <div data-testid="lightbox" />,
@@ -121,5 +139,67 @@ describe("PhotoGrid", () => {
         "/api/photos?folder=my%20photos"
       );
     });
+  });
+
+  it("keeps the upload preview instead of the Pending tile while processing", async () => {
+    vi.spyOn(global, "fetch").mockResolvedValueOnce({
+      ok: true,
+      json: () => Promise.resolve({ photos: [mockPhotos[1]] }),
+    } as Response);
+
+    const upload = makeUpload({ id: "2", file: new File(["x"], "pending.jpg") });
+    render(<PhotoGrid folder="vacation" uploads={[upload]} />);
+
+    await waitFor(() => {
+      expect(screen.getByAltText("pending.jpg")).toHaveAttribute(
+        "src",
+        "blob:preview-1"
+      );
+    });
+    expect(screen.getByText("Processing…")).toBeInTheDocument();
+    expect(screen.queryByText("Pending...")).not.toBeInTheDocument();
+  });
+
+  it("dismisses the upload only after the real thumbnail has loaded", async () => {
+    vi.spyOn(global, "fetch").mockResolvedValueOnce({
+      ok: true,
+      json: () => Promise.resolve({ photos: [mockPhotos[0]] }),
+    } as Response);
+
+    const onDismiss = vi.fn();
+    const upload = makeUpload({ id: "1" });
+    const { container } = render(
+      <PhotoGrid folder="vacation" uploads={[upload]} onDismissUpload={onDismiss} />
+    );
+
+    // Photo is completed, but the upload tile stays until the variant loads
+    await waitFor(() => {
+      expect(screen.getByAltText("beach.jpg")).toHaveAttribute(
+        "src",
+        "blob:preview-1"
+      );
+    });
+    expect(onDismiss).not.toHaveBeenCalled();
+
+    fireEvent.load(container.querySelector("img.hidden")!);
+    expect(onDismiss).toHaveBeenCalledWith("u1");
+  });
+
+  it("dismisses the upload when processing fails so the photo tile shows the error", async () => {
+    vi.spyOn(global, "fetch").mockResolvedValueOnce({
+      ok: true,
+      json: () => Promise.resolve({ photos: [mockPhotos[2]] }),
+    } as Response);
+
+    const onDismiss = vi.fn();
+    const upload = makeUpload({ id: "3" });
+    render(
+      <PhotoGrid folder="vacation" uploads={[upload]} onDismissUpload={onDismiss} />
+    );
+
+    await waitFor(() => {
+      expect(onDismiss).toHaveBeenCalledWith("u1");
+    });
+    expect(screen.getByText("Failed")).toBeInTheDocument();
   });
 });
