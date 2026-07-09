@@ -127,7 +127,7 @@ export function SearchResults() {
         {selectedIds.size > 0 && (
           <button
             onClick={handleBulkDownload}
-            className="rounded-md bg-foreground px-3 py-1.5 text-xs font-medium text-background hover:bg-foreground/85"
+            className="rounded-md bg-foreground px-3 py-1.5 text-xs font-medium text-background transition-colors hover:bg-foreground/85"
           >
             Download {selectedIds.size} selected
           </button>

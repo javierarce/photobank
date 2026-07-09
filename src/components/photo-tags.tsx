@@ -97,7 +97,7 @@ export function PhotoTags({ photoId, disabled = false }: { photoId: string; disa
           onFocus={() => setShowSuggestions(true)}
           onBlur={() => setTimeout(() => setShowSuggestions(false), 150)}
           placeholder="Add tag..."
-          className="w-full rounded-md border border-border bg-background px-3 py-1.5 text-xs text-foreground outline-none focus:border-accent"
+          className="w-full rounded-md border border-border bg-transparent px-3 py-1.5 text-xs text-foreground placeholder:text-foreground/40 outline-none focus:border-foreground/30"
         />
         {showSuggestions && input && suggestions.length > 0 && (
           <ul className="absolute left-0 top-full z-10 mt-1 max-h-32 w-full overflow-auto rounded-md border border-border bg-background shadow-lg">
