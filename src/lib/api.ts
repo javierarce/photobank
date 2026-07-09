@@ -72,3 +72,36 @@ export function exportPhotos(
 ): Promise<string | null> {
   return invoke("export_photos", { photoIds, resolution });
 }
+
+export type S3Settings = {
+  endpoint: string | null;
+  region: string;
+  bucket: string;
+  accessKeyId: string;
+};
+
+export type SettingsInfo = {
+  settings: S3Settings;
+  /** A secret access key is stored in the macOS Keychain. */
+  hasSecret: boolean;
+  /** Settings + secret are complete; the S3 client is usable. */
+  configured: boolean;
+};
+
+export function getSettings(): Promise<SettingsInfo> {
+  return invoke("get_settings");
+}
+
+/** Pass secretAccessKey only when the user typed a new one; null keeps the
+ * Keychain entry untouched. */
+export function saveSettings(
+  settings: S3Settings,
+  secretAccessKey: string | null
+): Promise<SettingsInfo> {
+  return invoke("save_settings", { settings, secretAccessKey });
+}
+
+/** Resolves with a human-readable success message, rejects with the error. */
+export function testConnection(): Promise<string> {
+  return invoke("test_connection");
+}

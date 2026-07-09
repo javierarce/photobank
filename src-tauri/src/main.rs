@@ -4,6 +4,8 @@
 mod commands;
 mod db;
 mod error;
+mod protocol;
+mod settings;
 
 use std::sync::Mutex;
 use tauri::Manager;
@@ -14,9 +16,22 @@ fn main() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_os::init())
         .plugin(tauri_plugin_process::init())
+        .register_asynchronous_uri_scheme_protocol("photo", |ctx, request, responder| {
+            let app = ctx.app_handle().clone();
+            tauri::async_runtime::spawn(async move {
+                responder.respond(protocol::handle(app, request).await);
+            });
+        })
         .setup(|app| {
             let conn = db::init(app.handle())?;
             app.manage(db::Db(Mutex::new(conn)));
+            app.manage(settings::S3State::default());
+            // Build the S3 client from saved settings + Keychain off the main
+            // thread; the UI shows "not configured" states until it lands.
+            let handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                settings::refresh_client(&handle).await;
+            });
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -31,6 +46,9 @@ fn main() {
             commands::delete_photo,
             commands::import_photos,
             commands::export_photos,
+            settings::get_settings,
+            settings::save_settings,
+            settings::test_connection,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
