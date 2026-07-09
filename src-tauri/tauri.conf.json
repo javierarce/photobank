@@ -32,6 +32,7 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "createUpdaterArtifacts": true,
     "category": "Photography",
     "icon": [
       "icons/32x32.png",
@@ -41,7 +42,21 @@
       "icons/icon.ico"
     ],
     "macOS": {
-      "minimumSystemVersion": "10.15"
+      "minimumSystemVersion": "10.15",
+      "dmg": {
+        "background": "./dmg-background.png",
+        "windowSize": { "width": 660, "height": 400 },
+        "appPosition": { "x": 180, "y": 170 },
+        "applicationFolderPosition": { "x": 480, "y": 170 }
+      }
+    }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDg2MTA4MzY3MDlFMDMyMEUKUldRT011QUpaNE1RaG14bnFvazJHQlp3TDhuZHZ3cEI0c3MvZVlncVlodW9WbXNCUldsQkUydEcK",
+      "endpoints": [
+        "https://github.com/javierarce/photobank/releases/latest/download/latest.json"
+      ]
     }
   }
 }

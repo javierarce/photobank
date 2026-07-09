@@ -8,6 +8,7 @@
     "shell:allow-open",
     "os:default",
     "process:default",
+    "updater:default",
     "dialog:allow-open",
     "dialog:allow-save",
     "dialog:allow-ask"
