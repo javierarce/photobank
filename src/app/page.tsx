@@ -11,7 +11,7 @@ export default function Home() {
     <div className="min-h-screen font-sans">
       <main className="mx-auto max-w-5xl px-6 py-8">
         <section>
-          <h2 className="mb-4 text-lg font-medium text-foreground">
+          <h2 className="mb-4 text-lg font-semibold text-foreground">
             Upload
           </h2>
           <UploadDropzone
@@ -20,7 +20,7 @@ export default function Home() {
         </section>
 
         <section className="mt-12">
-          <h2 className="mb-4 text-lg font-medium text-foreground">
+          <h2 className="mb-4 text-lg font-semibold text-foreground">
             Folders
           </h2>
           <FolderList ref={folderListRef} />

@@ -127,7 +127,7 @@ export function SearchResults() {
         {selectedIds.size > 0 && (
           <button
             onClick={handleBulkDownload}
-            className="rounded-md bg-foreground px-3 py-1.5 text-xs font-medium text-background transition-colors hover:bg-foreground/85"
+            className="rounded-lg bg-foreground px-3 py-1.5 text-sm font-medium text-background transition-colors hover:bg-foreground/85"
           >
             Download {selectedIds.size} selected
           </button>
@@ -173,7 +173,7 @@ export function SearchResults() {
                 type="checkbox"
                 checked={selectedIds.has(photo.id)}
                 onChange={() => toggleSelect(photo.id)}
-                className="h-4 w-4 rounded border-border accent-accent"
+                className="size-4 accent-foreground"
               />
             </label>
           </div>

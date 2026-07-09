@@ -57,10 +57,10 @@ export const FolderList = forwardRef<FolderListRef>(function FolderList(_, ref) 
           href={`/folders/${encodeURIComponent(f.folder)}`}
           className="group flex flex-col gap-1 rounded-lg border border-border p-4 transition-colors hover:border-foreground/35"
         >
-          <span className="font-mono text-sm font-medium text-foreground group-hover:underline">
+          <span className="text-sm font-medium text-foreground group-hover:underline">
             {f.folder}
           </span>
-          <span className="text-xs text-foreground/60">
+          <span className="text-xs tabular-nums text-foreground/50">
             {f.count} {f.count === 1 ? "photo" : "photos"}
           </span>
         </Link>

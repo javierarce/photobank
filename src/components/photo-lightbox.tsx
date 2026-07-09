@@ -167,10 +167,10 @@ export function PhotoLightbox({
           </div>
 
           {(photo.cameraModel || photo.width || photo.takenAt) && (
-            <div className="flex flex-col gap-3 text-xs text-foreground/60">
+            <div className="flex flex-col gap-3 text-sm text-foreground/60">
               {photo.cameraModel && (
                 <div>
-                  <p className="mb-1 font-medium text-foreground/80">
+                  <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-foreground/40">
                     Camera
                   </p>
                   <p>
@@ -185,7 +185,7 @@ export function PhotoLightbox({
                 photo.shutterSpeed ||
                 photo.iso) && (
                 <div>
-                  <p className="mb-1 font-medium text-foreground/80">
+                  <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-foreground/40">
                     Settings
                   </p>
                   <p>
@@ -203,7 +203,7 @@ export function PhotoLightbox({
 
               {photo.width && photo.height && (
                 <div>
-                  <p className="mb-1 font-medium text-foreground/80">
+                  <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-foreground/40">
                     Dimensions
                   </p>
                   <p>
@@ -214,7 +214,7 @@ export function PhotoLightbox({
 
               {photo.takenAt && (
                 <div>
-                  <p className="mb-1 font-medium text-foreground/80">
+                  <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-foreground/40">
                     Date
                   </p>
                   <p>
@@ -231,7 +231,7 @@ export function PhotoLightbox({
 
               {photo.gpsLatitude && photo.gpsLongitude && (
                 <div>
-                  <p className="mb-1 font-medium text-foreground/80">
+                  <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-foreground/40">
                     Location
                   </p>
                   <a
@@ -248,7 +248,7 @@ export function PhotoLightbox({
           )}
 
           <div>
-            <p className="mb-2 text-xs font-medium text-foreground/80">
+            <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-foreground/40">
               Tags
             </p>
             <PhotoTags photoId={photo.id} disabled={renaming} />
@@ -259,14 +259,14 @@ export function PhotoLightbox({
               <button
                 onClick={() => onMove(photo)}
                 disabled={renaming}
-                className="w-full rounded-md border border-border px-3 py-1.5 text-xs font-medium transition-colors hover:bg-foreground/5 disabled:opacity-50 disabled:pointer-events-none"
+                className="w-full rounded-md border border-border px-3 py-1.5 text-sm transition-colors hover:bg-foreground/5 disabled:opacity-50 disabled:pointer-events-none"
               >
                 Move
               </button>
             )}
             {renaming ? (
               <span
-                className="block w-full rounded-md border border-border px-3 py-1.5 text-center text-xs font-medium opacity-50"
+                className="block w-full rounded-md border border-border px-3 py-1.5 text-center text-sm opacity-50"
               >
                 Download
               </span>
@@ -274,7 +274,7 @@ export function PhotoLightbox({
               <a
                 href={imageUrl(photo.s3Key, "2880", "jpg")}
                 download
-                className="block w-full rounded-md border border-border px-3 py-1.5 text-center text-xs font-medium transition-colors hover:bg-foreground/5"
+                className="block w-full rounded-md border border-border px-3 py-1.5 text-center text-sm transition-colors hover:bg-foreground/5"
               >
                 Download
               </a>
@@ -283,7 +283,7 @@ export function PhotoLightbox({
               <button
                 onClick={() => onDelete(photo)}
                 disabled={renaming}
-                className="w-full rounded-md border border-red-500/30 px-3 py-1.5 text-xs font-medium text-red-600 transition-colors hover:bg-red-500/10 disabled:opacity-50 disabled:pointer-events-none dark:text-red-400"
+                className="w-full rounded-md border border-red-500/30 px-3 py-1.5 text-sm text-red-600 transition-colors hover:bg-red-500/10 disabled:opacity-50 disabled:pointer-events-none dark:text-red-400"
               >
                 Delete
               </button>
