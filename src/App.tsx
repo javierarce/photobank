@@ -2,6 +2,7 @@ import { useEffect } from "react";
 import { Routes, Route, useNavigate } from "react-router-dom";
 import { Header } from "@/components/header";
 import { getSettings } from "@/lib/api";
+import { checkForUpdates } from "@/lib/updater";
 import HomePage from "@/routes/home";
 import FolderPage from "@/routes/folder";
 import SearchPage from "@/routes/search";
@@ -17,6 +18,7 @@ export default function App() {
         if (!info.configured) navigate("/settings", { replace: true });
       })
       .catch(() => {});
+    if (import.meta.env.PROD) checkForUpdates();
     // eslint-disable-next-line react-hooks/exhaustive-deps -- run once on mount
   }, []);
 

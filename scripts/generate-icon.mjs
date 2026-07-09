@@ -18,3 +18,11 @@ await sharp(svg, { density: 300 })
   .toFile(master);
 
 console.log("wrote build/icon.png (1024x1024)");
+
+// DMG window backdrop, rendered at 2x for retina and downscaled by macOS.
+await sharp(resolve(root, "build/dmg-background.svg"), { density: 144 })
+  .resize(1320, 800)
+  .png({ compressionLevel: 9 })
+  .toFile(resolve(root, "src-tauri/dmg-background.png"));
+
+console.log("wrote src-tauri/dmg-background.png (1320x800)");
