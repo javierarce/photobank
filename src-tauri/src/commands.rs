@@ -204,8 +204,12 @@ pub fn delete_photo(_id: String) -> Result<()> {
 }
 
 #[tauri::command]
-pub fn import_photos(_paths: Vec<String>, _folder: String) -> Result<Vec<Photo>> {
-    Err(Error::msg("Importing arrives in a later phase"))
+pub async fn import_photos(
+    app: tauri::AppHandle,
+    paths: Vec<String>,
+    folder: String,
+) -> Result<Vec<Photo>> {
+    crate::import::import_photos(app, paths, folder).await
 }
 
 #[tauri::command]

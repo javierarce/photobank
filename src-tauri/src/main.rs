@@ -4,6 +4,10 @@
 mod commands;
 mod db;
 mod error;
+mod exif;
+mod import;
+mod keys;
+mod pipeline;
 mod protocol;
 mod settings;
 
