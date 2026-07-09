@@ -1,22 +1,35 @@
 "use client";
 
-import { useCallback, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 
-type UploadFile = {
+export type UploadFile = {
+  /** Stable client-side key; the DB id only exists once the API responds. */
+  key: string;
   file: File;
+  /** Local object URL used to preview the image while it uploads. */
+  previewUrl: string;
   id?: string;
   status: "pending" | "uploading" | "done" | "error";
   progress: number;
 };
 
-type Props = {
+type Options = {
   folder?: string;
   onUploadComplete?: () => void;
 };
 
-export function UploadDropzone({ folder = "inbox", onUploadComplete }: Props) {
+/**
+ * Upload state + drag-and-drop plumbing shared by the folder page. Returns the
+ * in-flight file list, a drag-active flag, handlers to spread over any element
+ * that should accept drops, and a trigger that opens the native file picker.
+ */
+export function useUpload({ folder = "inbox", onUploadComplete }: Options = {}) {
   const [files, setFiles] = useState<UploadFile[]>([]);
   const [isDragging, setIsDragging] = useState(false);
+  // Drag events fire per child element, so a plain boolean flickers as the
+  // cursor moves over nested nodes. Counting enter/leave keeps it stable.
+  const dragDepth = useRef(0);
+  const keyCounter = useRef(0);
 
   const updateFile = (file: File, update: Partial<UploadFile>) => {
     setFiles((prev) =>
@@ -24,11 +37,36 @@ export function UploadDropzone({ folder = "inbox", onUploadComplete }: Props) {
     );
   };
 
+  // Drop an upload and release its object URL. Used to prune finished uploads
+  // once the real photo has loaded, and to dismiss failed ones.
+  const removeUpload = useCallback((key: string) => {
+    setFiles((prev) => {
+      const gone = prev.find((f) => f.key === key);
+      if (gone) URL.revokeObjectURL(gone.previewUrl);
+      return prev.filter((f) => f.key !== key);
+    });
+  }, []);
+
+  const clearCompleted = useCallback(() => {
+    setFiles((prev) => {
+      prev.forEach((f) => {
+        if (f.status === "done") URL.revokeObjectURL(f.previewUrl);
+      });
+      return prev.filter((f) => f.status !== "done");
+    });
+  }, []);
+
   const handleFiles = useCallback(
     async (fileList: FileList) => {
       const newFiles: UploadFile[] = Array.from(fileList)
         .filter((f) => f.type.startsWith("image/"))
-        .map((file) => ({ file, status: "pending" as const, progress: 0 }));
+        .map((file) => ({
+          key: String(keyCounter.current++),
+          file,
+          previewUrl: URL.createObjectURL(file),
+          status: "pending" as const,
+          progress: 0,
+        }));
 
       if (!newFiles.length) return;
 
@@ -85,9 +123,7 @@ export function UploadDropzone({ folder = "inbox", onUploadComplete }: Props) {
                       `[upload] S3 responded ${xhr.status}:`,
                       xhr.responseText
                     );
-                    reject(
-                      new Error(`S3 ${xhr.status}: ${xhr.responseText}`)
-                    );
+                    reject(new Error(`S3 ${xhr.status}: ${xhr.responseText}`));
                   }
                 };
                 xhr.onerror = () => reject(new Error("Network error"));
@@ -116,76 +152,46 @@ export function UploadDropzone({ folder = "inbox", onUploadComplete }: Props) {
     [folder, onUploadComplete]
   );
 
-  const onDrop = useCallback(
-    (e: React.DragEvent) => {
+  const openFilePicker = useCallback(() => {
+    const input = document.createElement("input");
+    input.type = "file";
+    input.multiple = true;
+    input.accept = "image/*";
+    input.onchange = () => input.files && handleFiles(input.files);
+    input.click();
+  }, [handleFiles]);
+
+  const dragHandlers = {
+    onDragEnter: (e: React.DragEvent) => {
       e.preventDefault();
+      dragDepth.current += 1;
+      setIsDragging(true);
+    },
+    onDragOver: (e: React.DragEvent) => {
+      e.preventDefault();
+    },
+    onDragLeave: (e: React.DragEvent) => {
+      e.preventDefault();
+      dragDepth.current -= 1;
+      if (dragDepth.current <= 0) {
+        dragDepth.current = 0;
+        setIsDragging(false);
+      }
+    },
+    onDrop: (e: React.DragEvent) => {
+      e.preventDefault();
+      dragDepth.current = 0;
       setIsDragging(false);
       handleFiles(e.dataTransfer.files);
     },
-    [handleFiles]
-  );
+  };
 
-  return (
-    <div className="flex flex-col gap-6">
-      <div
-        onDragOver={(e) => {
-          e.preventDefault();
-          setIsDragging(true);
-        }}
-        onDragLeave={() => setIsDragging(false)}
-        onDrop={onDrop}
-        onClick={() => {
-          const input = document.createElement("input");
-          input.type = "file";
-          input.multiple = true;
-          input.accept = "image/*";
-          input.onchange = () => input.files && handleFiles(input.files);
-          input.click();
-        }}
-        className={`flex min-h-48 cursor-pointer items-center justify-center rounded-lg border-2 border-dashed p-8 transition-colors ${
-          isDragging
-            ? "border-accent bg-accent/5"
-            : "border-foreground/20 hover:border-foreground/35"
-        }`}
-      >
-        <div className="text-center">
-          <p className="text-base font-medium text-foreground/80">
-            Drop images here or click to select
-          </p>
-          <p className="mt-1 text-sm text-foreground/50">
-            Uploading to <span className="font-mono">{folder}/</span>
-          </p>
-        </div>
-      </div>
-
-      {files.length > 0 && (
-        <ul className="divide-y divide-border overflow-hidden rounded-lg border border-border">
-          {files.map((f, i) => (
-            <li
-              key={i}
-              className="flex items-center gap-3 px-4 py-2.5"
-            >
-              <span className="flex-1 truncate font-mono text-sm">
-                {f.file.name}
-              </span>
-              <span className="text-xs tabular-nums text-foreground/50">
-                {f.status === "uploading" && `${f.progress}%`}
-                {f.status === "done" && "Done"}
-                {f.status === "error" && "Failed"}
-                {f.status === "pending" && "Waiting..."}
-              </span>
-              {f.status === "uploading" && (
-                <div className="h-1.5 w-24 overflow-hidden rounded-full bg-foreground/10">
-                  <div
-                    className="h-full rounded-full bg-accent transition-all"
-                    style={{ width: `${f.progress}%` }}
-                  />
-                </div>
-              )}
-            </li>
-          ))}
-        </ul>
-      )}
-    </div>
-  );
+  return {
+    files,
+    isDragging,
+    dragHandlers,
+    openFilePicker,
+    removeUpload,
+    clearCompleted,
+  };
 }
