@@ -22,6 +22,13 @@ export function Header() {
         <div className="flex-1">
           <SearchBar />
         </div>
+        <Link
+          to="/settings"
+          aria-label="Settings"
+          className="text-sm font-medium text-foreground/50 transition-colors hover:text-foreground"
+        >
+          Settings
+        </Link>
       </div>
     </header>
   );
