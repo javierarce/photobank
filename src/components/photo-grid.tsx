@@ -60,7 +60,7 @@ export const PhotoGrid = forwardRef<PhotoGridRef, { folder: string }>(function P
   useImperativeHandle(ref, () => ({ refresh: loadPhotos }));
 
   if (loading) {
-    return <p className="text-sm text-zinc-500">Loading photos...</p>;
+    return <p className="text-sm text-foreground/60">Loading photos...</p>;
   }
 
   if (error) {
@@ -69,18 +69,18 @@ export const PhotoGrid = forwardRef<PhotoGridRef, { folder: string }>(function P
 
   if (!photos.length) {
     return (
-      <p className="text-sm text-zinc-500">No photos in this folder.</p>
+      <p className="text-sm text-foreground/60">No photos in this folder.</p>
     );
   }
 
   return (
     <>
-      <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 md:grid-cols-4">
+      <div className="fade-in grid grid-cols-2 gap-2 sm:grid-cols-3 md:grid-cols-4">
         {photos.map((photo) => (
           <button
             key={photo.id}
             onClick={() => setActive(photo)}
-            className="group relative aspect-square overflow-hidden rounded-md bg-zinc-100 dark:bg-zinc-900"
+            className="group relative aspect-square overflow-hidden rounded-md bg-foreground/5"
           >
             {photo.processingStatus === "completed" ? (
               <img
@@ -91,7 +91,7 @@ export const PhotoGrid = forwardRef<PhotoGridRef, { folder: string }>(function P
               />
             ) : (
               <div className="flex h-full items-center justify-center">
-                <span className="text-xs text-zinc-400">
+                <span className="text-xs text-foreground/40">
                   {photo.processingStatus === "pending" && "Pending..."}
                   {photo.processingStatus === "processing" &&
                     "Processing..."}

@@ -30,7 +30,7 @@ describe("UploadDropzone", () => {
       .closest("div[class*='border-dashed']")!;
 
     fireEvent.dragOver(dropZone);
-    expect(dropZone.className).toContain("border-blue-500");
+    expect(dropZone.className).toContain("border-accent");
   });
 
   it("removes highlight on drag leave", () => {
@@ -42,6 +42,6 @@ describe("UploadDropzone", () => {
 
     fireEvent.dragOver(dropZone);
     fireEvent.dragLeave(dropZone);
-    expect(dropZone.className).not.toContain("border-blue-500");
+    expect(dropZone.className).not.toContain("border-accent");
   });
 });

@@ -14,9 +14,9 @@ export default function FolderPage({ params }: Props) {
   const photoGridRef = useRef<PhotoGridRef>(null);
 
   return (
-    <div className="min-h-screen bg-zinc-50 font-sans dark:bg-black">
+    <div className="min-h-screen font-sans">
       <main className="mx-auto max-w-5xl px-6 py-8">
-        <h1 className="font-mono text-lg font-semibold text-black dark:text-zinc-50">
+        <h1 className="font-mono text-lg font-semibold text-foreground">
           {decodedFolder}
         </h1>
 
