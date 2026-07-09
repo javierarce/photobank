@@ -6,7 +6,6 @@ let mockPhotoTags = [
 ];
 let mockInsertReturning: Record<string, unknown>[] = [];
 let mockSelectAfterConflict = [{ id: "t1", name: "Landscape" }];
-const mockDelete = vi.fn().mockReturnValue({ where: vi.fn() });
 
 vi.mock("@/db", () => ({
   db: {

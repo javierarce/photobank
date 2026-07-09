@@ -2,6 +2,9 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 
 const mockS3Send = vi.fn().mockResolvedValue({});
 let mockPhoto: Record<string, unknown> | null = null;
+// Result of the destination-conflict lookup in PATCH (second select call)
+let mockOccupant: Record<string, unknown> | null = null;
+let selectCall = 0;
 const mockUpdatedPhoto = {
   id: "p1",
   filename: "renamed.jpg",
@@ -37,7 +40,11 @@ vi.mock("@/db", () => ({
   db: {
     select: () => ({
       from: () => ({
-        where: () => (mockPhoto ? [mockPhoto] : []),
+        where: () => {
+          selectCall++;
+          if (selectCall === 1) return mockPhoto ? [mockPhoto] : [];
+          return mockOccupant ? [mockOccupant] : [];
+        },
       }),
     }),
     update: () => ({
@@ -59,6 +66,7 @@ vi.mock("@/db/schema", () => ({
 
 vi.mock("drizzle-orm", () => ({
   eq: vi.fn(),
+  and: vi.fn(),
 }));
 
 const { NextRequest } = await import("next/server");
@@ -66,6 +74,9 @@ const { PATCH, DELETE } = await import("@/app/api/photos/[id]/route");
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mockS3Send.mockResolvedValue({});
+  mockOccupant = null;
+  selectCall = 0;
   mockPhoto = {
     id: "p1",
     filename: "beach.jpg",
@@ -211,6 +222,68 @@ describe("PATCH /api/photos/:id (move/rename)", () => {
     });
     // Should still succeed
     expect(res.status).toBe(200);
+  });
+
+  it("returns 409 when another photo occupies the destination", async () => {
+    mockOccupant = { id: "p2" };
+
+    const req = new NextRequest("http://localhost/api/photos/p1", {
+      method: "PATCH",
+      body: JSON.stringify({ folder: "archive" }),
+    });
+
+    const res = await PATCH(req, { params: Promise.resolve({ id: "p1" }) });
+    expect(res.status).toBe(409);
+    // Nothing in S3 should have been touched
+    expect(mockS3Send).not.toHaveBeenCalled();
+  });
+
+  it("allows a case-change rename where the occupant is the photo itself", async () => {
+    mockOccupant = { id: "p1" };
+
+    const req = new NextRequest("http://localhost/api/photos/p1", {
+      method: "PATCH",
+      body: JSON.stringify({ filename: "sunset.jpg" }),
+    });
+
+    const res = await PATCH(req, { params: Promise.resolve({ id: "p1" }) });
+    expect(res.status).toBe(200);
+  });
+
+  it("rejects folders containing path separators", async () => {
+    const req = new NextRequest("http://localhost/api/photos/p1", {
+      method: "PATCH",
+      body: JSON.stringify({ folder: "a/b" }),
+    });
+
+    const res = await PATCH(req, { params: Promise.resolve({ id: "p1" }) });
+    expect(res.status).toBe(400);
+  });
+
+  it("rejects empty and traversal filenames", async () => {
+    for (const filename of ["", "   ", "..", "../"]) {
+      selectCall = 0;
+      const req = new NextRequest("http://localhost/api/photos/p1", {
+        method: "PATCH",
+        body: JSON.stringify({ filename }),
+      });
+
+      const res = await PATCH(req, { params: Promise.resolve({ id: "p1" }) });
+      expect(res.status).toBe(400);
+    }
+  });
+
+  it("strips directory components from filenames", async () => {
+    const req = new NextRequest("http://localhost/api/photos/p1", {
+      method: "PATCH",
+      body: JSON.stringify({ filename: "nested/dir/sunset.jpg" }),
+    });
+
+    await PATCH(req, { params: Promise.resolve({ id: "p1" }) });
+
+    expect(copySpy).toHaveBeenCalledWith(
+      expect.objectContaining({ Key: "vacation/sunset.jpg" })
+    );
   });
 });
 

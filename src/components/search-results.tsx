@@ -4,82 +4,72 @@ import { useEffect, useState, useCallback } from "react";
 import { useSearchParams } from "next/navigation";
 import { imageUrl } from "@/lib/image-url";
 import { PhotoLightbox } from "@/components/photo-lightbox";
-import type { Photo } from "@/lib/types";
+import { usePhotoActions } from "@/hooks/use-photo-actions";
 
 export function SearchResults() {
   const searchParams = useSearchParams();
   const q = searchParams.get("q") || "";
   const tag = searchParams.get("tag") || "";
-  const [photos, setPhotos] = useState<Photo[]>([]);
-  const [loading, setLoading] = useState(false);
+  const {
+    photos,
+    setPhotos,
+    active,
+    setActive,
+    handleDelete,
+    handleMove,
+    handleRename,
+  } = usePhotoActions();
+  const searchKey = q || tag ? `${q}|${tag}` : null;
+  // Track the request lifecycle per search key; adjusting state during
+  // render (instead of in the effect) avoids a cascading render pass
+  const [status, setStatus] = useState<{
+    key: string | null;
+    state: "idle" | "loading" | "done" | "error";
+  }>({ key: null, state: "idle" });
+  if (status.key !== searchKey) {
+    setStatus({ key: searchKey, state: searchKey ? "loading" : "idle" });
+  }
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
-  const [viewed, setViewed] = useState<Photo | null>(null);
-
-  const handleDelete = async (photo: Photo) => {
-    if (!confirm(`Delete ${photo.filename}?`)) return;
-    const res = await fetch(`/api/photos/${photo.id}`, { method: "DELETE" });
-    if (res.ok) {
-      setPhotos((prev) => prev.filter((p) => p.id !== photo.id));
-      if (viewed?.id === photo.id) setViewed(null);
-    }
-  };
-
-  const handleMove = async (photo: Photo) => {
-    const newFolder = prompt("Move to folder:", photo.folder);
-    if (!newFolder || newFolder === photo.folder) return;
-    const res = await fetch(`/api/photos/${photo.id}`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ folder: newFolder }),
-    });
-    if (res.ok) {
-      setPhotos((prev) => prev.filter((p) => p.id !== photo.id));
-      if (viewed?.id === photo.id) setViewed(null);
-    }
-  };
-
-  const handleRename = async (photo: Photo, newFilename: string) => {
-    const res = await fetch(`/api/photos/${photo.id}`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ filename: newFilename }),
-    });
-    if (res.ok) {
-      const { photo: updated } = await res.json();
-      setPhotos((prev) => prev.map((p) => (p.id === photo.id ? updated : p)));
-      if (viewed?.id === photo.id) setViewed(updated);
-    } else {
-      setPhotos((prev) => prev.map((p) => (p.id === photo.id ? photo : p)));
-      if (viewed?.id === photo.id) setViewed(photo);
-      throw new Error("Failed to rename");
-    }
-  };
 
   const clearSelection = useCallback(() => {
     setSelectedIds(new Set());
   }, []);
 
   useEffect(() => {
-    if (!selectedIds.size || viewed) return;
+    if (!selectedIds.size || active) return;
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === "Escape") clearSelection();
     };
     document.addEventListener("keydown", handleKeyDown);
     return () => document.removeEventListener("keydown", handleKeyDown);
-  }, [selectedIds.size, viewed, clearSelection]);
+  }, [selectedIds.size, active, clearSelection]);
 
   useEffect(() => {
     if (!q && !tag) return;
-    setLoading(true);
+    const key = `${q}|${tag}`;
+    let cancelled = false;
     const params = new URLSearchParams();
     if (q) params.set("q", q);
     if (tag) params.set("tag", tag);
 
     fetch(`/api/search?${params}`)
-      .then((r) => r.json())
-      .then((data) => setPhotos(data.photos))
-      .finally(() => setLoading(false));
-  }, [q, tag]);
+      .then((r) => {
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        return r.json();
+      })
+      .then((data) => {
+        if (cancelled) return;
+        setPhotos(data.photos);
+        setStatus({ key, state: "done" });
+      })
+      .catch(() => {
+        if (!cancelled) setStatus({ key, state: "error" });
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [q, tag, setPhotos]);
 
   const toggleSelect = (id: string) => {
     setSelectedIds((prev) => {
@@ -110,16 +100,20 @@ export function SearchResults() {
     URL.revokeObjectURL(url);
   };
 
-  if (loading) {
-    return <p className="text-sm text-zinc-500">Searching...</p>;
+  if (status.state === "loading") {
+    return <p className="text-sm text-foreground/60">Searching...</p>;
+  }
+
+  if (status.state === "error") {
+    return <p className="text-sm text-red-600 dark:text-red-400">Search failed.</p>;
   }
 
   if (!q && !tag) {
-    return <p className="text-sm text-zinc-500">Enter a search term.</p>;
+    return <p className="text-sm text-foreground/60">Enter a search term.</p>;
   }
 
   if (!photos.length) {
-    return <p className="text-sm text-zinc-500">No results found.</p>;
+    return <p className="text-sm text-foreground/60">No results found.</p>;
   }
 
   return (
@@ -127,30 +121,30 @@ export function SearchResults() {
       if (e.target === e.currentTarget) clearSelection();
     }}>
       <div className="flex items-center justify-between">
-        <p className="text-sm text-zinc-500">
+        <p className="text-sm text-foreground/60">
           {photos.length} {photos.length === 1 ? "result" : "results"}
         </p>
         {selectedIds.size > 0 && (
           <button
             onClick={handleBulkDownload}
-            className="rounded-md bg-zinc-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-zinc-800 dark:bg-zinc-100 dark:text-black dark:hover:bg-zinc-200"
+            className="rounded-lg bg-foreground px-3 py-1.5 text-sm font-medium text-background transition-colors hover:bg-foreground/85"
           >
             Download {selectedIds.size} selected
           </button>
         )}
       </div>
-      <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 md:grid-cols-4">
+      <div className="fade-in grid grid-cols-2 gap-2 sm:grid-cols-3 md:grid-cols-4">
         {photos.map((photo) => (
           <div
             key={photo.id}
-            className={`group relative aspect-square overflow-hidden rounded-md bg-zinc-100 dark:bg-zinc-900 ${
+            className={`group relative aspect-square overflow-hidden rounded-md bg-foreground/5 ${
               selectedIds.has(photo.id)
-                ? "ring-2 ring-blue-500 ring-offset-2 dark:ring-offset-black"
+                ? "ring-2 ring-accent ring-offset-2 ring-offset-background"
                 : ""
             }`}
           >
             <button
-              onClick={() => setViewed(photo)}
+              onClick={() => setActive(photo)}
               className="h-full w-full"
             >
               {photo.processingStatus === "completed" ? (
@@ -162,7 +156,7 @@ export function SearchResults() {
                 />
               ) : (
                 <div className="flex h-full items-center justify-center">
-                  <span className="text-xs text-zinc-400">
+                  <span className="text-xs text-foreground/40">
                     {photo.processingStatus}
                   </span>
                 </div>
@@ -179,17 +173,17 @@ export function SearchResults() {
                 type="checkbox"
                 checked={selectedIds.has(photo.id)}
                 onChange={() => toggleSelect(photo.id)}
-                className="h-4 w-4 rounded border-zinc-300 accent-blue-500"
+                className="size-4 accent-foreground"
               />
             </label>
           </div>
         ))}
       </div>
 
-      {viewed && (
+      {active && (
         <PhotoLightbox
-          photo={viewed}
-          onClose={() => setViewed(null)}
+          photo={active}
+          onClose={() => setActive(null)}
           onDelete={handleDelete}
           onMove={handleMove}
           onRename={handleRename}

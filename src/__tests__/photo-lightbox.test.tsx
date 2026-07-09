@@ -2,6 +2,7 @@ import { describe, it, expect, vi, afterEach } from "vitest";
 import { render, screen, fireEvent, cleanup, act, waitFor } from "@testing-library/react";
 import { PhotoLightbox } from "@/components/photo-lightbox";
 import type { Photo } from "@/lib/types";
+import { makePhoto } from "./fixtures";
 
 vi.mock("@/components/photo-tags", () => ({
   PhotoTags: ({ photoId }: { photoId: string }) => (
@@ -9,14 +10,11 @@ vi.mock("@/components/photo-tags", () => ({
   ),
 }));
 
-const photo: Photo = {
+const photo: Photo = makePhoto({
   id: "1",
   filename: "test.jpg",
   s3Key: "inbox/test.jpg",
   folder: "inbox",
-  width: 1920,
-  height: 1080,
-  processingStatus: "completed",
   cameraMake: "Ricoh",
   cameraModel: "GR III",
   lens: "GR Lens 18.3mm f/2.8",
@@ -25,9 +23,7 @@ const photo: Photo = {
   shutterSpeed: "1/250s",
   iso: 200,
   takenAt: "2026-01-15T12:00:00Z",
-  gpsLatitude: null,
-  gpsLongitude: null,
-};
+});
 
 afterEach(() => {
   cleanup();

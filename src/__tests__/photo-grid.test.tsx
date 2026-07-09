@@ -2,32 +2,20 @@ import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
 import { render, screen, cleanup, waitFor } from "@testing-library/react";
 import { PhotoGrid } from "@/components/photo-grid";
 import type { Photo } from "@/lib/types";
+import { makePhoto } from "./fixtures";
 
 vi.mock("@/components/photo-lightbox", () => ({
   PhotoLightbox: () => <div data-testid="lightbox" />,
 }));
 
 const mockPhotos: Photo[] = [
-  {
+  makePhoto({
     id: "1",
     filename: "beach.jpg",
     s3Key: "vacation/beach.jpg",
     folder: "vacation",
-    width: 1920,
-    height: 1080,
-    processingStatus: "completed",
-    cameraMake: null,
-    cameraModel: null,
-    lens: null,
-    focalLength: null,
-    aperture: null,
-    shutterSpeed: null,
-    iso: null,
-    takenAt: null,
-    gpsLatitude: null,
-    gpsLongitude: null,
-  },
-  {
+  }),
+  makePhoto({
     id: "2",
     filename: "pending.jpg",
     s3Key: "vacation/pending.jpg",
@@ -35,18 +23,8 @@ const mockPhotos: Photo[] = [
     width: null,
     height: null,
     processingStatus: "pending",
-    cameraMake: null,
-    cameraModel: null,
-    lens: null,
-    focalLength: null,
-    aperture: null,
-    shutterSpeed: null,
-    iso: null,
-    takenAt: null,
-    gpsLatitude: null,
-    gpsLongitude: null,
-  },
-  {
+  }),
+  makePhoto({
     id: "3",
     filename: "failed.jpg",
     s3Key: "vacation/failed.jpg",
@@ -54,17 +32,7 @@ const mockPhotos: Photo[] = [
     width: null,
     height: null,
     processingStatus: "failed",
-    cameraMake: null,
-    cameraModel: null,
-    lens: null,
-    focalLength: null,
-    aperture: null,
-    shutterSpeed: null,
-    iso: null,
-    takenAt: null,
-    gpsLatitude: null,
-    gpsLongitude: null,
-  },
+  }),
 ];
 
 beforeEach(() => {
@@ -85,6 +53,7 @@ describe("PhotoGrid", () => {
 
   it("shows empty state when folder has no photos", async () => {
     vi.spyOn(global, "fetch").mockResolvedValueOnce({
+      ok: true,
       json: () => Promise.resolve({ photos: [] }),
     } as Response);
 
@@ -99,6 +68,7 @@ describe("PhotoGrid", () => {
 
   it("renders completed photos as images", async () => {
     vi.spyOn(global, "fetch").mockResolvedValueOnce({
+      ok: true,
       json: () => Promise.resolve({ photos: [mockPhotos[0]] }),
     } as Response);
 
@@ -111,6 +81,7 @@ describe("PhotoGrid", () => {
 
   it("shows processing status for non-completed photos", async () => {
     vi.spyOn(global, "fetch").mockResolvedValueOnce({
+      ok: true,
       json: () => Promise.resolve({ photos: mockPhotos }),
     } as Response);
 
@@ -124,6 +95,7 @@ describe("PhotoGrid", () => {
 
   it("fetches photos for the correct folder", async () => {
     const fetchSpy = vi.spyOn(global, "fetch").mockResolvedValueOnce({
+      ok: true,
       json: () => Promise.resolve({ photos: [] }),
     } as Response);
 
@@ -138,6 +110,7 @@ describe("PhotoGrid", () => {
 
   it("encodes folder name in API request", async () => {
     const fetchSpy = vi.spyOn(global, "fetch").mockResolvedValueOnce({
+      ok: true,
       json: () => Promise.resolve({ photos: [] }),
     } as Response);
 

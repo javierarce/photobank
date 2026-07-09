@@ -17,5 +17,9 @@ export async function GET(request: NextRequest) {
 
   const url = await getSignedUrl(s3, command, { expiresIn: 3600 });
 
-  return NextResponse.redirect(url);
+  // Let browsers cache the redirect (shorter than the presign expiry) so
+  // repeat views don't re-hit this route for every thumbnail
+  return NextResponse.redirect(url, {
+    headers: { "Cache-Control": "private, max-age=3000" },
+  });
 }
