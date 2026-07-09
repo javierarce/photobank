@@ -88,11 +88,11 @@ export const PhotoGrid = forwardRef<PhotoGridRef, Props>(function PhotoGrid(
   useEffect(() => {
     if (!onDismissUpload) return;
     for (const u of uploads) {
-      if (u.id && photoById.get(u.id)?.processingStatus === "failed") {
-        onDismissUpload(u.key);
-      }
+      if (!u.id) continue;
+      const photo = photos.find((p) => p.id === u.id);
+      if (photo?.processingStatus === "failed") onDismissUpload(u.key);
     }
-  });
+  }, [uploads, photos, onDismissUpload]);
 
   if (loading && !activeUploads.length) {
     return <p className="text-sm text-foreground/60">Loading photos...</p>;
