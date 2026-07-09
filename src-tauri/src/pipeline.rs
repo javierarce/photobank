@@ -11,7 +11,7 @@ use img_parts::ImageICC;
 
 use crate::error::{Error, Result};
 use crate::exif::{self, ExifMeta};
-use crate::keys::{variant_key, VariantFormat, VARIANT_WIDTHS};
+use crate::keys::{variant_key, VariantFormat, VARIANT_FORMATS, VARIANT_WIDTHS};
 
 const QUALITY: u8 = 85;
 
@@ -63,7 +63,7 @@ pub fn process(bytes: &[u8], s3_key: &str) -> Result<ProcessedImage> {
     let mut variants = Vec::with_capacity(VARIANT_WIDTHS.len() * 2);
     for target_width in VARIANT_WIDTHS {
         let resized = resize_to_width(&rgb, target_width)?;
-        for format in [VariantFormat::Jpg, VariantFormat::Webp] {
+        for format in VARIANT_FORMATS {
             let encoded = encode(&resized, format, icc.as_deref())?;
             variants.push(Variant {
                 key: variant_key(s3_key, target_width, format),

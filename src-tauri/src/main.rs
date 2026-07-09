@@ -7,6 +7,7 @@ mod error;
 mod exif;
 mod import;
 mod keys;
+mod photos;
 mod pipeline;
 mod protocol;
 mod settings;
