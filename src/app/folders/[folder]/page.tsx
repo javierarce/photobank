@@ -16,7 +16,7 @@ export default function FolderPage({ params }: Props) {
   return (
     <div className="min-h-screen font-sans">
       <main className="mx-auto max-w-5xl px-6 py-8">
-        <h1 className="font-mono text-lg font-semibold text-foreground">
+        <h1 className="text-xl font-semibold text-foreground">
           {decodedFolder}
         </h1>
 
