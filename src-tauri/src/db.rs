@@ -2,7 +2,7 @@ use std::fs;
 use std::sync::Mutex;
 
 use rusqlite::{Connection, Row};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager};
 
 use crate::error::Result;
@@ -13,7 +13,8 @@ pub struct Db(pub Mutex<Connection>);
 
 /// Mirrors src/lib/types.ts `Photo`. Timestamps are RFC 3339 strings so they
 /// cross the IPC boundary exactly like the old JSON API responses did.
-#[derive(Debug, Clone, Serialize)]
+/// Deserialize is for reading the bucket manifest back.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Photo {
     pub id: String,

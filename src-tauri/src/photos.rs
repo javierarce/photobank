@@ -174,6 +174,7 @@ pub async fn update_photo(
         rename_cached(&app, &format!("{old_base}{suffix}"), &format!("{new_base}{suffix}")).await;
     }
 
+    crate::manifest::schedule_upload(&app);
     Ok(updated)
 }
 
@@ -206,6 +207,8 @@ pub async fn delete_photo(app: AppHandle, id: String) -> Result<()> {
     for key in &keys {
         let _ = tokio::fs::remove_file(protocol::cache_path(&app, key)).await;
     }
+
+    crate::manifest::schedule_upload(&app);
     Ok(())
 }
 

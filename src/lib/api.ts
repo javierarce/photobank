@@ -105,3 +105,15 @@ export function saveSettings(
 export function testConnection(): Promise<string> {
   return invoke("test_connection");
 }
+
+export type RebuildReport = {
+  photos: number;
+  tags: number;
+  /** "manifest" (full metadata) or "listing" (bucket scan fallback). */
+  source: "manifest" | "listing";
+};
+
+/** Replace the local catalog with the bucket's contents. */
+export function rebuildFromBucket(): Promise<RebuildReport> {
+  return invoke("rebuild_from_bucket");
+}

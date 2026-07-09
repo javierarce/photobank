@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import {
   getSettings,
+  rebuildFromBucket,
   saveSettings,
   testConnection,
   type S3Settings,
@@ -57,6 +58,29 @@ export default function SettingsPage() {
     setStatus({ kind: "busy", message: "Testing connection…" });
     try {
       setStatus({ kind: "ok", message: await testConnection() });
+    } catch (err) {
+      setStatus({ kind: "error", message: String(err) });
+    }
+  };
+
+  const handleRebuild = async () => {
+    if (
+      !confirm(
+        "Replace the local catalog with the bucket's contents? Local-only rows will be lost."
+      )
+    ) {
+      return;
+    }
+    setStatus({ kind: "busy", message: "Rebuilding from bucket…" });
+    try {
+      const report = await rebuildFromBucket();
+      setStatus({
+        kind: "ok",
+        message:
+          report.source === "manifest"
+            ? `Rebuilt from the manifest: ${report.photos} photos, ${report.tags} tags.`
+            : `Rebuilt by scanning the bucket: ${report.photos} photos (no manifest found — EXIF and tags will refill as you use the app).`,
+      });
     } catch (err) {
       setStatus({ kind: "error", message: String(err) });
     }
@@ -176,6 +200,23 @@ export default function SettingsPage() {
             </p>
           )}
         </div>
+
+        <section className="mt-12">
+          <h2 className="text-lg font-semibold text-foreground">Library</h2>
+          <p className="mt-1 text-sm text-foreground/50">
+            The catalog is continuously backed up to the bucket as{" "}
+            <span className="font-mono">photobank-manifest.json</span>. On a
+            fresh install (or after losing this Mac), rebuild it from there.
+          </p>
+          <button
+            type="button"
+            onClick={handleRebuild}
+            disabled={status.kind === "busy"}
+            className="mt-4 rounded-lg border border-border px-4 py-2 text-sm font-medium text-foreground/70 transition-colors hover:border-foreground/35 hover:text-foreground disabled:opacity-50"
+          >
+            Rebuild from bucket
+          </button>
+        </section>
       </main>
     </div>
   );

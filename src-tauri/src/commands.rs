@@ -148,7 +148,12 @@ pub fn get_photo_tags(db: State<Db>, photo_id: String) -> Result<Vec<Tag>> {
 /// Add a tag to a photo, creating the tag if it doesn't exist (mirrors the
 /// old upsertTag + onConflictDoNothing pair).
 #[tauri::command]
-pub fn add_photo_tag(db: State<Db>, photo_id: String, name: String) -> Result<Tag> {
+pub fn add_photo_tag(
+    app: tauri::AppHandle,
+    db: State<Db>,
+    photo_id: String,
+    name: String,
+) -> Result<Tag> {
     let name = name.trim().to_string();
     if name.is_empty() {
         return Err(Error::msg("name is required"));
@@ -173,16 +178,25 @@ pub fn add_photo_tag(db: State<Db>, photo_id: String, name: String) -> Result<Ta
         "INSERT OR IGNORE INTO photo_tags (photo_id, tag_id) VALUES (?1, ?2)",
         params![photo_id, tag.id],
     )?;
+    drop(conn);
+    crate::manifest::schedule_upload(&app);
     Ok(tag)
 }
 
 #[tauri::command]
-pub fn remove_photo_tag(db: State<Db>, photo_id: String, tag_id: String) -> Result<()> {
+pub fn remove_photo_tag(
+    app: tauri::AppHandle,
+    db: State<Db>,
+    photo_id: String,
+    tag_id: String,
+) -> Result<()> {
     let conn = db.0.lock().unwrap();
     conn.execute(
         "DELETE FROM photo_tags WHERE photo_id = ?1 AND tag_id = ?2",
         params![photo_id, tag_id],
     )?;
+    drop(conn);
+    crate::manifest::schedule_upload(&app);
     Ok(())
 }
 
