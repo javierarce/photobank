@@ -14,10 +14,12 @@ export function PhotoTags({ photoId, disabled = false }: { photoId: string; disa
   useEffect(() => {
     fetch(`/api/photos/${photoId}/tags`)
       .then((r) => r.json())
-      .then((data) => setTags(data.tags));
+      .then((data) => setTags(data.tags))
+      .catch(() => {});
     fetch("/api/tags")
       .then((r) => r.json())
-      .then((data) => setAllTags(data.tags));
+      .then((data) => setAllTags(data.tags))
+      .catch(() => {});
   }, [photoId]);
 
   const addTag = async (name: string) => {
@@ -63,13 +65,13 @@ export function PhotoTags({ photoId, disabled = false }: { photoId: string; disa
         {tags.map((tag) => (
           <span
             key={tag.id}
-            className="inline-flex items-center gap-1 rounded-full bg-blue-100 px-2.5 py-0.5 text-xs font-medium text-blue-800 dark:bg-blue-900/30 dark:text-blue-300"
+            className="inline-flex items-center gap-1 rounded-md bg-foreground/10 px-2 py-0.5 text-xs"
           >
             {tag.name}
             {!disabled && (
               <button
                 onClick={() => removeTag(tag.id)}
-                className="ml-0.5 hover:text-blue-600 dark:hover:text-blue-100"
+                className="ml-0.5 text-foreground/50 transition-colors hover:text-foreground"
               >
                 &times;
               </button>
@@ -95,16 +97,16 @@ export function PhotoTags({ photoId, disabled = false }: { photoId: string; disa
           onFocus={() => setShowSuggestions(true)}
           onBlur={() => setTimeout(() => setShowSuggestions(false), 150)}
           placeholder="Add tag..."
-          className="w-full rounded-md border border-zinc-300 bg-white px-3 py-1.5 text-xs text-black outline-none focus:border-blue-500 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-100"
+          className="w-full rounded-lg border border-border bg-transparent px-3 py-2 text-sm text-foreground placeholder:text-foreground/40 outline-none focus:border-foreground/30"
         />
         {showSuggestions && input && suggestions.length > 0 && (
-          <ul className="absolute left-0 top-full z-10 mt-1 max-h-32 w-full overflow-auto rounded-md border border-zinc-200 bg-white shadow-lg dark:border-zinc-700 dark:bg-zinc-800">
+          <ul className="absolute left-0 top-full z-10 mt-1 max-h-40 w-full overflow-auto rounded-lg border border-border bg-background py-1 shadow-lg">
             {suggestions.slice(0, 8).map((tag) => (
               <li key={tag.id}>
                 <button
                   onMouseDown={(e) => e.preventDefault()}
                   onClick={() => addTag(tag.name)}
-                  className="w-full px-3 py-1.5 text-left text-xs text-zinc-700 hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-700"
+                  className="w-full px-3 py-2 text-left text-sm hover:bg-foreground/5"
                 >
                   {tag.name}
                 </button>

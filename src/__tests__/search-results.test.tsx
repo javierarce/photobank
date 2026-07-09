@@ -2,6 +2,7 @@ import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
 import { render, screen, cleanup, waitFor } from "@testing-library/react";
 import { SearchResults } from "@/components/search-results";
 import type { Photo } from "@/lib/types";
+import { makePhoto } from "./fixtures";
 
 const mockSearchParams = new Map<string, string>();
 
@@ -16,44 +17,22 @@ vi.mock("@/components/photo-lightbox", () => ({
 }));
 
 const mockPhotos: Photo[] = [
-  {
+  makePhoto({
     id: "1",
     filename: "beach.jpg",
     s3Key: "vacation/beach.jpg",
     folder: "vacation",
-    width: 1920,
-    height: 1080,
-    processingStatus: "completed",
-    cameraMake: null,
-    cameraModel: null,
-    lens: null,
-    focalLength: null,
-    aperture: null,
-    shutterSpeed: null,
-    iso: null,
-    takenAt: null,
-    gpsLatitude: null,
-    gpsLongitude: null,
-  },
-  {
+  }),
+  makePhoto({
     id: "2",
     filename: "mountain.jpg",
     s3Key: "nature/mountain.jpg",
     folder: "nature",
     width: 3000,
     height: 2000,
-    processingStatus: "completed",
     cameraMake: "Canon",
     cameraModel: "EOS R5",
-    lens: null,
-    focalLength: null,
-    aperture: null,
-    shutterSpeed: null,
-    iso: null,
-    takenAt: null,
-    gpsLatitude: null,
-    gpsLongitude: null,
-  },
+  }),
 ];
 
 beforeEach(() => {
@@ -74,6 +53,7 @@ describe("SearchResults", () => {
   it("fetches and displays results when q is set", async () => {
     mockSearchParams.set("q", "beach");
     vi.spyOn(global, "fetch").mockResolvedValueOnce({
+      ok: true,
       json: () => Promise.resolve({ photos: [mockPhotos[0]] }),
     } as Response);
 
@@ -88,6 +68,7 @@ describe("SearchResults", () => {
   it("fetches and displays results when tag is set", async () => {
     mockSearchParams.set("tag", "landscape");
     vi.spyOn(global, "fetch").mockResolvedValueOnce({
+      ok: true,
       json: () => Promise.resolve({ photos: mockPhotos }),
     } as Response);
 
@@ -103,6 +84,7 @@ describe("SearchResults", () => {
   it("shows no results message when search returns empty", async () => {
     mockSearchParams.set("q", "nonexistent");
     vi.spyOn(global, "fetch").mockResolvedValueOnce({
+      ok: true,
       json: () => Promise.resolve({ photos: [] }),
     } as Response);
 
@@ -126,6 +108,7 @@ describe("SearchResults", () => {
     mockSearchParams.set("q", "sunset");
     mockSearchParams.set("tag", "golden-hour");
     const fetchSpy = vi.spyOn(global, "fetch").mockResolvedValueOnce({
+      ok: true,
       json: () => Promise.resolve({ photos: [] }),
     } as Response);
 

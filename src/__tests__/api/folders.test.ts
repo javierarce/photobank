@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
-let mockFolders: { folder: string; count: number; latest: string }[] = [];
+let mockFolders: { folder: string; count: number }[] = [];
 
 vi.mock("@/db", () => ({
   db: {
@@ -42,8 +42,8 @@ describe("GET /api/folders", () => {
 
   it("returns folders with counts", async () => {
     mockFolders = [
-      { folder: "barcelona", count: 15, latest: "2026-03-01" },
-      { folder: "inbox", count: 3, latest: "2026-02-15" },
+      { folder: "barcelona", count: 15 },
+      { folder: "inbox", count: 3 },
     ];
 
     const res = await GET();
@@ -53,7 +53,6 @@ describe("GET /api/folders", () => {
     expect(body.folders[0]).toEqual({
       folder: "barcelona",
       count: 15,
-      latest: "2026-03-01",
     });
   });
 });

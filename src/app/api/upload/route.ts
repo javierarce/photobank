@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { PutObjectCommand } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { s3, S3_BUCKET } from "@/lib/s3";
+import { sanitizeFilename, sanitizeFolder } from "@/lib/keys";
 import { db } from "@/db";
 import { photos } from "@/db/schema";
 
@@ -10,37 +11,45 @@ export async function POST(request: NextRequest) {
     const body = await request.json();
     const files: { filename: string; contentType: string; size: number }[] =
       body.files;
-    const folder: string = body.folder || "inbox";
 
     if (!files?.length) {
-      return NextResponse.json(
-        { error: "No files provided" },
-        { status: 400 }
-      );
+      return NextResponse.json({ error: "No files provided" }, { status: 400 });
     }
 
-    console.log(`[upload] ${files.length} file(s) to folder "${folder}"`);
+    const folder = sanitizeFolder(body.folder ?? "inbox");
+    if (!folder) {
+      return NextResponse.json({ error: "Invalid folder" }, { status: 400 });
+    }
+
+    const sanitized = files.map((file) => ({
+      ...file,
+      filename: sanitizeFilename(file.filename),
+    }));
+
+    const invalid = sanitized.find((f) => !f.filename);
+    if (invalid) {
+      return NextResponse.json({ error: "Invalid filename" }, { status: 400 });
+    }
 
     const results = await Promise.all(
-      files.map(async (file) => {
-        const s3Key = `${folder}/${file.filename}`;
+      sanitized.map(async (file) => {
+        const filename = file.filename!;
+        const s3Key = `${folder}/${filename}`;
 
-        const command = new PutObjectCommand({
-          Bucket: S3_BUCKET,
-          Key: s3Key,
-          ContentType: file.contentType,
-        });
+        const presignedUrl = await getSignedUrl(
+          s3,
+          new PutObjectCommand({
+            Bucket: S3_BUCKET,
+            Key: s3Key,
+            ContentType: file.contentType,
+          }),
+          { expiresIn: 3600 }
+        );
 
-        console.log(`[upload] Generating presigned URL for ${s3Key}`);
-        const presignedUrl = await getSignedUrl(s3, command, {
-          expiresIn: 3600,
-        });
-
-        console.log(`[upload] Inserting DB record for ${file.filename}`);
         const [photo] = await db
           .insert(photos)
           .values({
-            filename: file.filename,
+            filename,
             s3Key,
             folder,
             mimeType: file.contentType,
@@ -57,11 +66,9 @@ export async function POST(request: NextRequest) {
           })
           .returning({ id: photos.id });
 
-        console.log(`[upload] Created photo ${photo.id}`);
-
         return {
           id: photo.id,
-          filename: file.filename,
+          filename,
           presignedUrl,
         };
       })
@@ -70,9 +77,6 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ uploads: results });
   } catch (error) {
     console.error("[upload] Error:", error);
-    return NextResponse.json(
-      { error: String(error) },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: "Upload failed" }, { status: 500 });
   }
 }

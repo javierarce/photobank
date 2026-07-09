@@ -30,6 +30,7 @@ describe("FolderList", () => {
 
   it("shows empty state when no folders exist", async () => {
     vi.spyOn(global, "fetch").mockResolvedValueOnce({
+      ok: true,
       json: () => Promise.resolve({ folders: [] }),
     } as Response);
 
@@ -44,6 +45,7 @@ describe("FolderList", () => {
 
   it("renders folders with counts", async () => {
     vi.spyOn(global, "fetch").mockResolvedValueOnce({
+      ok: true,
       json: () =>
         Promise.resolve({
           folders: [
@@ -65,6 +67,7 @@ describe("FolderList", () => {
 
   it("links to the correct folder pages", async () => {
     vi.spyOn(global, "fetch").mockResolvedValueOnce({
+      ok: true,
       json: () =>
         Promise.resolve({
           folders: [{ folder: "inbox", count: 5, latest: "2026-01-01" }],
@@ -81,6 +84,7 @@ describe("FolderList", () => {
 
   it("encodes folder names with special characters in links", async () => {
     vi.spyOn(global, "fetch").mockResolvedValueOnce({
+      ok: true,
       json: () =>
         Promise.resolve({
           folders: [
