@@ -144,7 +144,7 @@ export function PhotoLightbox({
                       setRenaming(false);
                     }
                   }}
-                  className="min-w-0 flex-1 rounded border border-border bg-background px-1 py-0.5 text-sm outline-none focus:border-accent"
+                  className="min-w-0 flex-1 rounded border border-border bg-transparent px-1 py-0.5 text-sm outline-none focus:border-foreground/30"
                   data-testid="filename-input"
                 />
                 <span className="shrink-0 text-foreground/40">{ext}</span>
@@ -259,14 +259,14 @@ export function PhotoLightbox({
               <button
                 onClick={() => onMove(photo)}
                 disabled={renaming}
-                className="w-full rounded-md bg-foreground/5 px-3 py-1.5 text-xs font-medium text-foreground/80 hover:bg-foreground/10 disabled:opacity-50 disabled:pointer-events-none"
+                className="w-full rounded-md border border-border px-3 py-1.5 text-xs font-medium transition-colors hover:bg-foreground/5 disabled:opacity-50 disabled:pointer-events-none"
               >
                 Move
               </button>
             )}
             {renaming ? (
               <span
-                className="block w-full rounded-md bg-foreground/5 px-3 py-1.5 text-center text-xs font-medium text-foreground/80 opacity-50"
+                className="block w-full rounded-md border border-border px-3 py-1.5 text-center text-xs font-medium opacity-50"
               >
                 Download
               </span>
@@ -274,7 +274,7 @@ export function PhotoLightbox({
               <a
                 href={imageUrl(photo.s3Key, "2880", "jpg")}
                 download
-                className="block w-full rounded-md bg-foreground/5 px-3 py-1.5 text-center text-xs font-medium text-foreground/80 hover:bg-foreground/10"
+                className="block w-full rounded-md border border-border px-3 py-1.5 text-center text-xs font-medium transition-colors hover:bg-foreground/5"
               >
                 Download
               </a>
@@ -283,7 +283,7 @@ export function PhotoLightbox({
               <button
                 onClick={() => onDelete(photo)}
                 disabled={renaming}
-                className="w-full rounded-md bg-red-100 px-3 py-1.5 text-xs font-medium text-red-700 hover:bg-red-200 disabled:opacity-50 disabled:pointer-events-none dark:bg-red-900/30 dark:text-red-400 dark:hover:bg-red-900/50"
+                className="w-full rounded-md border border-red-500/30 px-3 py-1.5 text-xs font-medium text-red-600 transition-colors hover:bg-red-500/10 disabled:opacity-50 disabled:pointer-events-none dark:text-red-400"
               >
                 Delete
               </button>
