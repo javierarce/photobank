@@ -136,6 +136,11 @@ pub async fn cache_put(app: &AppHandle, key: &str, data: &[u8]) {
     write_cache(&cache_dir(app).join(key), data).await;
 }
 
+/// Where a key lives (or would live) in the disk cache.
+pub fn cache_path(app: &AppHandle, key: &str) -> PathBuf {
+    cache_dir(app).join(key)
+}
+
 async fn write_cache(path: &Path, data: &[u8]) {
     if let Some(parent) = path.parent() {
         if tokio::fs::create_dir_all(parent).await.is_err() {

@@ -186,21 +186,19 @@ pub fn remove_photo_tag(db: State<Db>, photo_id: String, tag_id: String) -> Resu
     Ok(())
 }
 
-// The commands below need the S3 client and image pipeline from later phases.
-// They exist now so the frontend's api.ts is complete and fails politely.
-
 #[tauri::command]
-pub fn update_photo(
-    _id: String,
-    _folder: Option<String>,
-    _filename: Option<String>,
+pub async fn update_photo(
+    app: tauri::AppHandle,
+    id: String,
+    folder: Option<String>,
+    filename: Option<String>,
 ) -> Result<Photo> {
-    Err(Error::msg("Moving and renaming arrives in a later phase"))
+    crate::photos::update_photo(app, id, folder, filename).await
 }
 
 #[tauri::command]
-pub fn delete_photo(_id: String) -> Result<()> {
-    Err(Error::msg("Deleting arrives in a later phase"))
+pub async fn delete_photo(app: tauri::AppHandle, id: String) -> Result<()> {
+    crate::photos::delete_photo(app, id).await
 }
 
 #[tauri::command]
@@ -213,8 +211,12 @@ pub async fn import_photos(
 }
 
 #[tauri::command]
-pub fn export_photos(_photo_ids: Vec<String>, _resolution: String) -> Result<Option<String>> {
-    Err(Error::msg("Exporting arrives in a later phase"))
+pub async fn export_photos(
+    app: tauri::AppHandle,
+    photo_ids: Vec<String>,
+    resolution: String,
+) -> Result<Option<String>> {
+    crate::photos::export_photos(app, photo_ids, resolution).await
 }
 
 #[cfg(test)]
