@@ -69,13 +69,19 @@ export function usePhotoActions() {
     )?.trim();
     if (!newFolder) return false;
 
-    const ids = new Set(targets.map((p) => p.id));
+    // Only touch photos that actually change folder — a same-folder pick (the
+    // prompt is pre-filled with the current folder) is a no-op, so those rows
+    // must stay put instead of being filtered out of the grid.
+    const moving = targets.filter((p) => p.folder !== newFolder);
+    if (!moving.length) return false;
+
+    const movedIds = new Set(moving.map((p) => p.id));
     try {
       await Promise.all(
-        targets.map((p) => updatePhoto(p.id, { folder: newFolder }))
+        moving.map((p) => updatePhoto(p.id, { folder: newFolder }))
       );
-      setPhotos((prev) => prev.filter((p) => !ids.has(p.id)));
-      setActive((prev) => (prev && ids.has(prev.id) ? null : prev));
+      setPhotos((prev) => prev.filter((p) => !movedIds.has(p.id)));
+      setActive((prev) => (prev && movedIds.has(prev.id) ? null : prev));
       return true;
     } catch (err) {
       alert(typeof err === "string" ? err : "Failed to move photos");
