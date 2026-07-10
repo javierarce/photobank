@@ -1,12 +1,16 @@
 import { useRef } from "react";
 import { useParams } from "react-router-dom";
 import { PhotoGrid, PhotoGridRef } from "@/components/photo-grid";
+import { SelectionToolbar } from "@/components/selection-toolbar";
 import { useUpload } from "@/hooks/use-upload";
+import { useBackgroundDeselect, useSelection } from "@/hooks/use-selection";
 
 export default function FolderPage() {
   // react-router decodes the param, so "My%20Trip" arrives as "My Trip"
   const { folder = "" } = useParams();
   const photoGridRef = useRef<PhotoGridRef>(null);
+  const { selected } = useSelection();
+  const handleBackgroundClick = useBackgroundDeselect();
   const {
     files,
     isDragging,
@@ -21,17 +25,31 @@ export default function FolderPage() {
   });
 
   return (
-    <div className="relative min-h-screen font-sans" {...dragHandlers}>
+    <div
+      className="relative min-h-screen font-sans"
+      {...dragHandlers}
+      onClick={handleBackgroundClick}
+    >
       <main className="mx-auto max-w-5xl px-6 py-8">
-        <div className="flex items-center justify-between gap-4">
-          <h1 className="text-xl font-semibold text-foreground">{folder}</h1>
-          <button
-            type="button"
-            onClick={openFilePicker}
-            className="shrink-0 rounded-md border border-border px-3 py-1.5 text-sm font-medium text-foreground/70 transition-colors hover:border-foreground/35 hover:text-foreground"
-          >
-            Upload
-          </button>
+        {/* The folder title bar turns into a bulk-action toolbar while photos
+            are selected; otherwise it shows the folder name + Upload. */}
+        <div className="flex min-h-[34px] items-center justify-between gap-4">
+          {selected.length > 0 ? (
+            <SelectionToolbar />
+          ) : (
+            <>
+              <h1 className="text-xl font-semibold text-foreground">
+                {folder}
+              </h1>
+              <button
+                type="button"
+                onClick={openFilePicker}
+                className="shrink-0 rounded-md border border-border px-3 py-1.5 text-sm font-medium text-foreground/70 transition-colors hover:border-foreground/35 hover:text-foreground"
+              >
+                Upload
+              </button>
+            </>
+          )}
         </div>
 
         <section className="mt-8">

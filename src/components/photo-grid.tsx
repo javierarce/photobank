@@ -8,7 +8,9 @@ import {
 import { imageUrl } from "@/lib/image-url";
 import { listPhotos } from "@/lib/api";
 import { PhotoLightbox } from "@/components/photo-lightbox";
+import { SelectionCheck } from "@/components/selection-check";
 import { usePhotoActions } from "@/hooks/use-photo-actions";
+import { useSelection, useThumbnailActivation } from "@/hooks/use-selection";
 import type { UploadFile } from "@/hooks/use-upload";
 
 export type PhotoGridRef = {
@@ -33,10 +35,69 @@ export const PhotoGrid = forwardRef<PhotoGridRef, Props>(function PhotoGrid(
     setActive,
     handleDelete,
     handleMove,
+    handleBulkDelete,
+    handleBulkMove,
     handleRename,
   } = usePhotoActions();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+
+  const { selected, isSelected, clear, selectAll, setPool, setActions } =
+    useSelection();
+  const { onClick, onDoubleClick } = useThumbnailActivation(setActive);
+
+  // Expose bulk actions to the toolbar while this grid is on screen; clear the
+  // selection when they run so stale tiles don't linger.
+  useEffect(() => {
+    setActions({
+      onDelete: async (targets) => {
+        if (await handleBulkDelete(targets)) clear();
+      },
+      onMove: async (targets) => {
+        if (await handleBulkMove(targets)) clear();
+      },
+    });
+    return () => setActions(null);
+  }, [setActions, handleBulkDelete, handleBulkMove, clear]);
+
+  // Publish the selectable pool so the toolbar's "Select all" knows the set.
+  useEffect(() => {
+    setPool(photos);
+    return () => setPool([]);
+  }, [photos, setPool]);
+
+  // Selection belongs to the current folder; drop it when the folder changes
+  // or when leaving the grid entirely.
+  useEffect(() => {
+    return () => clear();
+  }, [folder, clear]);
+
+  // Escape clears the selection; Cmd/Ctrl+A selects everything. Both yield to
+  // the lightbox and to text fields.
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (active) return;
+      if (e.key === "Escape" && selected.length) {
+        clear();
+        return;
+      }
+      if ((e.metaKey || e.ctrlKey) && (e.key === "a" || e.key === "A")) {
+        const target = e.target as HTMLElement;
+        if (
+          target.tagName === "INPUT" ||
+          target.tagName === "TEXTAREA" ||
+          target.isContentEditable
+        ) {
+          return;
+        }
+        if (!photos.length) return;
+        e.preventDefault();
+        selectAll(photos);
+      }
+    };
+    document.addEventListener("keydown", handleKeyDown);
+    return () => document.removeEventListener("keydown", handleKeyDown);
+  }, [selected.length, active, clear, selectAll, photos]);
 
   const loadPhotos = useCallback(() => {
     return listPhotos(folder)
@@ -116,7 +177,7 @@ export const PhotoGrid = forwardRef<PhotoGridRef, Props>(function PhotoGrid(
             onError={() => onDismissUpload(upload.key)}
           />
         ))}
-      <div className="fade-in grid grid-cols-2 gap-2 sm:grid-cols-3 md:grid-cols-4">
+      <div className="fade-in grid select-none grid-cols-2 gap-2 sm:grid-cols-3 md:grid-cols-4">
         {activeUploads.map((upload) => (
           <UploadTile
             key={upload.key}
@@ -127,8 +188,11 @@ export const PhotoGrid = forwardRef<PhotoGridRef, Props>(function PhotoGrid(
         {visiblePhotos.map((photo) => (
           <button
             key={photo.id}
-            onClick={() => setActive(photo)}
-            className="group relative aspect-square overflow-hidden rounded-md bg-foreground/5"
+            onClick={(e) => onClick(e, photo)}
+            onDoubleClick={() => onDoubleClick(photo)}
+            className={`group relative aspect-square overflow-hidden rounded-md border-2 bg-foreground/5 ${
+              isSelected(photo.id) ? "border-accent" : "border-transparent"
+            }`}
           >
             {photo.processingStatus === "completed" ? (
               <img
@@ -136,6 +200,7 @@ export const PhotoGrid = forwardRef<PhotoGridRef, Props>(function PhotoGrid(
                 alt={photo.filename}
                 className="h-full w-full object-cover"
                 loading="lazy"
+                draggable={false}
               />
             ) : (
               <div className="flex h-full items-center justify-center">
@@ -147,6 +212,7 @@ export const PhotoGrid = forwardRef<PhotoGridRef, Props>(function PhotoGrid(
                 </span>
               </div>
             )}
+            {isSelected(photo.id) && <SelectionCheck />}
           </button>
         ))}
       </div>
