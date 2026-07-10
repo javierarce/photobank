@@ -8,6 +8,7 @@ import {
 import { imageUrl } from "@/lib/image-url";
 import { listPhotos } from "@/lib/api";
 import { PhotoLightbox } from "@/components/photo-lightbox";
+import { SelectionCheck } from "@/components/selection-check";
 import { usePhotoActions } from "@/hooks/use-photo-actions";
 import { useSelection, useThumbnailActivation } from "@/hooks/use-selection";
 import type { UploadFile } from "@/hooks/use-upload";
@@ -189,8 +190,8 @@ export const PhotoGrid = forwardRef<PhotoGridRef, Props>(function PhotoGrid(
             key={photo.id}
             onClick={(e) => onClick(e, photo)}
             onDoubleClick={() => onDoubleClick(photo)}
-            className={`group relative aspect-square overflow-hidden rounded-md border bg-foreground/5 ${
-              isSelected(photo.id) ? "border-foreground/40" : "border-transparent"
+            className={`group relative aspect-square overflow-hidden rounded-md border-2 bg-foreground/5 ${
+              isSelected(photo.id) ? "border-accent" : "border-transparent"
             }`}
           >
             {photo.processingStatus === "completed" ? (
@@ -211,6 +212,7 @@ export const PhotoGrid = forwardRef<PhotoGridRef, Props>(function PhotoGrid(
                 </span>
               </div>
             )}
+            {isSelected(photo.id) && <SelectionCheck />}
           </button>
         ))}
       </div>
