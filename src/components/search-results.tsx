@@ -1,9 +1,12 @@
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { imageUrl } from "@/lib/image-url";
-import { exportPhotos, searchPhotos } from "@/lib/api";
+import { searchPhotos } from "@/lib/api";
 import { PhotoLightbox } from "@/components/photo-lightbox";
+import { SelectionCheck } from "@/components/selection-check";
+import { SelectionToolbar } from "@/components/selection-toolbar";
 import { usePhotoActions } from "@/hooks/use-photo-actions";
+import { useSelection, useThumbnailActivation } from "@/hooks/use-selection";
 
 export function SearchResults() {
   const [searchParams] = useSearchParams();
@@ -16,6 +19,8 @@ export function SearchResults() {
     setActive,
     handleDelete,
     handleMove,
+    handleBulkDelete,
+    handleBulkMove,
     handleRename,
   } = usePhotoActions();
   const searchKey = q || tag ? `${q}|${tag}` : null;
@@ -28,20 +33,61 @@ export function SearchResults() {
   if (status.key !== searchKey) {
     setStatus({ key: searchKey, state: searchKey ? "loading" : "idle" });
   }
-  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
 
-  const clearSelection = useCallback(() => {
-    setSelectedIds(new Set());
-  }, []);
+  const { selected, isSelected, clear, selectAll, setPool, setActions } =
+    useSelection();
+  const { onClick, onDoubleClick } = useThumbnailActivation(setActive);
+
+  // Expose bulk actions + the selectable pool to the toolbar while results
+  // are on screen.
+  useEffect(() => {
+    setActions({
+      onDelete: async (targets) => {
+        if (await handleBulkDelete(targets)) clear();
+      },
+      onMove: async (targets) => {
+        if (await handleBulkMove(targets)) clear();
+      },
+    });
+    return () => setActions(null);
+  }, [setActions, handleBulkDelete, handleBulkMove, clear]);
 
   useEffect(() => {
-    if (!selectedIds.size || active) return;
+    setPool(photos);
+    return () => setPool([]);
+  }, [photos, setPool]);
+
+  // A new search is a fresh set of results; drop any lingering selection.
+  useEffect(() => {
+    return () => clear();
+  }, [searchKey, clear]);
+
+  // Escape clears the selection; Cmd/Ctrl+A selects everything. Both yield to
+  // the lightbox and to text fields.
+  useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape") clearSelection();
+      if (active) return;
+      if (e.key === "Escape" && selected.length) {
+        clear();
+        return;
+      }
+      if ((e.metaKey || e.ctrlKey) && (e.key === "a" || e.key === "A")) {
+        const target = e.target as HTMLElement;
+        if (
+          target.tagName === "INPUT" ||
+          target.tagName === "TEXTAREA" ||
+          target.isContentEditable
+        ) {
+          return;
+        }
+        if (!photos.length) return;
+        e.preventDefault();
+        selectAll(photos);
+      }
     };
     document.addEventListener("keydown", handleKeyDown);
     return () => document.removeEventListener("keydown", handleKeyDown);
-  }, [selectedIds.size, active, clearSelection]);
+  }, [selected.length, active, clear, selectAll, photos]);
 
   useEffect(() => {
     if (!q && !tag) return;
@@ -63,26 +109,6 @@ export function SearchResults() {
     };
   }, [q, tag, setPhotos]);
 
-  const toggleSelect = (id: string) => {
-    setSelectedIds((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-  };
-
-  const handleBulkDownload = async () => {
-    if (!selectedIds.size) return;
-    try {
-      // Opens a save dialog on the Rust side; resolves with the written path
-      // or null when the user cancels.
-      await exportPhotos(Array.from(selectedIds));
-    } catch {
-      alert("Failed to export photos");
-    }
-  };
-
   if (status.state === "loading") {
     return <p className="text-sm text-foreground/60">Searching...</p>;
   }
@@ -100,66 +126,47 @@ export function SearchResults() {
   }
 
   return (
-    <div className="flex flex-col gap-4" onClick={(e) => {
-      if (e.target === e.currentTarget) clearSelection();
-    }}>
-      <div className="flex items-center justify-between">
-        <p className="text-sm text-foreground/60">
-          {photos.length} {photos.length === 1 ? "result" : "results"}
-        </p>
-        {selectedIds.size > 0 && (
-          <button
-            onClick={handleBulkDownload}
-            className="rounded-lg bg-foreground px-3 py-1.5 text-sm font-medium text-background transition-colors hover:bg-foreground/85"
-          >
-            Download {selectedIds.size} selected
-          </button>
+    <div className="flex flex-col gap-4">
+      <div className="flex min-h-[34px] items-center justify-between gap-4">
+        {selected.length > 0 ? (
+          <SelectionToolbar />
+        ) : (
+          <p className="text-sm text-foreground/60">
+            {photos.length} {photos.length === 1 ? "result" : "results"}
+          </p>
         )}
       </div>
-      <div className="fade-in grid grid-cols-2 gap-2 sm:grid-cols-3 md:grid-cols-4">
+      <div className="fade-in grid select-none grid-cols-2 gap-2 sm:grid-cols-3 md:grid-cols-4">
         {photos.map((photo) => (
-          <div
+          <button
             key={photo.id}
-            className={`group relative aspect-square overflow-hidden rounded-md bg-foreground/5 ${
-              selectedIds.has(photo.id)
-                ? "ring-2 ring-accent ring-offset-2 ring-offset-background"
-                : ""
+            onClick={(e) => onClick(e, photo)}
+            onDoubleClick={() => onDoubleClick(photo)}
+            className={`group relative aspect-square overflow-hidden rounded-md border-2 bg-foreground/5 ${
+              isSelected(photo.id) ? "border-accent" : "border-transparent"
             }`}
           >
-            <button
-              onClick={() => setActive(photo)}
-              className="h-full w-full"
-            >
-              {photo.processingStatus === "completed" ? (
-                <img
-                  src={imageUrl(photo.s3Key, "640", "webp")}
-                  alt={photo.filename}
-                  className="h-full w-full object-cover"
-                  loading="lazy"
-                />
-              ) : (
-                <div className="flex h-full items-center justify-center">
-                  <span className="text-xs text-foreground/40">
-                    {photo.processingStatus}
-                  </span>
-                </div>
-              )}
-              <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/60 to-transparent px-2 pb-2 pt-6">
-                <p className="truncate text-xs text-white">
-                  {photo.filename}
-                </p>
-                <p className="text-[10px] text-white/70">{photo.folder}</p>
-              </div>
-            </button>
-            <label className="absolute right-2 top-2 z-10">
-              <input
-                type="checkbox"
-                checked={selectedIds.has(photo.id)}
-                onChange={() => toggleSelect(photo.id)}
-                className="size-4 accent-foreground"
+            {photo.processingStatus === "completed" ? (
+              <img
+                src={imageUrl(photo.s3Key, "640", "webp")}
+                alt={photo.filename}
+                className="h-full w-full object-cover"
+                loading="lazy"
+                draggable={false}
               />
-            </label>
-          </div>
+            ) : (
+              <div className="flex h-full items-center justify-center">
+                <span className="text-xs text-foreground/40">
+                  {photo.processingStatus}
+                </span>
+              </div>
+            )}
+            <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/60 to-transparent px-2 pb-2 pt-6">
+              <p className="truncate text-xs text-white">{photo.filename}</p>
+              <p className="text-[10px] text-white/70">{photo.folder}</p>
+            </div>
+            {isSelected(photo.id) && <SelectionCheck />}
+          </button>
         ))}
       </div>
 

@@ -14,7 +14,8 @@ mod protocol;
 mod settings;
 
 use std::sync::Mutex;
-use tauri::Manager;
+use tauri::menu::{Menu, MenuItem, MenuItemKind};
+use tauri::{Emitter, Manager};
 
 fn main() {
     tauri::Builder::default()
@@ -34,6 +35,29 @@ fn main() {
             app.manage(db::Db(Mutex::new(conn)));
             app.manage(settings::S3State::default());
             app.manage(manifest::ManifestState::default());
+
+            // Native menu: start from the default macOS menu and slip a
+            // "Settings…" item (Cmd+,) into the app submenu, right after About.
+            let menu = Menu::default(app.handle())?;
+            let settings_item = MenuItem::with_id(
+                app.handle(),
+                "settings",
+                "Settings…",
+                true,
+                Some("CmdOrCtrl+,"),
+            )?;
+            if let Some(MenuItemKind::Submenu(app_menu)) = menu.items()?.into_iter().next() {
+                // Position 1 lands it after About and before the existing
+                // separator, so it reads: About / Settings… / --- / Services.
+                app_menu.insert(&settings_item, 1)?;
+            }
+            app.set_menu(menu)?;
+            app.on_menu_event(|app, event| {
+                if event.id() == "settings" {
+                    let _ = app.emit("menu://settings", ());
+                }
+            });
+
             // Build the S3 client from saved settings + Keychain off the main
             // thread; the UI shows "not configured" states until it lands.
             let handle = app.handle().clone();
