@@ -66,7 +66,11 @@ export function PhotoLightbox({
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4"
-      onClick={onClose}
+      onClick={(e) => {
+        // Don't let the backdrop click bubble to the page's deselect handler.
+        e.stopPropagation();
+        onClose();
+      }}
     >
       <div
         className="relative flex max-h-[90vh] w-[min(95vw,1200px)] overflow-hidden rounded-lg bg-background"
