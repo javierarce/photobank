@@ -1,7 +1,6 @@
-"use client";
-
 import { useEffect, useRef, useState } from "react";
 import { imageUrl } from "@/lib/image-url";
+import { exportPhotos } from "@/lib/api";
 import { PhotoTags } from "@/components/photo-tags";
 import type { Photo } from "@/lib/types";
 
@@ -264,21 +263,17 @@ export function PhotoLightbox({
                 Move
               </button>
             )}
-            {renaming ? (
-              <span
-                className="block w-full rounded-md border border-border px-3 py-1.5 text-center text-sm opacity-50"
-              >
-                Download
-              </span>
-            ) : (
-              <a
-                href={imageUrl(photo.s3Key, "2880", "jpg")}
-                download
-                className="block w-full rounded-md border border-border px-3 py-1.5 text-center text-sm transition-colors hover:bg-foreground/5"
-              >
-                Download
-              </a>
-            )}
+            <button
+              onClick={() =>
+                exportPhotos([photo.id]).catch(() =>
+                  alert("Failed to export photo")
+                )
+              }
+              disabled={renaming}
+              className="w-full rounded-md border border-border px-3 py-1.5 text-center text-sm transition-colors hover:bg-foreground/5 disabled:opacity-50 disabled:pointer-events-none"
+            >
+              Download
+            </button>
             {onDelete && (
               <button
                 onClick={() => onDelete(photo)}

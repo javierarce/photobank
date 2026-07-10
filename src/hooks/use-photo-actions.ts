@@ -1,6 +1,5 @@
-"use client";
-
 import { useState } from "react";
+import { deletePhoto, updatePhoto } from "@/lib/api";
 import type { Photo } from "@/lib/types";
 
 /**
@@ -15,11 +14,11 @@ export function usePhotoActions() {
   const handleDelete = async (photo: Photo) => {
     if (!confirm(`Delete ${photo.filename}?`)) return;
 
-    const res = await fetch(`/api/photos/${photo.id}`, { method: "DELETE" });
-    if (res.ok) {
+    try {
+      await deletePhoto(photo.id);
       setPhotos((prev) => prev.filter((p) => p.id !== photo.id));
       setActive((prev) => (prev?.id === photo.id ? null : prev));
-    } else {
+    } catch {
       alert("Failed to delete photo");
     }
   };
@@ -28,31 +27,21 @@ export function usePhotoActions() {
     const newFolder = prompt("Move to folder:", photo.folder)?.trim();
     if (!newFolder || newFolder === photo.folder) return;
 
-    const res = await fetch(`/api/photos/${photo.id}`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ folder: newFolder }),
-    });
-    if (res.ok) {
+    try {
+      await updatePhoto(photo.id, { folder: newFolder });
       setPhotos((prev) => prev.filter((p) => p.id !== photo.id));
       setActive((prev) => (prev?.id === photo.id ? null : prev));
-    } else {
-      const body = await res.json().catch(() => null);
-      alert(body?.error ?? "Failed to move photo");
+    } catch (err) {
+      alert(typeof err === "string" ? err : "Failed to move photo");
     }
   };
 
   const handleRename = async (photo: Photo, newFilename: string) => {
-    const res = await fetch(`/api/photos/${photo.id}`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ filename: newFilename }),
-    });
-    if (res.ok) {
-      const { photo: updated } = await res.json();
+    try {
+      const updated = await updatePhoto(photo.id, { filename: newFilename });
       setPhotos((prev) => prev.map((p) => (p.id === photo.id ? updated : p)));
       setActive((prev) => (prev?.id === photo.id ? updated : prev));
-    } else {
+    } catch {
       setPhotos((prev) => prev.map((p) => (p.id === photo.id ? photo : p)));
       setActive((prev) => (prev?.id === photo.id ? photo : prev));
       throw new Error("Failed to rename");

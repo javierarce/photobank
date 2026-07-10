@@ -1,30 +1,21 @@
-"use client";
-
 import { useEffect, useState, useCallback, useImperativeHandle, forwardRef } from "react";
-import Link from "next/link";
-
-type Folder = {
-  folder: string;
-  count: number;
-};
+import { Link } from "react-router-dom";
+import { listFolders } from "@/lib/api";
+import type { FolderCount } from "@/lib/types";
 
 export type FolderListRef = {
   refresh: () => void;
 };
 
 export const FolderList = forwardRef<FolderListRef>(function FolderList(_, ref) {
-  const [folders, setFolders] = useState<Folder[]>([]);
+  const [folders, setFolders] = useState<FolderCount[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   const loadFolders = useCallback(() => {
-    fetch("/api/folders")
-      .then((r) => {
-        if (!r.ok) throw new Error(`HTTP ${r.status}`);
-        return r.json();
-      })
-      .then((data) => {
-        setFolders(data.folders);
+    listFolders()
+      .then((folders) => {
+        setFolders(folders);
         setError(null);
       })
       .catch(() => setError("Failed to load folders."))
@@ -54,7 +45,7 @@ export const FolderList = forwardRef<FolderListRef>(function FolderList(_, ref) 
       {folders.map((f) => (
         <Link
           key={f.folder}
-          href={`/folders/${encodeURIComponent(f.folder)}`}
+          to={`/folders/${encodeURIComponent(f.folder)}`}
           className="group flex flex-col gap-1 rounded-lg border border-border p-4 transition-colors hover:border-foreground/35"
         >
           <span className="text-sm font-medium text-foreground group-hover:underline">

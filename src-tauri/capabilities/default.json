@@ -1,0 +1,16 @@
+{
+  "identifier": "default",
+  "description": "Default capabilities for the main window",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "core:window:allow-start-dragging",
+    "shell:allow-open",
+    "os:default",
+    "process:default",
+    "updater:default",
+    "dialog:allow-open",
+    "dialog:allow-save",
+    "dialog:allow-ask"
+  ]
+}

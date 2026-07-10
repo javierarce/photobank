@@ -1,8 +1,6 @@
-"use client";
-
 import { useEffect, useState, useRef } from "react";
-
-type Tag = { id: string; name: string };
+import { addPhotoTag, getPhotoTags, listTags, removePhotoTag } from "@/lib/api";
+import type { Tag } from "@/lib/types";
 
 export function PhotoTags({ photoId, disabled = false }: { photoId: string; disabled?: boolean }) {
   const [tags, setTags] = useState<Tag[]>([]);
@@ -12,44 +10,38 @@ export function PhotoTags({ photoId, disabled = false }: { photoId: string; disa
   const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
-    fetch(`/api/photos/${photoId}/tags`)
-      .then((r) => r.json())
-      .then((data) => setTags(data.tags))
+    getPhotoTags(photoId)
+      .then(setTags)
       .catch(() => {});
-    fetch("/api/tags")
-      .then((r) => r.json())
-      .then((data) => setAllTags(data.tags))
+    listTags()
+      .then(setAllTags)
       .catch(() => {});
   }, [photoId]);
 
   const addTag = async (name: string) => {
     if (!name.trim()) return;
-    const res = await fetch(`/api/photos/${photoId}/tags`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name: name.trim() }),
-    });
-    if (res.ok) {
-      const { tag } = await res.json();
+    try {
+      const tag = await addPhotoTag(photoId, name.trim());
       setTags((prev) =>
         prev.some((t) => t.id === tag.id) ? prev : [...prev, tag]
       );
       setAllTags((prev) =>
         prev.some((t) => t.id === tag.id) ? prev : [...prev, tag]
       );
+    } catch {
+      // Leave the input as typed so the user can retry
+      return;
     }
     setInput("");
     setShowSuggestions(false);
   };
 
   const removeTag = async (tagId: string) => {
-    const res = await fetch(`/api/photos/${photoId}/tags`, {
-      method: "DELETE",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ tagId }),
-    });
-    if (res.ok) {
+    try {
+      await removePhotoTag(photoId, tagId);
       setTags((prev) => prev.filter((t) => t.id !== tagId));
+    } catch {
+      // Keep the tag; removal failed
     }
   };
 
