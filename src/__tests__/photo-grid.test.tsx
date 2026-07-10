@@ -7,24 +7,35 @@ import {
   fireEvent,
 } from "@testing-library/react";
 import { PhotoGrid } from "@/components/photo-grid";
+import { listPhotos } from "@/lib/api";
 import type { Photo } from "@/lib/types";
 import type { UploadFile } from "@/hooks/use-upload";
 import { makePhoto } from "./fixtures";
 
+vi.mock("@/lib/api", () => ({
+  listPhotos: vi.fn(),
+  deletePhoto: vi.fn(),
+  updatePhoto: vi.fn(),
+}));
+
+vi.mock("@/components/photo-lightbox", () => ({
+  PhotoLightbox: () => <div data-testid="lightbox" />,
+}));
+
+const mockListPhotos = vi.mocked(listPhotos);
+
+// An in-flight import tile. Unlike the old web flow there is no local File or
+// object URL — native drag-drop gives paths, so the tile shows the filename
+// until the processed thumbnail takes over.
 function makeUpload(overrides: Partial<UploadFile> = {}): UploadFile {
   return {
     key: "u1",
-    file: new File(["x"], "beach.jpg", { type: "image/jpeg" }),
-    previewUrl: "blob:preview-1",
+    filename: "beach.jpg",
     status: "done",
     progress: 100,
     ...overrides,
   };
 }
-
-vi.mock("@/components/photo-lightbox", () => ({
-  PhotoLightbox: () => <div data-testid="lightbox" />,
-}));
 
 const mockPhotos: Photo[] = [
   makePhoto({
@@ -54,7 +65,7 @@ const mockPhotos: Photo[] = [
 ];
 
 beforeEach(() => {
-  vi.restoreAllMocks();
+  vi.clearAllMocks();
 });
 
 afterEach(() => {
@@ -63,17 +74,14 @@ afterEach(() => {
 
 describe("PhotoGrid", () => {
   it("shows loading state initially", () => {
-    vi.spyOn(global, "fetch").mockReturnValueOnce(new Promise(() => {}));
+    mockListPhotos.mockReturnValueOnce(new Promise(() => {}));
     render(<PhotoGrid folder="vacation" />);
 
     expect(screen.getByText("Loading photos...")).toBeInTheDocument();
   });
 
   it("shows empty state when folder has no photos", async () => {
-    vi.spyOn(global, "fetch").mockResolvedValueOnce({
-      ok: true,
-      json: () => Promise.resolve({ photos: [] }),
-    } as Response);
+    mockListPhotos.mockResolvedValueOnce([]);
 
     render(<PhotoGrid folder="empty" />);
 
@@ -85,10 +93,7 @@ describe("PhotoGrid", () => {
   });
 
   it("renders completed photos as images", async () => {
-    vi.spyOn(global, "fetch").mockResolvedValueOnce({
-      ok: true,
-      json: () => Promise.resolve({ photos: [mockPhotos[0]] }),
-    } as Response);
+    mockListPhotos.mockResolvedValueOnce([mockPhotos[0]]);
 
     render(<PhotoGrid folder="vacation" />);
 
@@ -98,10 +103,7 @@ describe("PhotoGrid", () => {
   });
 
   it("shows processing status for non-completed photos", async () => {
-    vi.spyOn(global, "fetch").mockResolvedValueOnce({
-      ok: true,
-      json: () => Promise.resolve({ photos: mockPhotos }),
-    } as Response);
+    mockListPhotos.mockResolvedValueOnce(mockPhotos);
 
     render(<PhotoGrid folder="vacation" />);
 
@@ -111,60 +113,43 @@ describe("PhotoGrid", () => {
     });
   });
 
-  it("fetches photos for the correct folder", async () => {
-    const fetchSpy = vi.spyOn(global, "fetch").mockResolvedValueOnce({
-      ok: true,
-      json: () => Promise.resolve({ photos: [] }),
-    } as Response);
+  it("loads photos for the correct folder", async () => {
+    mockListPhotos.mockResolvedValueOnce([]);
 
     render(<PhotoGrid folder="barcelona" />);
 
     await waitFor(() => {
-      expect(fetchSpy).toHaveBeenCalledWith(
-        "/api/photos?folder=barcelona"
-      );
+      expect(mockListPhotos).toHaveBeenCalledWith("barcelona");
     });
   });
 
-  it("encodes folder name in API request", async () => {
-    const fetchSpy = vi.spyOn(global, "fetch").mockResolvedValueOnce({
-      ok: true,
-      json: () => Promise.resolve({ photos: [] }),
-    } as Response);
+  it("shows an error message when loading fails", async () => {
+    mockListPhotos.mockRejectedValueOnce("boom");
 
-    render(<PhotoGrid folder="my photos" />);
+    render(<PhotoGrid folder="vacation" />);
 
     await waitFor(() => {
-      expect(fetchSpy).toHaveBeenCalledWith(
-        "/api/photos?folder=my%20photos"
-      );
+      expect(screen.getByText("Failed to load photos.")).toBeInTheDocument();
     });
   });
 
-  it("keeps the upload preview instead of the Pending tile while processing", async () => {
-    vi.spyOn(global, "fetch").mockResolvedValueOnce({
-      ok: true,
-      json: () => Promise.resolve({ photos: [mockPhotos[1]] }),
-    } as Response);
+  it("keeps the upload tile instead of the Pending photo tile while processing", async () => {
+    mockListPhotos.mockResolvedValueOnce([mockPhotos[1]]);
 
-    const upload = makeUpload({ id: "2", file: new File(["x"], "pending.jpg") });
+    const upload = makeUpload({ id: "2", filename: "pending.jpg" });
     render(<PhotoGrid folder="vacation" uploads={[upload]} />);
 
     await waitFor(() => {
-      expect(screen.getByAltText("pending.jpg")).toHaveAttribute(
-        "src",
-        "blob:preview-1"
-      );
+      expect(screen.getByText("Processing…")).toBeInTheDocument();
     });
-    expect(screen.getByText("Processing…")).toBeInTheDocument();
+    // The upload tile shows the filename; the photo's own "Pending..." tile
+    // stays hidden until the tile hands off.
+    expect(screen.getByText("pending.jpg")).toBeInTheDocument();
     expect(screen.queryByText("Pending...")).not.toBeInTheDocument();
   });
 
   it("dismisses the upload only after the real thumbnail has loaded", async () => {
-    vi.spyOn(global, "fetch").mockResolvedValueOnce({
-      ok: true,
-      json: () => Promise.resolve({ photos: [mockPhotos[0]] }),
-    } as Response);
+    mockListPhotos.mockResolvedValueOnce([mockPhotos[0]]);
 
     const onDismiss = vi.fn();
     const upload = makeUpload({ id: "1" });
@@ -174,10 +159,7 @@ describe("PhotoGrid", () => {
 
     // Photo is completed, but the upload tile stays until the variant loads
     await waitFor(() => {
-      expect(screen.getByAltText("beach.jpg")).toHaveAttribute(
-        "src",
-        "blob:preview-1"
-      );
+      expect(container.querySelector("img.hidden")).toBeInTheDocument();
     });
     expect(onDismiss).not.toHaveBeenCalled();
 
@@ -186,13 +168,10 @@ describe("PhotoGrid", () => {
   });
 
   it("dismisses the upload when processing fails so the photo tile shows the error", async () => {
-    vi.spyOn(global, "fetch").mockResolvedValueOnce({
-      ok: true,
-      json: () => Promise.resolve({ photos: [mockPhotos[2]] }),
-    } as Response);
+    mockListPhotos.mockResolvedValueOnce([mockPhotos[2]]);
 
     const onDismiss = vi.fn();
-    const upload = makeUpload({ id: "3" });
+    const upload = makeUpload({ id: "3", filename: "failed.jpg" });
     render(
       <PhotoGrid folder="vacation" uploads={[upload]} onDismissUpload={onDismiss} />
     );

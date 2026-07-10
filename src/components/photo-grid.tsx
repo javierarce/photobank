@@ -1,5 +1,3 @@
-"use client";
-
 import {
   useEffect,
   useState,
@@ -8,6 +6,7 @@ import {
   forwardRef,
 } from "react";
 import { imageUrl } from "@/lib/image-url";
+import { listPhotos } from "@/lib/api";
 import { PhotoLightbox } from "@/components/photo-lightbox";
 import { usePhotoActions } from "@/hooks/use-photo-actions";
 import type { UploadFile } from "@/hooks/use-upload";
@@ -40,13 +39,9 @@ export const PhotoGrid = forwardRef<PhotoGridRef, Props>(function PhotoGrid(
   const [error, setError] = useState<string | null>(null);
 
   const loadPhotos = useCallback(() => {
-    return fetch(`/api/photos?folder=${encodeURIComponent(folder)}`)
-      .then((r) => {
-        if (!r.ok) throw new Error(`HTTP ${r.status}`);
-        return r.json();
-      })
-      .then((data) => {
-        setPhotos(data.photos);
+    return listPhotos(folder)
+      .then((photos) => {
+        setPhotos(photos);
         setError(null);
       })
       .catch(() => setError("Failed to load photos."))
@@ -169,7 +164,9 @@ export const PhotoGrid = forwardRef<PhotoGridRef, Props>(function PhotoGrid(
   );
 });
 
-/** A grid tile for an in-flight upload: image preview + inline progress. */
+/** A grid tile for an in-flight import: filename + inline progress. The
+ * pixels arrive when the finished photo replaces this tile, so the preview
+ * is a quiet placeholder rather than a local file read. */
 function UploadTile({
   upload,
   onDismiss,
@@ -181,17 +178,14 @@ function UploadTile({
 
   return (
     <div className="fade-in relative aspect-square overflow-hidden rounded-md bg-foreground/5">
-      <img
-        src={upload.previewUrl}
-        alt={upload.file.name}
-        className="h-full w-full object-cover"
-      />
-      <div
-        className={`absolute inset-0 ${failed ? "bg-red-950/50" : "bg-background/40"}`}
-      />
+      <div className="flex h-full items-center justify-center p-3">
+        <span className="max-w-full truncate font-mono text-xs text-foreground/50">
+          {upload.filename}
+        </span>
+      </div>
 
       {failed ? (
-        <div className="absolute inset-0 flex flex-col items-center justify-center gap-2">
+        <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-red-950/50">
           <span className="text-xs font-medium text-red-100">Failed</span>
           {onDismiss && (
             <button

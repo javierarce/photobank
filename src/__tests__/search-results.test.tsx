@@ -1,20 +1,23 @@
 import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
 import { render, screen, cleanup, waitFor } from "@testing-library/react";
+import { MemoryRouter } from "react-router-dom";
 import { SearchResults } from "@/components/search-results";
+import { searchPhotos } from "@/lib/api";
 import type { Photo } from "@/lib/types";
 import { makePhoto } from "./fixtures";
 
-const mockSearchParams = new Map<string, string>();
-
-vi.mock("next/navigation", () => ({
-  useSearchParams: () => ({
-    get: (key: string) => mockSearchParams.get(key) || "",
-  }),
+vi.mock("@/lib/api", () => ({
+  searchPhotos: vi.fn(),
+  exportPhotos: vi.fn(),
+  deletePhoto: vi.fn(),
+  updatePhoto: vi.fn(),
 }));
 
 vi.mock("@/components/photo-lightbox", () => ({
   PhotoLightbox: () => <div data-testid="lightbox" />,
 }));
+
+const mockSearchPhotos = vi.mocked(searchPhotos);
 
 const mockPhotos: Photo[] = [
   makePhoto({
@@ -35,29 +38,33 @@ const mockPhotos: Photo[] = [
   }),
 ];
 
+function renderSearch(params: Record<string, string> = {}) {
+  const query = new URLSearchParams(params).toString();
+  return render(
+    <MemoryRouter initialEntries={[query ? `/search?${query}` : "/search"]}>
+      <SearchResults />
+    </MemoryRouter>
+  );
+}
+
 beforeEach(() => {
-  mockSearchParams.clear();
+  vi.clearAllMocks();
 });
 
 afterEach(() => {
   cleanup();
-  vi.restoreAllMocks();
 });
 
 describe("SearchResults", () => {
   it("shows prompt when no search term is provided", () => {
-    render(<SearchResults />);
+    renderSearch();
     expect(screen.getByText("Enter a search term.")).toBeInTheDocument();
   });
 
   it("fetches and displays results when q is set", async () => {
-    mockSearchParams.set("q", "beach");
-    vi.spyOn(global, "fetch").mockResolvedValueOnce({
-      ok: true,
-      json: () => Promise.resolve({ photos: [mockPhotos[0]] }),
-    } as Response);
+    mockSearchPhotos.mockResolvedValueOnce([mockPhotos[0]]);
 
-    render(<SearchResults />);
+    renderSearch({ q: "beach" });
 
     await waitFor(() => {
       expect(screen.getByText("beach.jpg")).toBeInTheDocument();
@@ -66,13 +73,9 @@ describe("SearchResults", () => {
   });
 
   it("fetches and displays results when tag is set", async () => {
-    mockSearchParams.set("tag", "landscape");
-    vi.spyOn(global, "fetch").mockResolvedValueOnce({
-      ok: true,
-      json: () => Promise.resolve({ photos: mockPhotos }),
-    } as Response);
+    mockSearchPhotos.mockResolvedValueOnce(mockPhotos);
 
-    render(<SearchResults />);
+    renderSearch({ tag: "landscape" });
 
     await waitFor(() => {
       expect(screen.getByText("beach.jpg")).toBeInTheDocument();
@@ -82,13 +85,9 @@ describe("SearchResults", () => {
   });
 
   it("shows no results message when search returns empty", async () => {
-    mockSearchParams.set("q", "nonexistent");
-    vi.spyOn(global, "fetch").mockResolvedValueOnce({
-      ok: true,
-      json: () => Promise.resolve({ photos: [] }),
-    } as Response);
+    mockSearchPhotos.mockResolvedValueOnce([]);
 
-    render(<SearchResults />);
+    renderSearch({ q: "nonexistent" });
 
     await waitFor(() => {
       expect(screen.getByText("No results found.")).toBeInTheDocument();
@@ -96,26 +95,33 @@ describe("SearchResults", () => {
   });
 
   it("shows loading state while fetching", () => {
-    mockSearchParams.set("q", "test");
-    vi.spyOn(global, "fetch").mockReturnValueOnce(new Promise(() => {}));
+    mockSearchPhotos.mockReturnValueOnce(new Promise(() => {}));
 
-    render(<SearchResults />);
+    renderSearch({ q: "test" });
 
     expect(screen.getByText("Searching...")).toBeInTheDocument();
   });
 
-  it("passes correct query params to the API", async () => {
-    mockSearchParams.set("q", "sunset");
-    mockSearchParams.set("tag", "golden-hour");
-    const fetchSpy = vi.spyOn(global, "fetch").mockResolvedValueOnce({
-      ok: true,
-      json: () => Promise.resolve({ photos: [] }),
-    } as Response);
+  it("shows an error message when the search fails", async () => {
+    mockSearchPhotos.mockRejectedValueOnce("boom");
 
-    render(<SearchResults />);
+    renderSearch({ q: "sunset" });
 
     await waitFor(() => {
-      expect(fetchSpy).toHaveBeenCalledWith("/api/search?q=sunset&tag=golden-hour");
+      expect(screen.getByText("Search failed.")).toBeInTheDocument();
+    });
+  });
+
+  it("passes correct query params to the API", async () => {
+    mockSearchPhotos.mockResolvedValueOnce([]);
+
+    renderSearch({ q: "sunset", tag: "golden-hour" });
+
+    await waitFor(() => {
+      expect(mockSearchPhotos).toHaveBeenCalledWith({
+        q: "sunset",
+        tag: "golden-hour",
+      });
     });
   });
 });

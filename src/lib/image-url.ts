@@ -1,14 +1,12 @@
 import { baseKey, encodeKey, type VariantWidth, type VariantFormat } from "./keys";
 
-const CDN_BASE = process.env.NEXT_PUBLIC_CDN_URL;
-
 type Resolution = `${VariantWidth}`;
 
+// Served by the `photo://` protocol handler in src-tauri: it returns the
+// object from the local disk cache, fetching it from S3 first when missing.
+// WKWebView rewrites custom schemes to http://<scheme>.localhost/<path>.
 function resolveUrl(key: string) {
-  if (CDN_BASE) {
-    return `${CDN_BASE}/${encodeKey(key)}`;
-  }
-  return `/api/images?key=${encodeURIComponent(key)}`;
+  return `photo://localhost/${encodeKey(key)}`;
 }
 
 export function imageUrl(

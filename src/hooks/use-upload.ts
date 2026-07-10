@@ -1,16 +1,18 @@
-"use client";
-
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { listen } from "@tauri-apps/api/event";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
+import { open } from "@tauri-apps/plugin-dialog";
+import { importPhotos } from "@/lib/api";
 
 export type UploadFile = {
-  /** Stable client-side key; the DB id only exists once the API responds. */
+  /** Stable key: "folder/filename" — matches import://progress events. */
   key: string;
-  file: File;
-  /** Local object URL used to preview the image while it uploads. */
-  previewUrl: string;
+  filename: string;
+  /** The catalog id, once the importer has created the row. */
   id?: string;
   status: "pending" | "uploading" | "done" | "error";
   progress: number;
+  error?: string;
 };
 
 type Options = {
@@ -18,173 +20,147 @@ type Options = {
   onUploadComplete?: () => void;
 };
 
+type ImportProgressEvent = {
+  key: string;
+  photoId: string | null;
+  filename: string;
+  folder: string;
+  progress: number;
+  status: "starting" | "processing" | "uploading" | "done" | "error";
+  error: string | null;
+};
+
+const IMPORT_EXTENSIONS = ["jpg", "jpeg", "png", "webp", "gif", "tif", "tiff", "bmp"];
+
+function isImportable(path: string) {
+  const ext = path.split(".").pop()?.toLowerCase();
+  return !!ext && IMPORT_EXTENSIONS.includes(ext);
+}
+
+function basename(path: string) {
+  return path.split("/").pop() ?? path;
+}
+
 /**
- * Upload state + drag-and-drop plumbing shared by the folder page. Returns the
- * in-flight file list, a drag-active flag, handlers to spread over any element
- * that should accept drops, and a trigger that opens the native file picker.
+ * Import state + drag-and-drop plumbing. File drops come from Tauri's
+ * native drag-drop events (real paths, not File objects); processing and
+ * upload progress stream back as import://progress events from Rust.
  */
 export function useUpload({ folder = "inbox", onUploadComplete }: Options = {}) {
   const [files, setFiles] = useState<UploadFile[]>([]);
   const [isDragging, setIsDragging] = useState(false);
-  // Drag events fire per child element, so a plain boolean flickers as the
-  // cursor moves over nested nodes. Counting enter/leave keeps it stable.
-  const dragDepth = useRef(0);
-  const keyCounter = useRef(0);
+  // The listeners live across renders; keep the latest callbacks reachable.
+  const folderRef = useRef(folder);
+  const onCompleteRef = useRef(onUploadComplete);
+  useEffect(() => {
+    folderRef.current = folder;
+    onCompleteRef.current = onUploadComplete;
+  });
 
-  const updateFile = (file: File, update: Partial<UploadFile>) => {
-    setFiles((prev) =>
-      prev.map((f) => (f.file === file ? { ...f, ...update } : f))
-    );
-  };
-
-  // Drop an upload and release its object URL. Used to prune finished uploads
-  // once the real photo has loaded, and to dismiss failed ones.
   const removeUpload = useCallback((key: string) => {
-    setFiles((prev) => {
-      const gone = prev.find((f) => f.key === key);
-      if (gone) URL.revokeObjectURL(gone.previewUrl);
-      return prev.filter((f) => f.key !== key);
-    });
+    setFiles((prev) => prev.filter((f) => f.key !== key));
   }, []);
 
   const clearCompleted = useCallback(() => {
-    setFiles((prev) => {
-      prev.forEach((f) => {
-        if (f.status === "done") URL.revokeObjectURL(f.previewUrl);
-      });
-      return prev.filter((f) => f.status !== "done");
-    });
+    setFiles((prev) => prev.filter((f) => f.status !== "done"));
   }, []);
 
-  const handleFiles = useCallback(
-    async (fileList: FileList) => {
-      const newFiles: UploadFile[] = Array.from(fileList)
-        .filter((f) => f.type.startsWith("image/"))
-        .map((file) => ({
-          key: String(keyCounter.current++),
-          file,
-          previewUrl: URL.createObjectURL(file),
-          status: "pending" as const,
-          progress: 0,
-        }));
+  const handlePaths = useCallback(async (paths: string[]) => {
+    const importable = paths.filter(isImportable);
+    if (!importable.length) return;
+    const targetFolder = folderRef.current;
 
-      if (!newFiles.length) return;
-
-      setFiles((prev) => [...prev, ...newFiles]);
-
-      const response = await fetch("/api/upload", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          folder,
-          files: newFiles.map((f) => ({
-            filename: f.file.name,
-            contentType: f.file.type,
-            size: f.file.size,
-          })),
-        }),
-      });
-
-      if (!response.ok) {
-        const err = await response.json().catch(() => ({}));
-        console.error("[upload] API error:", response.status, err);
-        newFiles.forEach((f) => updateFile(f.file, { status: "error" }));
-        return;
+    setFiles((prev) => {
+      const next = [...prev];
+      for (const path of importable) {
+        const filename = basename(path);
+        const key = `${targetFolder}/${filename}`;
+        const existing = next.findIndex((f) => f.key === key);
+        const entry: UploadFile = { key, filename, status: "pending", progress: 0 };
+        if (existing >= 0) next[existing] = entry;
+        else next.push(entry);
       }
+      return next;
+    });
 
-      const { uploads } = await response.json();
-
-      await Promise.all(
-        uploads.map(
-          async (
-            upload: { id: string; filename: string; presignedUrl: string },
-            i: number
-          ) => {
-            const file = newFiles[i].file;
-
-            updateFile(file, { id: upload.id, status: "uploading" });
-
-            try {
-              const xhr = new XMLHttpRequest();
-
-              xhr.upload.onprogress = (e) => {
-                if (e.lengthComputable) {
-                  const progress = Math.round((e.loaded / e.total) * 100);
-                  updateFile(file, { progress });
-                }
-              };
-
-              await new Promise<void>((resolve, reject) => {
-                xhr.onload = () => {
-                  if (xhr.status >= 200 && xhr.status < 300) {
-                    resolve();
-                  } else {
-                    console.error(
-                      `[upload] S3 responded ${xhr.status}:`,
-                      xhr.responseText
-                    );
-                    reject(new Error(`S3 ${xhr.status}: ${xhr.responseText}`));
-                  }
-                };
-                xhr.onerror = () => reject(new Error("Network error"));
-                xhr.open("PUT", upload.presignedUrl);
-                xhr.setRequestHeader("Content-Type", file.type);
-                xhr.send(file);
-              });
-
-              await fetch("/api/upload/confirm", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ photoIds: [upload.id] }),
-              });
-
-              updateFile(file, { status: "done", progress: 100 });
-            } catch (err) {
-              console.error("[upload] S3 upload failed:", file.name, err);
-              updateFile(file, { status: "error" });
-            }
-          }
+    try {
+      await importPhotos(importable, targetFolder);
+    } catch (err) {
+      // Batch-level failure (e.g. invalid folder); per-file failures arrive
+      // as error events instead.
+      const message = String(err);
+      setFiles((prev) =>
+        prev.map((f) =>
+          f.status === "pending" || f.status === "uploading"
+            ? { ...f, status: "error", error: message }
+            : f
         )
       );
+      return;
+    }
+    onCompleteRef.current?.();
+  }, []);
 
-      onUploadComplete?.();
-    },
-    [folder, onUploadComplete]
-  );
+  const handlePathsRef = useRef(handlePaths);
+  useEffect(() => {
+    handlePathsRef.current = handlePaths;
+  });
 
-  const openFilePicker = useCallback(() => {
-    const input = document.createElement("input");
-    input.type = "file";
-    input.multiple = true;
-    input.accept = "image/*";
-    input.onchange = () => input.files && handleFiles(input.files);
-    input.click();
-  }, [handleFiles]);
+  // Progress events from the Rust importer.
+  useEffect(() => {
+    const unlisten = listen<ImportProgressEvent>("import://progress", (event) => {
+      const p = event.payload;
+      setFiles((prev) =>
+        prev.map((f) => {
+          if (f.key !== p.key) return f;
+          const status =
+            p.status === "done" ? "done" : p.status === "error" ? "error" : "uploading";
+          return {
+            ...f,
+            id: p.photoId ?? f.id,
+            progress: p.progress,
+            status,
+            error: p.error ?? undefined,
+          };
+        })
+      );
+    });
+    return () => {
+      unlisten.then((fn) => fn());
+    };
+  }, []);
 
-  const dragHandlers = {
-    onDragEnter: (e: React.DragEvent) => {
-      e.preventDefault();
-      dragDepth.current += 1;
-      setIsDragging(true);
-    },
-    onDragOver: (e: React.DragEvent) => {
-      e.preventDefault();
-    },
-    onDragLeave: (e: React.DragEvent) => {
-      e.preventDefault();
-      dragDepth.current -= 1;
-      if (dragDepth.current <= 0) {
-        dragDepth.current = 0;
+  // Native file drops. Tauri intercepts OS drags, so HTML5 drop events never
+  // fire; this also means we get real filesystem paths.
+  useEffect(() => {
+    const unlisten = getCurrentWebview().onDragDropEvent((event) => {
+      if (event.payload.type === "enter" || event.payload.type === "over") {
+        setIsDragging(true);
+      } else if (event.payload.type === "leave") {
         setIsDragging(false);
+      } else if (event.payload.type === "drop") {
+        setIsDragging(false);
+        handlePathsRef.current(event.payload.paths);
       }
-    },
-    onDrop: (e: React.DragEvent) => {
-      e.preventDefault();
-      dragDepth.current = 0;
-      setIsDragging(false);
-      handleFiles(e.dataTransfer.files);
-    },
-  };
+    });
+    return () => {
+      unlisten.then((fn) => fn());
+    };
+  }, []);
+
+  const openFilePicker = useCallback(async () => {
+    const selection = await open({
+      multiple: true,
+      filters: [{ name: "Images", extensions: [...IMPORT_EXTENSIONS] }],
+    });
+    if (!selection) return;
+    const paths = Array.isArray(selection) ? selection : [selection];
+    handlePathsRef.current(paths);
+  }, []);
+
+  /** Kept for API compatibility with the old HTML5 implementation; native
+   * drag events replace these entirely. */
+  const dragHandlers = {};
 
   return {
     files,
