@@ -12,16 +12,12 @@ export default function FolderPage() {
     isDragging,
     dragHandlers,
     openFilePicker,
-    clearCompleted,
     removeUpload,
   } = useUpload({
     folder,
-    // Pull in the finished photos, then drop the temporary upload tiles once
-    // the real ones have loaded.
-    onUploadComplete: async () => {
-      await photoGridRef.current?.refresh();
-      clearCompleted();
-    },
+    // Refresh so the grid picks up the new photo rows; the grid dismisses each
+    // upload tile itself once the processed thumbnail is ready to display.
+    onUploadComplete: () => photoGridRef.current?.refresh(),
   });
 
   return (
