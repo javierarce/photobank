@@ -1,6 +1,8 @@
 import { useEffect } from "react";
+import { listen } from "@tauri-apps/api/event";
 import { Routes, Route, useNavigate } from "react-router-dom";
 import { Header } from "@/components/header";
+import { SelectionProvider } from "@/hooks/selection-provider";
 import { getSettings } from "@/lib/api";
 import { checkForUpdates } from "@/lib/updater";
 import HomePage from "@/routes/home";
@@ -22,8 +24,16 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps -- run once on mount
   }, []);
 
+  // The native "Settings…" menu item (Cmd+,) emits this event; open the route.
+  useEffect(() => {
+    const unlisten = listen("menu://settings", () => navigate("/settings"));
+    return () => {
+      unlisten.then((fn) => fn());
+    };
+  }, [navigate]);
+
   return (
-    <>
+    <SelectionProvider>
       <Header />
       <Routes>
         <Route path="/" element={<HomePage />} />
@@ -31,6 +41,6 @@ export default function App() {
         <Route path="/search" element={<SearchPage />} />
         <Route path="/settings" element={<SettingsPage />} />
       </Routes>
-    </>
+    </SelectionProvider>
   );
 }
