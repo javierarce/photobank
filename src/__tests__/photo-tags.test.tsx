@@ -7,61 +7,39 @@ import {
   fireEvent,
 } from "@testing-library/react";
 import { PhotoTags } from "@/components/photo-tags";
+import {
+  addPhotoTag,
+  getPhotoTags,
+  listTags,
+  removePhotoTag,
+} from "@/lib/api";
 
-let fetchCalls: { url: string; options?: RequestInit }[] = [];
+vi.mock("@/lib/api", () => ({
+  getPhotoTags: vi.fn(),
+  listTags: vi.fn(),
+  addPhotoTag: vi.fn(),
+  removePhotoTag: vi.fn(),
+}));
+
+const mockGetPhotoTags = vi.mocked(getPhotoTags);
+const mockListTags = vi.mocked(listTags);
+const mockAddPhotoTag = vi.mocked(addPhotoTag);
+const mockRemovePhotoTag = vi.mocked(removePhotoTag);
 
 beforeEach(() => {
-  fetchCalls = [];
-  vi.spyOn(global, "fetch").mockImplementation(
-    async (input: string | URL | Request, init?: RequestInit) => {
-      const url = typeof input === "string" ? input : input.toString();
-      fetchCalls.push({ url, options: init });
-
-      if (url.endsWith("/tags") && !init?.method) {
-        // GET photo tags or all tags
-        if (url.includes("/photos/")) {
-          return {
-            ok: true,
-            json: () =>
-              Promise.resolve({
-                tags: [{ id: "t1", name: "Landscape" }],
-              }),
-          } as Response;
-        }
-        // GET /api/tags
-        return {
-          ok: true,
-          json: () =>
-            Promise.resolve({
-              tags: [
-                { id: "t1", name: "Landscape" },
-                { id: "t2", name: "Portrait" },
-                { id: "t3", name: "Street" },
-              ],
-            }),
-        } as Response;
-      }
-
-      if (init?.method === "POST") {
-        return {
-          ok: true,
-          json: () =>
-            Promise.resolve({ tag: { id: "t4", name: "NewTag" } }),
-        } as Response;
-      }
-
-      if (init?.method === "DELETE") {
-        return { ok: true, json: () => Promise.resolve({ deleted: true }) } as Response;
-      }
-
-      return { ok: true, json: () => Promise.resolve({}) } as Response;
-    }
-  );
+  vi.clearAllMocks();
+  mockGetPhotoTags.mockResolvedValue([{ id: "t1", name: "Landscape" }]);
+  mockListTags.mockResolvedValue([
+    { id: "t1", name: "Landscape" },
+    { id: "t2", name: "Portrait" },
+    { id: "t3", name: "Street" },
+  ]);
+  mockAddPhotoTag.mockResolvedValue({ id: "t4", name: "NewTag" });
+  mockRemovePhotoTag.mockResolvedValue(undefined);
 });
 
 afterEach(() => {
   cleanup();
-  vi.restoreAllMocks();
 });
 
 describe("PhotoTags", () => {
@@ -77,7 +55,7 @@ describe("PhotoTags", () => {
     render(<PhotoTags photoId="photo-123" />);
 
     await waitFor(() => {
-      expect(fetchCalls.some((c) => c.url === "/api/photos/photo-123/tags")).toBe(true);
+      expect(mockGetPhotoTags).toHaveBeenCalledWith("photo-123");
     });
   });
 
@@ -93,12 +71,9 @@ describe("PhotoTags", () => {
     fireEvent.keyDown(input, { key: "Enter" });
 
     await waitFor(() => {
-      const postCall = fetchCalls.find((c) => c.options?.method === "POST");
-      expect(postCall).toBeDefined();
-      expect(JSON.parse(postCall!.options!.body as string)).toEqual({
-        name: "NewTag",
-      });
+      expect(mockAddPhotoTag).toHaveBeenCalledWith("p1", "NewTag");
     });
+    expect(screen.getByText("NewTag")).toBeInTheDocument();
   });
 
   it("removes a tag when × is clicked", async () => {
@@ -112,14 +87,9 @@ describe("PhotoTags", () => {
     fireEvent.click(removeButton);
 
     await waitFor(() => {
-      const deleteCall = fetchCalls.find(
-        (c) => c.options?.method === "DELETE"
-      );
-      expect(deleteCall).toBeDefined();
-      expect(JSON.parse(deleteCall!.options!.body as string)).toEqual({
-        tagId: "t1",
-      });
+      expect(mockRemovePhotoTag).toHaveBeenCalledWith("p1", "t1");
     });
+    expect(screen.queryByText("Landscape")).not.toBeInTheDocument();
   });
 
   it("shows tag suggestions while typing", async () => {

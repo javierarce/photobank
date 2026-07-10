@@ -1,13 +1,12 @@
-"use client";
-
 import { useEffect, useState, useCallback } from "react";
-import { useSearchParams } from "next/navigation";
+import { useSearchParams } from "react-router-dom";
 import { imageUrl } from "@/lib/image-url";
+import { exportPhotos, searchPhotos } from "@/lib/api";
 import { PhotoLightbox } from "@/components/photo-lightbox";
 import { usePhotoActions } from "@/hooks/use-photo-actions";
 
 export function SearchResults() {
-  const searchParams = useSearchParams();
+  const [searchParams] = useSearchParams();
   const q = searchParams.get("q") || "";
   const tag = searchParams.get("tag") || "";
   const {
@@ -48,18 +47,11 @@ export function SearchResults() {
     if (!q && !tag) return;
     const key = `${q}|${tag}`;
     let cancelled = false;
-    const params = new URLSearchParams();
-    if (q) params.set("q", q);
-    if (tag) params.set("tag", tag);
 
-    fetch(`/api/search?${params}`)
-      .then((r) => {
-        if (!r.ok) throw new Error(`HTTP ${r.status}`);
-        return r.json();
-      })
-      .then((data) => {
+    searchPhotos({ q, tag })
+      .then((photos) => {
         if (cancelled) return;
-        setPhotos(data.photos);
+        setPhotos(photos);
         setStatus({ key, state: "done" });
       })
       .catch(() => {
@@ -82,22 +74,13 @@ export function SearchResults() {
 
   const handleBulkDownload = async () => {
     if (!selectedIds.size) return;
-
-    const res = await fetch("/api/download", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ photoIds: Array.from(selectedIds) }),
-    });
-
-    if (!res.ok) return;
-
-    const blob = await res.blob();
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = "photos.zip";
-    a.click();
-    URL.revokeObjectURL(url);
+    try {
+      // Opens a save dialog on the Rust side; resolves with the written path
+      // or null when the user cancels.
+      await exportPhotos(Array.from(selectedIds));
+    } catch {
+      alert("Failed to export photos");
+    }
   };
 
   if (status.state === "loading") {

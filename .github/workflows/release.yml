@@ -1,0 +1,149 @@
+name: Release
+run-name: Release ${{ github.ref_name }}
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  release:
+    # macos-26 so the binary links against SDK 26: on macOS 26 hosts, apps
+    # built with older SDKs get the legacy title-bar appearance, where the
+    # traffic lights drift ~5px down after a system theme change (the
+    # trafficLightPosition inset is re-applied against a relaid-out title
+    # bar). New-SDK builds are immune.
+    runs-on: macos-26
+    permissions:
+      contents: write
+    steps:
+      # Full history + tags so the release-notes step can diff against the
+      # previous tag.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: "src-tauri -> target"
+
+      - run: npm ci
+
+      # Write the App Store Connect API key (.p8) from a base64 secret so both
+      # tauri-action (app notarization) and the dmg-staple step below can use it.
+      - name: Stage notarization API key
+        run: |
+          echo "${{ secrets.APPLE_API_KEY }}" | base64 --decode > "$RUNNER_TEMP/AuthKey.p8"
+          echo "APPLE_API_KEY_PATH=$RUNNER_TEMP/AuthKey.p8" >> "$GITHUB_ENV"
+
+      # Builds the universal app, signs it with the Developer ID cert (imported
+      # into a temp keychain from APPLE_CERTIFICATE), notarizes + staples the
+      # .app, then bundles the dmg. Published as a draft until the dmg is
+      # notarized below, so a notarization failure never leaves a broken release.
+      - name: Build, sign, and notarize
+        id: tauri
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY_ID }}
+          # APPLE_API_KEY_PATH is exported by the previous step.
+          # Tauri updater signing (minisign): signs the .app.tar.gz so installed
+          # apps can verify an update is genuinely ours. With these set,
+          # tauri-action also generates and uploads latest.json to the release.
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: ${{ github.ref_name }}
+          releaseDraft: true
+          prerelease: false
+          args: --target universal-apple-darwin
+
+      # tauri build notarizes/staples the .app but leaves the .dmg unnotarized,
+      # which Gatekeeper rejects for a downloaded dmg. Notarize + staple the dmg
+      # and replace the uploaded asset with the stapled copy.
+      - name: Notarize and staple the dmg
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+        run: |
+          DMG=$(echo '${{ steps.tauri.outputs.artifactPaths }}' | jq -r '.[]' | grep '\.dmg$' | head -1)
+          echo "Stapling: $DMG"
+          xcrun notarytool submit "$DMG" \
+            --key "$APPLE_API_KEY_PATH" \
+            --key-id "$APPLE_API_KEY_ID" \
+            --issuer "$APPLE_API_ISSUER" \
+            --wait
+          xcrun stapler staple "$DMG"
+          xcrun stapler validate "$DMG"
+          # Publish under a clean, stable name (Photobank.dmg) so the
+          # releases/latest/download/Photobank.dmg URL always resolves. Remove the
+          # versioned dmg tauri-action uploaded, then upload the stapled copy.
+          CLEAN="$(dirname "$DMG")/Photobank.dmg"
+          mv "$DMG" "$CLEAN"
+          gh release delete-asset "${{ github.ref_name }}" "$(basename "$DMG")" --yes || true
+          gh release upload "${{ github.ref_name }}" "$CLEAN" --clobber
+
+      # Attach release notes to BOTH the GitHub release body and latest.json's
+      # `notes` field, so the in-app updater (Update.body) shows what changed.
+      # Prefer hand-written notes from the annotated tag's message body — cut a
+      # release with e.g. `git tag -a v0.2.0 -m "Title" -m "- Fixed X"`. When
+      # the tag is lightweight (no body), fall back to commit subjects since the
+      # previous tag, with version-bump commits (e.g. "0.2.0") filtered out.
+      - name: Generate and attach release notes
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          # actions/checkout writes the triggering tag as a lightweight ref
+          # (the resolved commit SHA), so git sees a commit, not the annotated
+          # tag object — and the hand-written message below is never read.
+          # Re-fetch the real tag object from origin so its message is available.
+          git fetch --force origin "refs/tags/${TAG}:refs/tags/${TAG}" 2>/dev/null || true
+          # Annotated tag? Use its message (subject + body, which omits any GPG
+          # signature). Lightweight tags resolve to a commit, so skip them here.
+          NOTES=""
+          if [ "$(git cat-file -t "$TAG" 2>/dev/null)" = "tag" ]; then
+            NOTES=$(git tag -l --format='%(contents:subject)%0a%(contents:body)' "$TAG")
+          fi
+          # No hand-written notes — fall back to commit subjects since the
+          # previous tag, with version-bump commits (e.g. "0.2.0" or "v0.2.0")
+          # filtered out.
+          if [ -z "$(printf '%s' "$NOTES" | tr -d '[:space:]')" ]; then
+            PREV=$(git describe --tags --abbrev=0 "${TAG}^" 2>/dev/null || echo "")
+            RANGE="${TAG}"
+            [ -n "$PREV" ] && RANGE="${PREV}..${TAG}"
+            NOTES=$(git log --no-merges --pretty='- %s' "$RANGE" \
+              | grep -vE '^- v?[0-9]+\.[0-9]+\.[0-9]+$' || true)
+          fi
+          [ -z "$(printf '%s' "$NOTES" | tr -d '[:space:]')" ] && NOTES="- Maintenance release."
+          printf '%s\n' "$NOTES" > notes.md
+          echo "---- release notes ----"; cat notes.md
+          # GitHub release body
+          gh release edit "$TAG" --notes-file notes.md
+          # latest.json `notes` so the updater can display them
+          gh release download "$TAG" -p latest.json -O latest.json --clobber
+          jq --rawfile n notes.md '.notes = $n' latest.json > latest.tmp
+          mv latest.tmp latest.json
+          gh release upload "$TAG" latest.json --clobber
+
+      # Everything signed + notarized: flip the draft to a public release.
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release edit "${{ github.ref_name }}" --draft=false
