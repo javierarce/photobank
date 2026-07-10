@@ -3,6 +3,7 @@ import { useSearchParams } from "react-router-dom";
 import { imageUrl } from "@/lib/image-url";
 import { searchPhotos } from "@/lib/api";
 import { PhotoLightbox } from "@/components/photo-lightbox";
+import { SelectionCheck } from "@/components/selection-check";
 import { SelectionToolbar } from "@/components/selection-toolbar";
 import { usePhotoActions } from "@/hooks/use-photo-actions";
 import { useSelection, useThumbnailActivation } from "@/hooks/use-selection";
@@ -141,8 +142,8 @@ export function SearchResults() {
             key={photo.id}
             onClick={(e) => onClick(e, photo)}
             onDoubleClick={() => onDoubleClick(photo)}
-            className={`group relative aspect-square overflow-hidden rounded-md border bg-foreground/5 ${
-              isSelected(photo.id) ? "border-foreground/40" : "border-transparent"
+            className={`group relative aspect-square overflow-hidden rounded-md border-2 bg-foreground/5 ${
+              isSelected(photo.id) ? "border-accent" : "border-transparent"
             }`}
           >
             {photo.processingStatus === "completed" ? (
@@ -164,6 +165,7 @@ export function SearchResults() {
               <p className="truncate text-xs text-white">{photo.filename}</p>
               <p className="text-[10px] text-white/70">{photo.folder}</p>
             </div>
+            {isSelected(photo.id) && <SelectionCheck />}
           </button>
         ))}
       </div>
