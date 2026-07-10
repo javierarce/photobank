@@ -24,18 +24,21 @@ your bucket directly.
   (Settings → Rebuild from bucket); buckets written by the old web version
   rebuild from a listing instead.
 - **Credentials**: endpoint/region/bucket/key-id in Settings; the secret key
-  is stored in the macOS Keychain. Works with AWS S3, Cloudflare R2, MinIO,
-  and anything else S3-compatible.
+  is stored in an owner-only (0600) file alongside the catalog. Works with AWS
+  S3, Cloudflare R2, MinIO, and anything else S3-compatible.
 
 ## Development
 
 ```bash
 npm install
-npm run dev:tauri   # runs Vite + the Tauri app
+npm run dev:tauri   # compiles the Rust core and launches the app
 npm test            # frontend tests (Vitest)
 (cd src-tauri && cargo test)  # Rust tests
-npm run icons       # regenerate app icon + dmg background from build/*.svg
 ```
+
+`npm run dev:tauri` is how you launch the app. See
+[CONTRIBUTING.md](CONTRIBUTING.md) for the full workflow (building a bundle,
+scripts, project layout).
 
 ## Releasing
 
