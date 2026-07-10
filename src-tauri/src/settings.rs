@@ -8,8 +8,12 @@ use tokio::sync::RwLock;
 
 use crate::error::{Error, Result};
 
-const KEYRING_SERVICE: &str = "com.photobank.app";
-const KEYRING_ACCOUNT: &str = "s3-secret-access-key";
+// The secret access key lives in a plain 0600 file next to settings.json,
+// NOT the macOS Keychain — the Keychain surfaces a "wants to use your
+// confidential information" prompt that persists even for signed, notarized
+// builds. An owner-only file is the same tradeoff the AWS CLI makes for
+// ~/.aws/credentials, and this IS an AWS-style credential.
+const SECRET_FILE: &str = "s3-secret-access-key";
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase", default)]
@@ -37,15 +41,22 @@ pub struct S3Ctx {
     pub bucket: String,
 }
 
-/// None until complete settings + a Keychain secret produce a client.
+/// None until complete settings + a stored secret produce a client.
 #[derive(Default)]
 pub struct S3State(pub RwLock<Option<S3Ctx>>);
 
-fn settings_path(app: &AppHandle) -> PathBuf {
+fn data_dir(app: &AppHandle) -> PathBuf {
     app.path()
         .app_data_dir()
         .expect("app data dir is always resolvable on macOS")
-        .join("settings.json")
+}
+
+fn settings_path(app: &AppHandle) -> PathBuf {
+    data_dir(app).join("settings.json")
+}
+
+fn secret_path(app: &AppHandle) -> PathBuf {
+    data_dir(app).join(SECRET_FILE)
 }
 
 pub fn load_settings(app: &AppHandle) -> S3Settings {
@@ -65,19 +76,41 @@ fn store_settings(app: &AppHandle, settings: &S3Settings) -> Result<()> {
     Ok(())
 }
 
-fn keyring_entry() -> Result<keyring::Entry> {
-    keyring::Entry::new(KEYRING_SERVICE, KEYRING_ACCOUNT)
-        .map_err(|e| Error::msg(format!("Keychain unavailable: {e}")))
+/// Read the stored secret access key, or None if the user hasn't set one yet.
+pub fn load_secret(app: &AppHandle) -> Option<String> {
+    let contents = fs::read_to_string(secret_path(app)).ok()?;
+    let trimmed = contents.trim();
+    (!trimmed.is_empty()).then(|| trimmed.to_string())
 }
 
-pub fn load_secret() -> Option<String> {
-    keyring_entry().ok()?.get_password().ok()
-}
+/// Persist the secret access key in an owner-only file. An empty value clears
+/// it (removing the file).
+fn store_secret(app: &AppHandle, secret: &str) -> Result<()> {
+    let path = secret_path(app);
+    let trimmed = secret.trim();
 
-fn store_secret(secret: &str) -> Result<()> {
-    keyring_entry()?
-        .set_password(secret)
-        .map_err(|e| Error::msg(format!("Could not save the secret key in the Keychain: {e}")))
+    if trimmed.is_empty() {
+        return match fs::remove_file(&path) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(Error::msg(format!("Could not clear the secret key: {e}"))),
+        };
+    }
+
+    if let Some(dir) = path.parent() {
+        fs::create_dir_all(dir).map_err(|e| Error::msg(e.to_string()))?;
+    }
+    fs::write(&path, trimmed)
+        .map_err(|e| Error::msg(format!("Could not save the secret key: {e}")))?;
+
+    // Owner-only (0600) so other users on the machine can't read the key.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = fs::set_permissions(&path, fs::Permissions::from_mode(0o600));
+    }
+
+    Ok(())
 }
 
 async fn build_ctx(settings: &S3Settings, secret: &str) -> S3Ctx {
@@ -115,11 +148,11 @@ async fn build_ctx(settings: &S3Settings, secret: &str) -> S3Ctx {
     }
 }
 
-/// Rebuild the shared client from disk + Keychain. Runs at startup and after
-/// every settings save.
+/// Rebuild the shared client from the stored settings + secret. Runs at
+/// startup and after every settings save.
 pub async fn refresh_client(app: &AppHandle) {
     let settings = load_settings(app);
-    let ctx = match (settings.is_complete(), load_secret()) {
+    let ctx = match (settings.is_complete(), load_secret(app)) {
         (true, Some(secret)) if !secret.is_empty() => Some(build_ctx(&settings, &secret).await),
         _ => None,
     };
@@ -136,7 +169,7 @@ pub struct SettingsInfo {
 
 fn settings_info(app: &AppHandle) -> SettingsInfo {
     let settings = load_settings(app);
-    let has_secret = load_secret().map(|s| !s.is_empty()).unwrap_or(false);
+    let has_secret = load_secret(app).map(|s| !s.is_empty()).unwrap_or(false);
     let configured = settings.is_complete() && has_secret;
     SettingsInfo {
         settings,
@@ -159,7 +192,7 @@ pub async fn save_settings(
     store_settings(&app, &settings)?;
     if let Some(secret) = secret_access_key.map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
     {
-        store_secret(&secret)?;
+        store_secret(&app, &secret)?;
     }
     refresh_client(&app).await;
     Ok(settings_info(&app))
