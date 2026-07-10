@@ -23,6 +23,7 @@ export default function SettingsPage() {
   const [hasSecret, setHasSecret] = useState(false);
   const [loading, setLoading] = useState(true);
   const [status, setStatus] = useState<Status>({ kind: "idle" });
+  const [rebuildStatus, setRebuildStatus] = useState<Status>({ kind: "idle" });
 
   useEffect(() => {
     getSettings()
@@ -71,10 +72,10 @@ export default function SettingsPage() {
     ) {
       return;
     }
-    setStatus({ kind: "busy", message: "Rebuilding from bucket…" });
+    setRebuildStatus({ kind: "busy", message: "Rebuilding from bucket…" });
     try {
       const report = await rebuildFromBucket();
-      setStatus({
+      setRebuildStatus({
         kind: "ok",
         message:
           report.source === "manifest"
@@ -82,7 +83,7 @@ export default function SettingsPage() {
             : `Rebuilt by scanning the bucket: ${report.photos} photos (no manifest found — EXIF and tags will refill as you use the app).`,
       });
     } catch (err) {
-      setStatus({ kind: "error", message: String(err) });
+      setRebuildStatus({ kind: "error", message: String(err) });
     }
   };
 
@@ -100,7 +101,7 @@ export default function SettingsPage() {
         <h1 className="text-xl font-semibold text-foreground">Settings</h1>
         <p className="mt-1 text-sm text-foreground/50">
           Photobank keeps your originals in an S3-compatible bucket and caches
-          thumbnails locally. The secret key is stored in the macOS Keychain.
+          thumbnails locally. Your secret key never leaves this Mac.
         </p>
 
         <section className="mt-8 flex flex-col gap-4">
@@ -161,9 +162,7 @@ export default function SettingsPage() {
               type="password"
               value={secret}
               onChange={(e) => setSecret(e.target.value)}
-              placeholder={
-                hasSecret ? "•••••••• (saved in Keychain — type to replace)" : ""
-              }
+              placeholder={hasSecret ? "••••••••" : ""}
               className={inputClass}
             />
           </label>
@@ -208,14 +207,29 @@ export default function SettingsPage() {
             <span className="font-mono">photobank-manifest.json</span>. On a
             fresh install (or after losing this Mac), rebuild it from there.
           </p>
-          <button
-            type="button"
-            onClick={handleRebuild}
-            disabled={status.kind === "busy"}
-            className="mt-4 rounded-lg border border-border px-4 py-2 text-sm font-medium text-foreground/70 transition-colors hover:border-foreground/35 hover:text-foreground disabled:opacity-50"
-          >
-            Rebuild from bucket
-          </button>
+          <div className="mt-4 flex items-center gap-3">
+            <button
+              type="button"
+              onClick={handleRebuild}
+              disabled={rebuildStatus.kind === "busy"}
+              className="rounded-lg border border-border px-4 py-2 text-sm font-medium text-foreground/70 transition-colors hover:border-foreground/35 hover:text-foreground disabled:opacity-50"
+            >
+              Rebuild from bucket
+            </button>
+            {rebuildStatus.kind !== "idle" && (
+              <p
+                className={`text-sm ${
+                  rebuildStatus.kind === "error"
+                    ? "text-red-600 dark:text-red-400"
+                    : rebuildStatus.kind === "ok"
+                      ? "text-accent"
+                      : "text-foreground/50"
+                }`}
+              >
+                {rebuildStatus.message}
+              </p>
+            )}
+          </div>
         </section>
       </main>
     </div>
