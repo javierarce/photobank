@@ -3786,6 +3786,7 @@ version = "0.1.0"
 dependencies = [
  "aws-config",
  "aws-sdk-s3",
+ "aws-smithy-runtime-api",
  "aws-smithy-types",
  "chrono",
  "fast_image_resize",

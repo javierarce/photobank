@@ -91,6 +91,27 @@ describe("usePhotoActions — handleDelete (optimistic)", () => {
     );
   });
 
+  it("surfaces the backend's message when the delete rejects with a string", async () => {
+    // Tauri commands reject with a plain message string (see src/lib/api.ts),
+    // e.g. the catalog↔bucket guard's "Run “Rebuild from bucket”…" error
+    const reason =
+      "This catalog was built from “test” but the app is now configured for “prod”.";
+    mockDeletePhoto.mockRejectedValue(reason);
+
+    const { result } = renderHook(() => usePhotoActions());
+    const photos = seed();
+    act(() => result.current.setPhotos(photos));
+
+    await act(async () => {
+      await result.current.handleDelete(photos[0]);
+    });
+
+    expect(mockMessage).toHaveBeenCalledWith(
+      reason,
+      expect.objectContaining({ kind: "error" })
+    );
+  });
+
   it("clears the active lightbox photo only when it was the one deleted", async () => {
     mockDeletePhoto.mockResolvedValue(undefined);
 
@@ -171,6 +192,26 @@ describe("usePhotoActions — handleBulkDelete (optimistic)", () => {
     await waitFor(() => expect(ids(result.current.photos)).toEqual(["a", "c"]));
     expect(mockMessage).toHaveBeenCalledWith(
       "Failed to delete 2 of 3 photos",
+      expect.objectContaining({ kind: "error" })
+    );
+  });
+
+  it("surfaces the backend's message when the deletes reject with a string", async () => {
+    mockDeletePhoto.mockRejectedValue("bucket mismatch — rebuild first");
+
+    const { result } = renderHook(() => usePhotoActions());
+    const photos = seed();
+    act(() => result.current.setPhotos(photos));
+
+    await act(async () => {
+      await result.current.handleBulkDelete(photos);
+    });
+
+    // Everything rolls back, and the dialog shows the backend's reason
+    // instead of the generic count
+    await waitFor(() => expect(ids(result.current.photos)).toEqual(["a", "b", "c"]));
+    expect(mockMessage).toHaveBeenCalledWith(
+      "bucket mismatch — rebuild first",
       expect.objectContaining({ kind: "error" })
     );
   });
