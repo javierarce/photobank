@@ -173,7 +173,7 @@ export default function SettingsPage() {
             type="button"
             onClick={handleSave}
             disabled={status.kind === "busy"}
-            className="rounded-lg bg-foreground px-4 py-2 text-sm font-medium text-background transition-colors hover:bg-foreground/85 disabled:opacity-50"
+            className="rounded-lg bg-foreground px-4 py-2 text-sm font-medium text-background transition hover:bg-foreground/85 active:scale-[0.97] disabled:opacity-50"
           >
             Save
           </button>
@@ -181,7 +181,7 @@ export default function SettingsPage() {
             type="button"
             onClick={handleTest}
             disabled={status.kind === "busy"}
-            className="rounded-lg border border-border px-4 py-2 text-sm font-medium text-foreground/70 transition-colors hover:border-foreground/35 hover:text-foreground disabled:opacity-50"
+            className="rounded-lg border border-border px-4 py-2 text-sm font-medium text-foreground/70 transition hover:border-foreground/35 hover:text-foreground active:scale-[0.97] disabled:opacity-50"
           >
             Test connection
           </button>
@@ -212,7 +212,7 @@ export default function SettingsPage() {
               type="button"
               onClick={handleRebuild}
               disabled={rebuildStatus.kind === "busy"}
-              className="rounded-lg border border-border px-4 py-2 text-sm font-medium text-foreground/70 transition-colors hover:border-foreground/35 hover:text-foreground disabled:opacity-50"
+              className="rounded-lg border border-border px-4 py-2 text-sm font-medium text-foreground/70 transition hover:border-foreground/35 hover:text-foreground active:scale-[0.97] disabled:opacity-50"
             >
               Rebuild from bucket
             </button>
