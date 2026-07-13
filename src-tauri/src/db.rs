@@ -208,7 +208,25 @@ pub fn open(path: &std::path::Path) -> Result<Connection> {
 fn configure(conn: &Connection) -> Result<()> {
     conn.pragma_update(None, "journal_mode", "WAL")?;
     conn.pragma_update(None, "foreign_keys", "ON")?;
-    migrate(conn)
+    migrate(conn)?;
+    reconcile_interrupted_imports(conn)?;
+    Ok(())
+}
+
+/// Import tasks live only in memory, so a process restart abandons any that were
+/// in flight. A row still marked `pending`/`processing` when we open the catalog
+/// is therefore a crash/force-quit leftover, not live work: flip it to `failed`.
+/// This stops the grid's "still processing" poll and — crucially — lets the next
+/// import of that name reclaim the row through import's failed-row retry branch.
+/// Without it, `reserve_row` would treat the stuck row as a live photo and suffix
+/// every retry into a fresh `(n)` duplicate while the original name stays wedged.
+pub fn reconcile_interrupted_imports(conn: &Connection) -> Result<usize> {
+    let swept = conn.execute(
+        "UPDATE photos SET processing_status = 'failed', updated_at = ?1
+         WHERE processing_status IN ('pending', 'processing')",
+        rusqlite::params![now()],
+    )?;
+    Ok(swept)
 }
 
 fn migrate(conn: &Connection) -> Result<()> {
@@ -247,6 +265,38 @@ mod tests {
             params![id, filename, format!("{folder}/{filename}"), folder, now()],
         )
         .unwrap();
+    }
+
+    fn insert_photo_with_status(conn: &Connection, id: &str, filename: &str, status: &str) {
+        conn.execute(
+            "INSERT INTO photos (id, filename, s3_key, folder, processing_status, created_at, updated_at)
+             VALUES (?1, ?2, ?3, 'inbox', ?4, ?5, ?5)",
+            params![id, filename, format!("inbox/{filename}"), status, now()],
+        )
+        .unwrap();
+    }
+
+    fn status_of(conn: &Connection, id: &str) -> String {
+        conn.query_row("SELECT processing_status FROM photos WHERE id = ?1", [id], |r| r.get(0))
+            .unwrap()
+    }
+
+    #[test]
+    fn reconcile_marks_only_interrupted_imports_failed() {
+        let conn = open_in_memory();
+        insert_photo_with_status(&conn, "pend", "a.jpg", "pending");
+        insert_photo_with_status(&conn, "proc", "b.jpg", "processing");
+        insert_photo_with_status(&conn, "done", "c.jpg", "completed");
+        insert_photo_with_status(&conn, "fail", "d.jpg", "failed");
+
+        // A restart abandons in-flight imports, so the two unfinished rows are
+        // swept to failed; finished/already-failed rows are left alone.
+        let swept = reconcile_interrupted_imports(&conn).unwrap();
+        assert_eq!(swept, 2);
+        assert_eq!(status_of(&conn, "pend"), "failed");
+        assert_eq!(status_of(&conn, "proc"), "failed");
+        assert_eq!(status_of(&conn, "done"), "completed");
+        assert_eq!(status_of(&conn, "fail"), "failed");
     }
 
     #[test]
