@@ -170,15 +170,26 @@ export function SearchResults() {
         ))}
       </div>
 
-      {active && (
-        <PhotoLightbox
-          photo={active}
-          onClose={() => setActive(null)}
-          onDelete={handleDelete}
-          onMove={handleMove}
-          onRename={handleRename}
-        />
-      )}
+      {active &&
+        (() => {
+          const index = photos.findIndex((p) => p.id === active.id);
+          const count = photos.length;
+          // Wrap around so the arrows cycle through the results endlessly.
+          const canNavigate = index >= 0 && count > 1;
+          const prev = photos[(index - 1 + count) % count];
+          const next = photos[(index + 1) % count];
+          return (
+            <PhotoLightbox
+              photo={active}
+              onClose={() => setActive(null)}
+              onDelete={handleDelete}
+              onMove={handleMove}
+              onRename={handleRename}
+              onPrev={canNavigate ? () => setActive(prev) : undefined}
+              onNext={canNavigate ? () => setActive(next) : undefined}
+            />
+          );
+        })()}
     </div>
   );
 }
