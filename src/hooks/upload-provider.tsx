@@ -8,7 +8,7 @@ import {
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open } from "@tauri-apps/plugin-dialog";
-import { importPhotos } from "@/lib/api";
+import { cancelImport, importPhotos } from "@/lib/api";
 import {
   UploadContext,
   type CompleteListener,
@@ -21,7 +21,13 @@ type ImportProgressEvent = {
   filename: string;
   folder: string;
   progress: number;
-  status: "starting" | "processing" | "uploading" | "done" | "error";
+  status:
+    | "starting"
+    | "processing"
+    | "uploading"
+    | "done"
+    | "error"
+    | "cancelled";
   error: string | null;
 };
 
@@ -81,6 +87,23 @@ export function UploadProvider({ children }: { children: ReactNode }) {
     setFiles((prev) => prev.filter((f) => f.key !== key));
   }, []);
 
+  const cancelUpload = useCallback((key: string) => {
+    // Optimistically show the tile as cancelling but keep it (and its id, so
+    // the still-present catalog row stays de-duped behind it) until the
+    // importer confirms with a `cancelled` event. Only pending/uploading tiles
+    // are cancellable; a done tile is already uploaded.
+    setFiles((prev) =>
+      prev.map((f) =>
+        f.key === key && (f.status === "pending" || f.status === "uploading")
+          ? { ...f, status: "cancelling" }
+          : f
+      )
+    );
+    // If the request itself fails, leave the tile be — real progress events
+    // will settle it on its actual terminal state.
+    cancelImport(key).catch(() => {});
+  }, []);
+
   const clearCompleted = useCallback(() => {
     setFiles((prev) => prev.filter((f) => f.status !== "done"));
   }, []);
@@ -137,18 +160,36 @@ export function UploadProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     const unlisten = listen<ImportProgressEvent>("import://progress", (event) => {
       const p = event.payload;
+      // A cancelled import has already cleaned up its catalog row server-side;
+      // refresh the folder so nothing lingers, then drop its tile below.
+      if (p.status === "cancelled") {
+        for (const fn of listeners.current) fn(p.folder);
+      }
       setFiles((prev) =>
-        prev.map((f) => {
-          if (f.key !== p.key) return f;
+        prev.flatMap((f) => {
+          if (f.key !== p.key) return [f];
+          // The import is gone — remove its tile.
+          if (p.status === "cancelled") return [];
+          // While cancelling, ignore in-flight progress; only a terminal
+          // done/error resolves the tile (a cancel that lost the race).
+          if (
+            f.status === "cancelling" &&
+            p.status !== "done" &&
+            p.status !== "error"
+          ) {
+            return [f];
+          }
           const status =
             p.status === "done" ? "done" : p.status === "error" ? "error" : "uploading";
-          return {
-            ...f,
-            id: p.photoId ?? f.id,
-            progress: p.progress,
-            status,
-            error: p.error ?? undefined,
-          };
+          return [
+            {
+              ...f,
+              id: p.photoId ?? f.id,
+              progress: p.progress,
+              status,
+              error: p.error ?? undefined,
+            },
+          ];
         })
       );
     });
@@ -199,6 +240,7 @@ export function UploadProvider({ children }: { children: ReactNode }) {
         isDragging,
         dropFolder,
         removeUpload,
+        cancelUpload,
         clearCompleted,
         openFilePicker,
         onUploadComplete,
