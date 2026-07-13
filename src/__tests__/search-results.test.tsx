@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
 import { render, screen, cleanup, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
+import { SelectionProvider } from "@/hooks/selection-provider";
 import { SearchResults } from "@/components/search-results";
 import { searchPhotos } from "@/lib/api";
 import type { Photo } from "@/lib/types";
@@ -41,9 +42,11 @@ const mockPhotos: Photo[] = [
 function renderSearch(params: Record<string, string> = {}) {
   const query = new URLSearchParams(params).toString();
   return render(
-    <MemoryRouter initialEntries={[query ? `/search?${query}` : "/search"]}>
-      <SearchResults />
-    </MemoryRouter>
+    <SelectionProvider>
+      <MemoryRouter initialEntries={[query ? `/search?${query}` : "/search"]}>
+        <SearchResults />
+      </MemoryRouter>
+    </SelectionProvider>
   );
 }
 
