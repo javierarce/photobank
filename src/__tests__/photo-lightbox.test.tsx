@@ -10,6 +10,11 @@ vi.mock("@/components/photo-tags", () => ({
   ),
 }));
 
+const exportPhotos = vi.fn().mockResolvedValue(null);
+vi.mock("@/lib/api", () => ({
+  exportPhotos: (...args: unknown[]) => exportPhotos(...args),
+}));
+
 const photo: Photo = makePhoto({
   id: "1",
   filename: "test.jpg",
@@ -27,6 +32,7 @@ const photo: Photo = makePhoto({
 
 afterEach(() => {
   cleanup();
+  exportPhotos.mockClear();
 });
 
 describe("PhotoLightbox", () => {
@@ -176,6 +182,21 @@ describe("PhotoLightbox", () => {
     fireEvent.load(img);
     expect(img).toHaveClass("opacity-100");
     expect(document.querySelector("svg.animate-spin")).not.toBeInTheDocument();
+  });
+
+  it("exports the default (2880) version when Download is clicked", () => {
+    render(<PhotoLightbox photo={photo} onClose={vi.fn()} />);
+
+    fireEvent.click(screen.getByText("Download"));
+    expect(exportPhotos).toHaveBeenCalledWith(["1"], "2880");
+  });
+
+  it("exports a chosen version from the split-button menu", () => {
+    render(<PhotoLightbox photo={photo} onClose={vi.fn()} />);
+
+    fireEvent.click(screen.getByLabelText("Choose version to export"));
+    fireEvent.click(screen.getByRole("menuitem", { name: /Original/ }));
+    expect(exportPhotos).toHaveBeenCalledWith(["1"], "original");
   });
 
   it("calls onDelete when Delete is clicked", () => {

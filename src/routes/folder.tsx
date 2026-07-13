@@ -11,8 +11,14 @@ export default function FolderPage() {
   const photoGridRef = useRef<PhotoGridRef>(null);
   const { selected } = useSelection();
   const handleBackgroundClick = useBackgroundDeselect();
-  const { files, dropFolder, openFilePicker, removeUpload, onUploadComplete } =
-    useUpload();
+  const {
+    files,
+    dropFolder,
+    openFilePicker,
+    removeUpload,
+    cancelUpload,
+    onUploadComplete,
+  } = useUpload();
 
   // Refresh so the grid picks up the new photo rows once an import into this
   // folder settles; the grid dismisses each upload tile itself when the
@@ -24,6 +30,9 @@ export default function FolderPage() {
   }, [onUploadComplete, folder]);
 
   const folderUploads = files.filter((f) => f.folder === folder);
+  const cancellable = folderUploads.filter(
+    (u) => u.status === "pending" || u.status === "uploading"
+  );
 
   return (
     <div
@@ -42,13 +51,27 @@ export default function FolderPage() {
               <h1 className="text-xl font-semibold text-foreground">
                 {folder}
               </h1>
-              <button
-                type="button"
-                onClick={() => openFilePicker(folder)}
-                className="shrink-0 rounded-md border border-border px-3 py-1.5 text-sm font-medium text-foreground/70 transition hover:border-foreground/35 hover:text-foreground active:scale-[0.97]"
-              >
-                Upload
-              </button>
+              <div className="flex shrink-0 items-center gap-2">
+                {cancellable.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={() =>
+                      cancellable.forEach((u) => cancelUpload(u.key))
+                    }
+                    className="rounded-md border border-border px-3 py-1.5 text-sm font-medium text-foreground/70 transition hover:border-foreground/35 hover:text-foreground active:scale-[0.97]"
+                  >
+                    Cancel {cancellable.length} upload
+                    {cancellable.length > 1 ? "s" : ""}
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => openFilePicker(folder)}
+                  className="rounded-md border border-border px-3 py-1.5 text-sm font-medium text-foreground/70 transition hover:border-foreground/35 hover:text-foreground active:scale-[0.97]"
+                >
+                  Upload
+                </button>
+              </div>
             </>
           )}
         </div>
@@ -64,6 +87,7 @@ export default function FolderPage() {
             ref={photoGridRef}
             uploads={folderUploads}
             onDismissUpload={removeUpload}
+            onCancelUpload={cancelUpload}
           />
         </section>
       </main>
