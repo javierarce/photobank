@@ -18,8 +18,8 @@ export function usePhotoActions() {
       await deletePhoto(photo.id);
       setPhotos((prev) => prev.filter((p) => p.id !== photo.id));
       setActive((prev) => (prev?.id === photo.id ? null : prev));
-    } catch {
-      alert("Failed to delete photo");
+    } catch (err) {
+      alert(typeof err === "string" ? err : "Failed to delete photo");
     }
   };
 
@@ -53,8 +53,8 @@ export function usePhotoActions() {
       setPhotos((prev) => prev.filter((p) => !ids.has(p.id)));
       setActive((prev) => (prev && ids.has(prev.id) ? null : prev));
       return true;
-    } catch {
-      alert("Failed to delete photos");
+    } catch (err) {
+      alert(typeof err === "string" ? err : "Failed to delete photos");
       return false;
     }
   }, []);
