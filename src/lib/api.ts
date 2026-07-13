@@ -72,10 +72,13 @@ export function cancelImport(key: string): Promise<void> {
   return invoke("cancel_import", { key });
 }
 
+/** Which stored version of a photo to export. */
+export type ExportResolution = "640" | "1280" | "2880" | "original";
+
 /** Export photos as files into a directory picked by the user. */
 export function exportPhotos(
   photoIds: string[],
-  resolution: "640" | "1280" | "2880" | "original" = "2880"
+  resolution: ExportResolution = "2880"
 ): Promise<string | null> {
   return invoke("export_photos", { photoIds, resolution });
 }
