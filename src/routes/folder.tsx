@@ -1,4 +1,4 @@
-import { useRef } from "react";
+import { useEffect, useRef } from "react";
 import { useParams } from "react-router-dom";
 import { PhotoGrid, PhotoGridRef } from "@/components/photo-grid";
 import { SelectionToolbar } from "@/components/selection-toolbar";
@@ -11,23 +11,24 @@ export default function FolderPage() {
   const photoGridRef = useRef<PhotoGridRef>(null);
   const { selected } = useSelection();
   const handleBackgroundClick = useBackgroundDeselect();
-  const {
-    files,
-    isDragging,
-    dragHandlers,
-    openFilePicker,
-    removeUpload,
-  } = useUpload({
-    folder,
-    // Refresh so the grid picks up the new photo rows; the grid dismisses each
-    // upload tile itself once the processed thumbnail is ready to display.
-    onUploadComplete: () => photoGridRef.current?.refresh(),
-  });
+  const { files, dropFolder, openFilePicker, removeUpload, onUploadComplete } =
+    useUpload();
+
+  // Refresh so the grid picks up the new photo rows once an import into this
+  // folder settles; the grid dismisses each upload tile itself when the
+  // processed thumbnail is ready to display.
+  useEffect(() => {
+    return onUploadComplete((completedFolder) => {
+      if (completedFolder === folder) photoGridRef.current?.refresh();
+    });
+  }, [onUploadComplete, folder]);
+
+  const folderUploads = files.filter((f) => f.folder === folder);
 
   return (
     <div
       className="relative min-h-screen font-sans"
-      {...dragHandlers}
+      data-drop-folder={folder}
       onClick={handleBackgroundClick}
     >
       <main className="mx-auto max-w-5xl px-6 py-8">
@@ -43,7 +44,7 @@ export default function FolderPage() {
               </h1>
               <button
                 type="button"
-                onClick={openFilePicker}
+                onClick={() => openFilePicker(folder)}
                 className="shrink-0 rounded-md border border-border px-3 py-1.5 text-sm font-medium text-foreground/70 transition-colors hover:border-foreground/35 hover:text-foreground"
               >
                 Upload
@@ -56,22 +57,18 @@ export default function FolderPage() {
           <PhotoGrid
             folder={folder}
             ref={photoGridRef}
-            uploads={files}
+            uploads={folderUploads}
             onDismissUpload={removeUpload}
           />
         </section>
       </main>
 
-      {isDragging && (
-        <div className="pointer-events-none fixed inset-0 z-50 flex items-center justify-center bg-accent/5 p-6">
-          <div className="rounded-xl border-2 border-dashed border-accent bg-background/80 px-10 py-8 text-center backdrop-blur-sm">
-            <p className="text-base font-medium text-foreground/80">
-              Drop images to upload
-            </p>
-            <p className="mt-1 text-sm text-foreground/50">
-              Uploading to <span className="font-mono">{folder}/</span>
-            </p>
-          </div>
+      {dropFolder === folder && (
+        <div className="pointer-events-none fixed inset-0 z-50 flex items-center justify-center bg-black/50">
+          <p className="text-lg font-semibold text-white">
+            Drop images to upload to{" "}
+            <span className="font-mono">{folder}/</span>
+          </p>
         </div>
       )}
     </div>

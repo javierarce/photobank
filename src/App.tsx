@@ -4,6 +4,7 @@ import { Routes, Route, useNavigate } from "react-router-dom";
 import { Header } from "@/components/header";
 import { CommandPalette } from "@/components/command-palette";
 import { SelectionProvider } from "@/hooks/selection-provider";
+import { UploadProvider } from "@/hooks/upload-provider";
 import { getSettings } from "@/lib/api";
 import { checkForUpdates } from "@/lib/updater";
 import HomePage from "@/routes/home";
@@ -35,14 +36,16 @@ export default function App() {
 
   return (
     <SelectionProvider>
-      <Header />
-      <CommandPalette />
-      <Routes>
-        <Route path="/" element={<HomePage />} />
-        <Route path="/folders/:folder" element={<FolderPage />} />
-        <Route path="/search" element={<SearchPage />} />
-        <Route path="/settings" element={<SettingsPage />} />
-      </Routes>
+      <UploadProvider>
+        <Header />
+        <CommandPalette />
+        <Routes>
+          <Route path="/" element={<HomePage />} />
+          <Route path="/folders/:folder" element={<FolderPage />} />
+          <Route path="/search" element={<SearchPage />} />
+          <Route path="/settings" element={<SettingsPage />} />
+        </Routes>
+      </UploadProvider>
     </SelectionProvider>
   );
 }

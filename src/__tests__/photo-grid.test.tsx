@@ -30,6 +30,7 @@ const mockListPhotos = vi.mocked(listPhotos);
 function makeUpload(overrides: Partial<UploadFile> = {}): UploadFile {
   return {
     key: "u1",
+    folder: "vacation",
     filename: "beach.jpg",
     status: "done",
     progress: 100,
