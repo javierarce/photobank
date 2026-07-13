@@ -2,6 +2,7 @@ import { useEffect } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { Routes, Route, useNavigate } from "react-router-dom";
 import { Header } from "@/components/header";
+import { CommandPalette } from "@/components/command-palette";
 import { SelectionProvider } from "@/hooks/selection-provider";
 import { getSettings } from "@/lib/api";
 import { checkForUpdates } from "@/lib/updater";
@@ -35,6 +36,7 @@ export default function App() {
   return (
     <SelectionProvider>
       <Header />
+      <CommandPalette />
       <Routes>
         <Route path="/" element={<HomePage />} />
         <Route path="/folders/:folder" element={<FolderPage />} />
