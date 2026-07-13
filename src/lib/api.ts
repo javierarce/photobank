@@ -65,10 +65,13 @@ export function importPhotos(paths: string[], folder: string): Promise<Photo[]> 
   return invoke("import_photos", { paths, folder });
 }
 
+/** Which stored version of a photo to export. */
+export type ExportResolution = "640" | "1280" | "2880" | "original";
+
 /** Export photos as files into a directory picked by the user. */
 export function exportPhotos(
   photoIds: string[],
-  resolution: "640" | "1280" | "2880" | "original" = "2880"
+  resolution: ExportResolution = "2880"
 ): Promise<string | null> {
   return invoke("export_photos", { photoIds, resolution });
 }

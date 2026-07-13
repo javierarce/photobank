@@ -1,4 +1,5 @@
-import { exportPhotos } from "@/lib/api";
+import { exportPhotos, type ExportResolution } from "@/lib/api";
+import { ExportButton } from "@/components/export-button";
 import { useSelection } from "@/hooks/use-selection";
 
 /**
@@ -13,9 +14,9 @@ export function SelectionToolbar() {
   const count = selected.length;
   const allSelected = pool.length > 0 && pool.every((p) => isSelected(p.id));
 
-  const handleDownload = async () => {
+  const handleDownload = async (resolution: ExportResolution) => {
     try {
-      await exportPhotos(selected.map((p) => p.id));
+      await exportPhotos(selected.map((p) => p.id), resolution);
     } catch {
       alert("Failed to export photos");
     }
@@ -45,9 +46,7 @@ export function SelectionToolbar() {
         </button>
       </div>
       <div className="flex items-center gap-2">
-        <button type="button" onClick={handleDownload} className={action}>
-          Download
-        </button>
+        <ExportButton onExport={handleDownload} />
         <button
           type="button"
           onClick={() => actions?.onMove(selected)}
