@@ -1,6 +1,17 @@
 import { useCallback, useState } from "react";
+import { ask, message } from "@tauri-apps/plugin-dialog";
 import { deletePhoto, updatePhoto } from "@/lib/api";
 import type { Photo } from "@/lib/types";
+
+/** Native OS confirm dialog — the webview's window.confirm doesn't render. */
+function confirmDelete(label: string): Promise<boolean> {
+  return ask(`Delete ${label}? This can't be undone.`, {
+    title: "Delete",
+    kind: "warning",
+    okLabel: "Delete",
+    cancelLabel: "Cancel",
+  });
+}
 
 /**
  * Shared photo collection state + delete/move/rename actions, used by the
@@ -12,14 +23,29 @@ export function usePhotoActions() {
   const [active, setActive] = useState<Photo | null>(null);
 
   const handleDelete = async (photo: Photo) => {
-    if (!confirm(`Delete ${photo.filename}?`)) return;
+    if (!(await confirmDelete(photo.filename))) return;
+
+    // Remove the thumbnail immediately for a snappy delete; the bucket cleanup
+    // happens in the background. If it fails, splice the photo back at its
+    // original position (the grid is ordered newest-first) so it reappears in
+    // place rather than jumping to the end.
+    const index = photos.findIndex((p) => p.id === photo.id);
+    setPhotos((prev) => prev.filter((p) => p.id !== photo.id));
+    setActive((prev) => (prev?.id === photo.id ? null : prev));
 
     try {
       await deletePhoto(photo.id);
-      setPhotos((prev) => prev.filter((p) => p.id !== photo.id));
-      setActive((prev) => (prev?.id === photo.id ? null : prev));
     } catch {
-      alert("Failed to delete photo");
+      setPhotos((prev) => {
+        if (prev.some((p) => p.id === photo.id)) return prev;
+        const next = [...prev];
+        next.splice(Math.min(Math.max(index, 0), next.length), 0, photo);
+        return next;
+      });
+      await message("Failed to delete photo", {
+        title: "Delete failed",
+        kind: "error",
+      });
     }
   };
 
@@ -45,18 +71,53 @@ export function usePhotoActions() {
       targets.length === 1
         ? targets[0].filename
         : `${targets.length} photos`;
-    if (!confirm(`Delete ${label}?`)) return false;
+    if (!(await confirmDelete(label))) return false;
 
     const ids = new Set(targets.map((p) => p.id));
-    try {
-      await Promise.all(targets.map((p) => deletePhoto(p.id)));
-      setPhotos((prev) => prev.filter((p) => !ids.has(p.id)));
-      setActive((prev) => (prev && ids.has(prev.id) ? null : prev));
-      return true;
-    } catch {
-      alert("Failed to delete photos");
-      return false;
-    }
+
+    // Drop all the selected thumbnails up front. Capture the pre-delete array
+    // (via the updater, to avoid a stale closure) so failures can be restored
+    // in their original order without disturbing photos added meanwhile.
+    let snapshot: Photo[] = [];
+    setPhotos((prev) => {
+      snapshot = prev;
+      return prev.filter((p) => !ids.has(p.id));
+    });
+    setActive((prev) => (prev && ids.has(prev.id) ? null : prev));
+
+    // Run the bucket deletes in the background and return right away, so the
+    // caller can clear the selection the instant the thumbnails vanish rather
+    // than waiting a network round-trip for the toolbar to catch up. Only
+    // failures roll back.
+    void (async () => {
+      const results = await Promise.allSettled(
+        targets.map((p) => deletePhoto(p.id))
+      );
+      const failed = new Set(
+        targets
+          .filter((_, i) => results[i].status === "rejected")
+          .map((p) => p.id)
+      );
+      if (!failed.size) return;
+
+      // Restore only the photos whose delete failed, keeping snapshot order and
+      // prepending anything added since (the grid is newest-first).
+      setPhotos((prev) => {
+        const keep = new Set(prev.map((p) => p.id));
+        failed.forEach((id) => keep.add(id));
+        const known = new Set(snapshot.map((p) => p.id));
+        const added = prev.filter((p) => !known.has(p.id));
+        return [...added, ...snapshot.filter((p) => keep.has(p.id))];
+      });
+      await message(
+        failed.size === targets.length
+          ? "Failed to delete photos"
+          : `Failed to delete ${failed.size} of ${targets.length} photos`,
+        { title: "Delete failed", kind: "error" }
+      );
+    })();
+
+    return true;
   }, []);
 
   const handleBulkMove = useCallback(async (targets: Photo[]) => {

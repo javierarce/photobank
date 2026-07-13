@@ -1,12 +1,19 @@
 import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
 import {
-  render,
+  render as rtlRender,
   screen,
   cleanup,
   waitFor,
   fireEvent,
 } from "@testing-library/react";
+import { SelectionProvider } from "@/hooks/selection-provider";
 import { PhotoGrid } from "@/components/photo-grid";
+
+// The grid reads multi-select state from context, so every render needs the
+// provider around it.
+function render(ui: Parameters<typeof rtlRender>[0]) {
+  return rtlRender(ui, { wrapper: SelectionProvider });
+}
 import { listPhotos } from "@/lib/api";
 import type { Photo } from "@/lib/types";
 import type { UploadFile } from "@/hooks/use-upload";
