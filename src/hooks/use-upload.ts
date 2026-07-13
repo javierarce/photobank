@@ -8,7 +8,7 @@ export type UploadFile = {
   filename: string;
   /** The catalog id, once the importer has created the row. */
   id?: string;
-  status: "pending" | "uploading" | "done" | "error";
+  status: "pending" | "uploading" | "cancelling" | "done" | "error";
   progress: number;
   error?: string;
 };
@@ -23,6 +23,8 @@ export type UploadContextValue = {
   /** The folder whose drop target sits under the cursor, or null. */
   dropFolder: string | null;
   removeUpload: (key: string) => void;
+  /** Signal the importer to cancel an in-flight or queued upload by its key. */
+  cancelUpload: (key: string) => void;
   clearCompleted: () => void;
   /** Open the OS file picker and import the selection into `folder`. */
   openFilePicker: (folder: string) => void;

@@ -35,6 +35,7 @@ fn main() {
             app.manage(db::Db(Mutex::new(conn)));
             app.manage(settings::S3State::default());
             app.manage(manifest::ManifestState::default());
+            app.manage(import::CancelRegistry::default());
 
             // Native menu: start from the default macOS menu and slip a
             // "Settings…" item (Cmd+,) into the app submenu, right after About.
@@ -77,6 +78,7 @@ fn main() {
             commands::update_photo,
             commands::delete_photo,
             commands::import_photos,
+            commands::cancel_import,
             commands::export_photos,
             settings::get_settings,
             settings::save_settings,
