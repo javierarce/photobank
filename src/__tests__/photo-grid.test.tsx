@@ -237,4 +237,49 @@ describe("PhotoGrid", () => {
     });
     expect(screen.getByText("Failed")).toBeInTheDocument();
   });
+
+  it("offers a Cancel button on an in-flight tile and reports its key", async () => {
+    mockListPhotos.mockResolvedValueOnce([]);
+
+    const onCancel = vi.fn();
+    const upload = makeUpload({ status: "uploading", progress: 30 });
+    render(
+      <PhotoGrid folder="vacation" uploads={[upload]} onCancelUpload={onCancel} />
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText("30%")).toBeInTheDocument();
+    });
+    fireEvent.click(screen.getByText("Cancel"));
+    expect(onCancel).toHaveBeenCalledWith("u1");
+  });
+
+  it("shows Cancelling… and no Cancel button once cancellation is under way", async () => {
+    mockListPhotos.mockResolvedValueOnce([]);
+
+    const onCancel = vi.fn();
+    const upload = makeUpload({ status: "cancelling", progress: 30 });
+    render(
+      <PhotoGrid folder="vacation" uploads={[upload]} onCancelUpload={onCancel} />
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText("Cancelling…")).toBeInTheDocument();
+    });
+    expect(screen.queryByText("Cancel")).not.toBeInTheDocument();
+  });
+
+  it("does not offer Cancel on a done (uploaded, processing) tile", async () => {
+    mockListPhotos.mockResolvedValueOnce([]);
+
+    const upload = makeUpload({ status: "done", progress: 100 });
+    render(
+      <PhotoGrid folder="vacation" uploads={[upload]} onCancelUpload={vi.fn()} />
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText("Processing…")).toBeInTheDocument();
+    });
+    expect(screen.queryByText("Cancel")).not.toBeInTheDocument();
+  });
 });

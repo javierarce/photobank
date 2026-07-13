@@ -65,6 +65,13 @@ export function importPhotos(paths: string[], folder: string): Promise<Photo[]> 
   return invoke("import_photos", { paths, folder });
 }
 
+/** Ask the importer to cancel an in-flight or queued upload by its
+ * "folder/filename" key. Resolves immediately; the import stops at its next
+ * checkpoint and confirms with a `cancelled` progress event. */
+export function cancelImport(key: string): Promise<void> {
+  return invoke("cancel_import", { key });
+}
+
 /** Which stored version of a photo to export. */
 export type ExportResolution = "640" | "1280" | "2880" | "original";
 

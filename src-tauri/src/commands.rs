@@ -224,6 +224,18 @@ pub async fn import_photos(
     crate::import::import_photos(app, paths, folder).await
 }
 
+/// Signal an in-flight or queued import to cancel, keyed by its
+/// "folder/filename" key. A plain no-op if no matching import is currently
+/// registered (e.g. it already finished, or the cancel raced ahead of it).
+#[tauri::command]
+pub fn cancel_import(
+    registry: State<crate::import::CancelRegistry>,
+    key: String,
+) -> Result<()> {
+    registry.cancel(&key);
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn export_photos(
     app: tauri::AppHandle,
