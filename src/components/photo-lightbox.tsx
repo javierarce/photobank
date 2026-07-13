@@ -10,6 +10,10 @@ type Props = {
   onDelete?: (photo: Photo) => void;
   onMove?: (photo: Photo) => void;
   onRename?: (photo: Photo, newFilename: string) => Promise<void>;
+  // Provided when there is a neighbouring photo to move to; omitted at the
+  // ends of the list so the arrows and arrow keys become no-ops.
+  onPrev?: () => void;
+  onNext?: () => void;
 };
 
 function splitFilename(filename: string): [string, string] {
@@ -24,6 +28,8 @@ export function PhotoLightbox({
   onDelete,
   onMove,
   onRename,
+  onPrev,
+  onNext,
 }: Props) {
   const [loaded, setLoaded] = useState(false);
   const [editing, setEditing] = useState(false);
@@ -57,11 +63,14 @@ export function PhotoLightbox({
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && !editing) onClose();
+      if (editing) return;
+      if (e.key === "Escape") onClose();
+      else if (e.key === "ArrowLeft") onPrev?.();
+      else if (e.key === "ArrowRight") onNext?.();
     };
     document.addEventListener("keydown", handleKeyDown);
     return () => document.removeEventListener("keydown", handleKeyDown);
-  }, [onClose, editing]);
+  }, [onClose, onPrev, onNext, editing]);
 
   return (
     <div
@@ -73,10 +82,10 @@ export function PhotoLightbox({
       }}
     >
       <div
-        className="relative flex max-h-[90vh] w-[min(95vw,1200px)] overflow-hidden rounded-lg bg-background"
+        className="relative flex h-[85vh] w-[min(95vw,1200px)] overflow-hidden rounded-lg border border-border bg-background"
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="flex w-0 flex-1 items-center justify-center bg-black">
+        <div className="relative flex w-0 flex-1 items-center justify-center bg-black">
           {!loaded && (
             <div className="absolute inset-0 flex items-center justify-center">
               <svg
@@ -105,10 +114,56 @@ export function PhotoLightbox({
             src={imageUrl(photo.s3Key, "2880", "webp")}
             alt={photo.filename}
             onLoad={() => setLoaded(true)}
-            className={`max-h-[90vh] w-auto object-contain transition-opacity duration-300 ${
+            className={`h-full w-full object-contain transition-opacity duration-300 ${
               loaded ? "opacity-100" : "opacity-0"
             }`}
           />
+          {onPrev && (
+            <button
+              type="button"
+              aria-label="Previous photo"
+              onClick={onPrev}
+              className="absolute left-2 top-1/2 -translate-y-1/2 rounded-full bg-black/40 p-2 text-white/80 transition-colors hover:bg-black/60 hover:text-white"
+            >
+              <svg
+                className="h-6 w-6"
+                xmlns="http://www.w3.org/2000/svg"
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+                strokeWidth={2}
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  d="M15 19l-7-7 7-7"
+                />
+              </svg>
+            </button>
+          )}
+          {onNext && (
+            <button
+              type="button"
+              aria-label="Next photo"
+              onClick={onNext}
+              className="absolute right-2 top-1/2 -translate-y-1/2 rounded-full bg-black/40 p-2 text-white/80 transition-colors hover:bg-black/60 hover:text-white"
+            >
+              <svg
+                className="h-6 w-6"
+                xmlns="http://www.w3.org/2000/svg"
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+                strokeWidth={2}
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  d="M9 5l7 7-7 7"
+                />
+              </svg>
+            </button>
+          )}
         </div>
         <div className="flex w-72 shrink-0 flex-col gap-4 overflow-y-auto p-4">
           <div>

@@ -25,8 +25,28 @@ vi.mock("@/lib/api", () => ({
   updatePhoto: vi.fn(),
 }));
 
+// A minimal stand-in that surfaces the active photo and the nav callbacks the
+// grid wires up, so tests can exercise wrap-around navigation.
 vi.mock("@/components/photo-lightbox", () => ({
-  PhotoLightbox: () => <div data-testid="lightbox" />,
+  PhotoLightbox: ({
+    photo,
+    onPrev,
+    onNext,
+  }: {
+    photo: { filename: string };
+    onPrev?: () => void;
+    onNext?: () => void;
+  }) => (
+    <div data-testid="lightbox">
+      <span data-testid="lightbox-filename">{photo.filename}</span>
+      <button onClick={onPrev} disabled={!onPrev}>
+        prev
+      </button>
+      <button onClick={onNext} disabled={!onNext}>
+        next
+      </button>
+    </div>
+  ),
 }));
 
 const mockListPhotos = vi.mocked(listPhotos);
@@ -108,6 +128,34 @@ describe("PhotoGrid", () => {
     await waitFor(() => {
       expect(screen.getByAltText("beach.jpg")).toBeInTheDocument();
     });
+  });
+
+  it("wraps around when navigating past the ends of the folder", async () => {
+    mockListPhotos.mockResolvedValueOnce(mockPhotos);
+
+    render(<PhotoGrid folder="vacation" />);
+
+    await waitFor(() => {
+      expect(screen.getByAltText("beach.jpg")).toBeInTheDocument();
+    });
+
+    // Open the first photo.
+    fireEvent.dblClick(screen.getByAltText("beach.jpg"));
+    expect(screen.getByTestId("lightbox-filename")).toHaveTextContent(
+      "beach.jpg"
+    );
+
+    // Going back from the first photo wraps to the last.
+    fireEvent.click(screen.getByText("prev"));
+    expect(screen.getByTestId("lightbox-filename")).toHaveTextContent(
+      "failed.jpg"
+    );
+
+    // And forward from the last wraps back to the first.
+    fireEvent.click(screen.getByText("next"));
+    expect(screen.getByTestId("lightbox-filename")).toHaveTextContent(
+      "beach.jpg"
+    );
   });
 
   it("shows processing status for non-completed photos", async () => {
