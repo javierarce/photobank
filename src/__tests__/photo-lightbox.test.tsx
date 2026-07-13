@@ -144,6 +144,27 @@ describe("PhotoLightbox", () => {
     expect(screen.getByText("Download")).toBeInTheDocument();
   });
 
+  it("animates the panel and backdrop in on open", () => {
+    const { container } = render(
+      <PhotoLightbox photo={photo} onClose={vi.fn()} />
+    );
+
+    // Backdrop fades in; the panel scales up from center (modal, so centered
+    // rather than origin-aware). Never popping in from nothing.
+    const backdrop = container.firstElementChild;
+    expect(backdrop).toHaveClass("backdrop-in");
+    expect(backdrop?.firstElementChild).toHaveClass("modal-in");
+  });
+
+  it("spins the loading indicator faster than the default", () => {
+    render(<PhotoLightbox photo={photo} onClose={vi.fn()} />);
+
+    // A faster spinner makes the load feel quicker at the same latency.
+    expect(document.querySelector("svg.animate-spin")).toHaveClass(
+      "[animation-duration:0.6s]"
+    );
+  });
+
   it("shows spinner before image loads and hides it after", () => {
     render(<PhotoLightbox photo={photo} onClose={vi.fn()} />);
 

@@ -75,7 +75,7 @@ export function PhotoLightbox({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4"
+      className="backdrop-in fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4"
       onClick={(e) => {
         // Don't let the backdrop click bubble to the page's deselect handler.
         e.stopPropagation();
@@ -83,14 +83,14 @@ export function PhotoLightbox({
       }}
     >
       <div
-        className="relative flex h-[85vh] w-[min(95vw,1200px)] overflow-hidden rounded-lg border border-border bg-background"
+        className="modal-in relative flex h-[85vh] w-[min(95vw,1200px)] overflow-hidden rounded-lg border border-border bg-background"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="relative flex w-0 flex-1 items-center justify-center bg-black">
           {!loaded && (
             <div className="absolute inset-0 flex items-center justify-center">
               <svg
-                className="h-8 w-8 animate-spin text-white/40"
+                className="h-8 w-8 animate-spin text-white/40 [animation-duration:0.6s]"
                 xmlns="http://www.w3.org/2000/svg"
                 fill="none"
                 viewBox="0 0 24 24"
@@ -115,7 +115,7 @@ export function PhotoLightbox({
             src={imageUrl(photo.s3Key, "2880", "webp")}
             alt={photo.filename}
             onLoad={() => setLoaded(true)}
-            className={`h-full w-full object-contain transition-opacity duration-300 ${
+            className={`h-full w-full object-contain transition-opacity duration-150 ease-out ${
               loaded ? "opacity-100" : "opacity-0"
             }`}
           />
@@ -124,7 +124,7 @@ export function PhotoLightbox({
               type="button"
               aria-label="Previous photo"
               onClick={onPrev}
-              className="absolute left-2 top-1/2 -translate-y-1/2 rounded-full bg-black/40 p-2 text-white/80 transition-colors hover:bg-black/60 hover:text-white"
+              className="absolute left-2 top-1/2 -translate-y-1/2 rounded-full bg-black/40 p-2 text-white/80 transition hover:bg-black/60 hover:text-white active:scale-95"
             >
               <svg
                 className="h-6 w-6"
@@ -147,7 +147,7 @@ export function PhotoLightbox({
               type="button"
               aria-label="Next photo"
               onClick={onNext}
-              className="absolute right-2 top-1/2 -translate-y-1/2 rounded-full bg-black/40 p-2 text-white/80 transition-colors hover:bg-black/60 hover:text-white"
+              className="absolute right-2 top-1/2 -translate-y-1/2 rounded-full bg-black/40 p-2 text-white/80 transition hover:bg-black/60 hover:text-white active:scale-95"
             >
               <svg
                 className="h-6 w-6"
@@ -318,7 +318,7 @@ export function PhotoLightbox({
               <button
                 onClick={() => onMove(photo)}
                 disabled={renaming}
-                className="w-full rounded-md border border-border px-3 py-1.5 text-sm transition-colors hover:bg-foreground/5 disabled:opacity-50 disabled:pointer-events-none"
+                className="w-full rounded-md border border-border px-3 py-1.5 text-sm transition hover:bg-foreground/5 active:scale-[0.97] disabled:opacity-50 disabled:pointer-events-none"
               >
                 Move
               </button>
@@ -337,7 +337,7 @@ export function PhotoLightbox({
               <button
                 onClick={() => onDelete(photo)}
                 disabled={renaming}
-                className="w-full rounded-md border border-red-500/30 px-3 py-1.5 text-sm text-red-600 transition-colors hover:bg-red-500/10 disabled:opacity-50 disabled:pointer-events-none dark:text-red-400"
+                className="w-full rounded-md border border-red-500/30 px-3 py-1.5 text-sm text-red-600 transition hover:bg-red-500/10 active:scale-[0.97] disabled:opacity-50 disabled:pointer-events-none dark:text-red-400"
               >
                 Delete
               </button>

@@ -112,7 +112,7 @@ function FolderCard({
       {inFlight.length > 0 && (
         <div className="absolute inset-x-0 bottom-0 h-1 bg-foreground/10">
           <div
-            className="h-full bg-accent transition-all"
+            className="h-full bg-accent transition-[width] duration-200 ease-linear"
             style={{ width: `${progress}%` }}
           />
         </div>
