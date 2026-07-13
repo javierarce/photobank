@@ -221,7 +221,7 @@ async fn import_one(
 
     reporter.emit(None, 0, "starting", None);
 
-    match run_import(app, path, folder, filename, s3_key, &reporter, cancel).await {
+    match run_import(app, path, folder, filename, &reporter, cancel).await {
         Ok(Imported::Done(photo)) => {
             reporter.emit(Some(&photo.id), 100, "done", None);
             crate::manifest::schedule_upload(app);
@@ -231,7 +231,7 @@ async fn import_one(
             let photo_id = match cancellation {
                 // A fresh import owns everything it made — remove it wholesale.
                 Cancellation::Fresh { photo_id } => {
-                    cleanup_cancelled(app, &photo_id, s3_key).await;
+                    cleanup_cancelled(app, &photo_id).await;
                     photo_id
                 }
                 // A re-import reused an existing photo's row — restore it and
@@ -262,7 +262,6 @@ async fn run_import(
     path: &str,
     folder: &str,
     filename: &str,
-    s3_key: &str,
     reporter: &Reporter,
     cancel: &AtomicBool,
 ) -> std::result::Result<Imported, ImportError> {
@@ -283,12 +282,16 @@ async fn run_import(
     let mime = pipeline::mime_for_extension(filename);
     let file_size = bytes.len() as i64;
 
-    // Upsert the catalog row first (mirrors the old /api/upload behavior on
-    // folder+filename conflicts) so a re-import of the same name replaces.
-    // `prior` is the pre-existing row's restorable state (None for a brand-new
-    // row), which decides how a later cancel unwinds this import.
-    let (photo_id, prior) = upsert_row(app, folder, filename, s3_key, mime, file_size)
-        .map_err(|e| (None, e))?;
+    // Reserve the catalog row, resolving the actual filename/S3 key this import
+    // stores under. It never overwrites a completed or in-flight photo — a name
+    // collision is suffixed ("photo (2).jpg") — but reuses a `failed` row as a
+    // retry. `prior` is that reused row's restorable state (None for a fresh
+    // row), which decides how a later cancel unwinds this import. The stored
+    // key can differ from `reporter.key` (the original "folder/filename" the
+    // frontend tile matches on); everything below uses the resolved key.
+    let Reserved { id: photo_id, s3_key, prior } =
+        reserve_row(app, folder, filename, mime, file_size).map_err(|e| (None, e))?;
+    let s3_key = s3_key.as_str();
     let fail = |e: Error| (Some(photo_id.clone()), e);
     // Built fresh at each checkpoint so a cancel deletes a new photo but only
     // restores an existing one.
@@ -373,10 +376,32 @@ async fn run_import(
 /// Undo a cancelled import: best-effort remove any objects that reached the
 /// bucket and any cached files, then drop the catalog row. Stays quiet — a
 /// variant may never have been uploaded, and S3 may be unconfigured.
-async fn cleanup_cancelled(app: &AppHandle, photo_id: &str, s3_key: &str) {
-    let base = crate::keys::base_key(s3_key).to_string();
-    let mut keys = vec![s3_key.to_string()];
-    keys.extend(crate::keys::variant_suffixes().iter().map(|suffix| format!("{base}{suffix}")));
+async fn cleanup_cancelled(app: &AppHandle, photo_id: &str) {
+    // Read the key the row was actually stored under (a collision may have
+    // suffixed it) so we delete this import's own objects, not the original's.
+    let s3_key: Option<String> = {
+        let db = app.state::<Db>();
+        let conn = db.0.lock().unwrap();
+        conn.query_row(
+            "SELECT s3_key FROM photos WHERE id = ?1",
+            rusqlite::params![photo_id],
+            |row| row.get(0),
+        )
+        .optional()
+        .ok()
+        .flatten()
+    };
+
+    let keys: Vec<String> = s3_key
+        .map(|s3_key| {
+            let base = crate::keys::base_key(&s3_key).to_string();
+            let mut keys = vec![s3_key];
+            keys.extend(
+                crate::keys::variant_suffixes().iter().map(|suffix| format!("{base}{suffix}")),
+            );
+            keys
+        })
+        .unwrap_or_default();
 
     {
         let state = app.state::<S3State>();
@@ -427,66 +452,105 @@ async fn put_object(
     Ok(())
 }
 
-/// Upsert the catalog row, returning its id and — when the row already existed —
-/// the restorable state it held before this import overwrote it. That `prior`
-/// lets a cancelled re-import put the pre-existing photo back instead of
-/// deleting it.
-fn upsert_row(
-    app: &AppHandle,
-    folder: &str,
-    filename: &str,
-    s3_key: &str,
-    mime: Option<&str>,
-    file_size: i64,
-) -> Result<(String, Option<PriorRow>)> {
-    let db = app.state::<Db>();
-    let conn = db.0.lock().unwrap();
-    upsert_row_conn(&conn, folder, filename, s3_key, mime, file_size)
+/// The row a reservation resolved to: its id, the (possibly suffixed) S3 key it
+/// will actually be stored under (the filename is its tail), and — when a prior
+/// `failed` row was reused — the state it held before this import overwrote it.
+struct Reserved {
+    id: String,
+    s3_key: String,
+    prior: Option<PriorRow>,
 }
 
-fn upsert_row_conn(
-    conn: &rusqlite::Connection,
+/// "photo.jpg" + 2 -> "photo (2).jpg"; "photo" + 2 -> "photo (2)". Mirrors the
+/// `stem (n).ext` scheme `export_photos` uses for on-disk duplicates.
+fn indexed_filename(filename: &str, n: u32) -> String {
+    match filename.rfind('.') {
+        // A real extension (dot not first char, at least one char after it).
+        Some(i) if i > 0 && i + 1 < filename.len() => {
+            format!("{} ({}).{}", &filename[..i], n, &filename[i + 1..])
+        }
+        _ => format!("{filename} ({n})"),
+    }
+}
+
+/// Reserve a catalog row for an import without ever clobbering a live or
+/// completed photo. Starting from `desired`, walk `name`, `name (1)`,
+/// `name (2)`… until a slot is either free (fresh insert) or holds a `failed`
+/// row (reuse it — a retry of an import that never finished). Any other status
+/// (completed / pending / processing) is a real photo we must not overwrite, so
+/// we suffix past it. Returns what was actually reserved.
+fn reserve_row(
+    app: &AppHandle,
     folder: &str,
-    filename: &str,
-    s3_key: &str,
+    desired: &str,
     mime: Option<&str>,
     file_size: i64,
-) -> Result<(String, Option<PriorRow>)> {
-    // Read the prior row (if any) before the upsert clobbers it.
-    let prior = conn
-        .query_row(
-            "SELECT processing_status, mime_type, file_size FROM photos WHERE folder = ?1 AND filename = ?2",
-            rusqlite::params![folder, filename],
-            |row| {
-                Ok(PriorRow {
-                    processing_status: row.get(0)?,
-                    mime_type: row.get(1)?,
-                    file_size: row.get(2)?,
-                })
-            },
-        )
-        .optional()?;
-    let id: String = conn.query_row(
-        "INSERT INTO photos (id, filename, s3_key, folder, mime_type, file_size, processing_status, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'pending', ?7, ?7)
-         ON CONFLICT (folder, filename) DO UPDATE SET
-           mime_type = excluded.mime_type,
-           file_size = excluded.file_size,
-           processing_status = 'pending',
-           updated_at = excluded.updated_at
-         RETURNING id",
-        rusqlite::params![
-            uuid::Uuid::new_v4().to_string(),
-            filename,
-            s3_key,
-            folder,
-            mime,
-            file_size,
-            db::now(),
-        ],
-        |row| row.get(0),
-    )?;
-    Ok((id, prior))
+) -> Result<Reserved> {
+    let db = app.state::<Db>();
+    let conn = db.0.lock().unwrap();
+    reserve_row_conn(&conn, folder, desired, mime, file_size)
+}
+
+fn reserve_row_conn(
+    conn: &rusqlite::Connection,
+    folder: &str,
+    desired: &str,
+    mime: Option<&str>,
+    file_size: i64,
+) -> Result<Reserved> {
+    // The whole resolve-then-write runs under the caller's single DB lock, so no
+    // concurrent import can claim the same name between the lookup and the write.
+    let mut n = 1;
+    let mut filename = desired.to_string();
+    loop {
+        let existing: Option<(String, String)> = conn
+            .query_row(
+                "SELECT id, processing_status FROM photos WHERE folder = ?1 AND filename = ?2",
+                rusqlite::params![folder, &filename],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+
+        let s3_key = format!("{folder}/{filename}");
+        match existing {
+            // Free slot — insert a brand-new row. A cancel can delete it wholesale.
+            None => {
+                let id = uuid::Uuid::new_v4().to_string();
+                conn.execute(
+                    "INSERT INTO photos (id, filename, s3_key, folder, mime_type, file_size, processing_status, created_at, updated_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'pending', ?7, ?7)",
+                    rusqlite::params![id, &filename, &s3_key, folder, mime, file_size, db::now()],
+                )?;
+                return Ok(Reserved { id, s3_key, prior: None });
+            }
+            // A failed leftover — reuse its row (retry). Capture its prior state
+            // so a cancel can put the failed marker back rather than delete it.
+            Some((id, status)) if status == "failed" => {
+                let prior = conn.query_row(
+                    "SELECT processing_status, mime_type, file_size FROM photos WHERE id = ?1",
+                    rusqlite::params![&id],
+                    |row| {
+                        Ok(PriorRow {
+                            processing_status: row.get(0)?,
+                            mime_type: row.get(1)?,
+                            file_size: row.get(2)?,
+                        })
+                    },
+                )?;
+                conn.execute(
+                    "UPDATE photos SET mime_type = ?1, file_size = ?2, processing_status = 'pending', updated_at = ?3 WHERE id = ?4",
+                    rusqlite::params![mime, file_size, db::now(), &id],
+                )?;
+                return Ok(Reserved { id, s3_key, prior: Some(prior) });
+            }
+            // A completed or in-flight photo occupies this name — step to the
+            // next suffix rather than overwrite it.
+            Some(_) => {
+                filename = indexed_filename(desired, n);
+                n += 1;
+            }
+        }
+    }
 }
 
 /// Put a re-imported photo's row back the way it was before a cancelled import
@@ -617,50 +681,99 @@ mod tests {
     }
 
     #[test]
-    fn upsert_of_a_new_name_reports_no_prior_state() {
-        let conn = crate::db::open_in_memory();
-        let (_id, prior) =
-            upsert_row_conn(&conn, "inbox", "new.jpg", "inbox/new.jpg", Some("image/jpeg"), 10)
-                .unwrap();
-        // A brand-new row means a cancel is safe to delete wholesale.
-        assert!(prior.is_none());
+    fn indexed_filename_matches_the_export_suffix_scheme() {
+        assert_eq!(indexed_filename("photo.jpg", 2), "photo (2).jpg");
+        assert_eq!(indexed_filename("photo.tar.gz", 1), "photo.tar (1).gz");
+        // No extension — suffix the whole name.
+        assert_eq!(indexed_filename("photo", 3), "photo (3)");
+        // Leading-dot "extension" is a hidden file, not an ext: suffix as a whole.
+        assert_eq!(indexed_filename(".hidden", 2), ".hidden (2)");
+    }
+
+    fn insert_photo(conn: &rusqlite::Connection, id: &str, filename: &str, status: &str) {
+        conn.execute(
+            "INSERT INTO photos (id, filename, s3_key, folder, mime_type, file_size, processing_status, created_at, updated_at)
+             VALUES (?1, ?2, ?3, 'inbox', 'image/jpeg', 111, ?4, ?5, ?5)",
+            rusqlite::params![id, filename, format!("inbox/{filename}"), status, crate::db::now()],
+        )
+        .unwrap();
     }
 
     #[test]
-    fn re_importing_captures_prior_state_so_a_cancel_can_restore_it() {
+    fn reserve_of_a_new_name_inserts_a_fresh_row() {
         let conn = crate::db::open_in_memory();
-        conn.execute(
-            "INSERT INTO photos (id, filename, s3_key, folder, mime_type, file_size, processing_status, created_at, updated_at)
-             VALUES ('p1', 'a.jpg', 'inbox/a.jpg', 'inbox', 'image/jpeg', 111, 'completed', ?1, ?1)",
-            rusqlite::params![crate::db::now()],
-        )
-        .unwrap();
-
-        // Re-importing the same folder/filename reuses the row and reports the
-        // state it held before, while flipping it to 'pending' with new metadata.
-        let (id, prior) =
-            upsert_row_conn(&conn, "inbox", "a.jpg", "inbox/a.jpg", Some("image/png"), 222).unwrap();
-        assert_eq!(id, "p1");
-        let prior = prior.expect("an existing row must report prior state");
-        assert_eq!(prior.processing_status, "completed");
-        assert_eq!(prior.file_size, 111);
-        assert_eq!(prior.mime_type.as_deref(), Some("image/jpeg"));
-        let mid: String = conn
-            .query_row("SELECT processing_status FROM photos WHERE id = 'p1'", [], |r| r.get(0))
+        let reserved =
+            reserve_row_conn(&conn, "inbox", "new.jpg", Some("image/jpeg"), 10).unwrap();
+        assert_eq!(reserved.s3_key, "inbox/new.jpg");
+        // A brand-new row means a cancel is safe to delete wholesale.
+        assert!(reserved.prior.is_none());
+        let status: String = conn
+            .query_row("SELECT processing_status FROM photos WHERE id = ?1", [&reserved.id], |r| {
+                r.get(0)
+            })
             .unwrap();
-        assert_eq!(mid, "pending");
+        assert_eq!(status, "pending");
+    }
 
-        // Cancelling restores the pre-existing photo exactly — no data loss.
-        restore_row_conn(&conn, &id, &prior);
-        let (status, mime, size): (String, Option<String>, i64) = conn
+    #[test]
+    fn reserve_suffixes_around_a_completed_photo_instead_of_overwriting() {
+        let conn = crate::db::open_in_memory();
+        insert_photo(&conn, "p1", "a.jpg", "completed");
+
+        // The existing photo is real — importing another "a.jpg" must not touch
+        // it. It lands on the next free suffix instead.
+        let reserved =
+            reserve_row_conn(&conn, "inbox", "a.jpg", Some("image/png"), 222).unwrap();
+        assert_eq!(reserved.s3_key, "inbox/a (1).jpg");
+        assert_ne!(reserved.id, "p1");
+        assert!(reserved.prior.is_none());
+
+        // The original photo is untouched — no data loss.
+        let (status, size): (String, i64) = conn
             .query_row(
-                "SELECT processing_status, mime_type, file_size FROM photos WHERE id = 'p1'",
+                "SELECT processing_status, file_size FROM photos WHERE id = 'p1'",
                 [],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                |r| Ok((r.get(0)?, r.get(1)?)),
             )
             .unwrap();
         assert_eq!(status, "completed");
-        assert_eq!(mime.as_deref(), Some("image/jpeg"));
         assert_eq!(size, 111);
+    }
+
+    #[test]
+    fn reserve_chains_suffixes_past_every_occupant() {
+        let conn = crate::db::open_in_memory();
+        insert_photo(&conn, "p1", "a.jpg", "completed");
+        insert_photo(&conn, "p2", "a (1).jpg", "completed");
+        // A still-processing import also holds a name we must step past.
+        insert_photo(&conn, "p3", "a (2).jpg", "processing");
+
+        let reserved = reserve_row_conn(&conn, "inbox", "a.jpg", Some("image/jpeg"), 5).unwrap();
+        assert_eq!(reserved.s3_key, "inbox/a (3).jpg");
+    }
+
+    #[test]
+    fn reserve_reuses_a_failed_row_as_a_retry() {
+        let conn = crate::db::open_in_memory();
+        insert_photo(&conn, "p1", "a.jpg", "failed");
+
+        // A failed leftover is retried in place rather than duplicated.
+        let reserved =
+            reserve_row_conn(&conn, "inbox", "a.jpg", Some("image/png"), 222).unwrap();
+        assert_eq!(reserved.id, "p1");
+        assert_eq!(reserved.s3_key, "inbox/a.jpg");
+        let prior = reserved.prior.expect("a reused failed row must report prior state");
+        assert_eq!(prior.processing_status, "failed");
+        let status: String = conn
+            .query_row("SELECT processing_status FROM photos WHERE id = 'p1'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(status, "pending");
+
+        // Cancelling the retry restores the failed marker exactly.
+        restore_row_conn(&conn, &reserved.id, &prior);
+        let status: String = conn
+            .query_row("SELECT processing_status FROM photos WHERE id = 'p1'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(status, "failed");
     }
 }
