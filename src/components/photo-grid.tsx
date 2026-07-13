@@ -22,10 +22,11 @@ type Props = {
   /** In-flight uploads, rendered as tiles with an inline progress bar. */
   uploads?: UploadFile[];
   onDismissUpload?: (key: string) => void;
+  onCancelUpload?: (key: string) => void;
 };
 
 export const PhotoGrid = forwardRef<PhotoGridRef, Props>(function PhotoGrid(
-  { folder, uploads = [], onDismissUpload },
+  { folder, uploads = [], onDismissUpload, onCancelUpload },
   ref
 ) {
   const {
@@ -183,6 +184,7 @@ export const PhotoGrid = forwardRef<PhotoGridRef, Props>(function PhotoGrid(
             key={upload.key}
             upload={upload}
             onDismiss={onDismissUpload}
+            onCancel={onCancelUpload}
           />
         ))}
         {visiblePhotos.map((photo) => (
@@ -247,9 +249,11 @@ export const PhotoGrid = forwardRef<PhotoGridRef, Props>(function PhotoGrid(
 function UploadTile({
   upload,
   onDismiss,
+  onCancel,
 }: {
   upload: UploadFile;
   onDismiss?: (key: string) => void;
+  onCancel?: (key: string) => void;
 }) {
   const failed = upload.status === "error";
 
@@ -274,6 +278,10 @@ function UploadTile({
             </button>
           )}
         </div>
+      ) : upload.status === "cancelling" ? (
+        <span className="absolute left-2 top-2 rounded bg-background/70 px-1.5 py-0.5 text-[11px] font-medium text-foreground/70">
+          Cancelling…
+        </span>
       ) : upload.status === "done" ? (
         <span className="absolute left-2 top-2 rounded bg-background/70 px-1.5 py-0.5 text-[11px] font-medium text-foreground/70">
           Processing…
@@ -283,6 +291,15 @@ function UploadTile({
           <span className="absolute left-2 top-2 rounded bg-background/70 px-1.5 py-0.5 text-[11px] font-medium tabular-nums text-foreground/70">
             {upload.progress}%
           </span>
+          {onCancel && (
+            <button
+              type="button"
+              onClick={() => onCancel(upload.key)}
+              className="absolute right-2 top-2 rounded bg-background/70 px-1.5 py-0.5 text-[11px] font-medium text-foreground/70 transition-colors hover:text-foreground"
+            >
+              Cancel
+            </button>
+          )}
           <div className="absolute inset-x-0 bottom-0 h-1 bg-foreground/10">
             <div
               className="h-full bg-accent transition-all"
