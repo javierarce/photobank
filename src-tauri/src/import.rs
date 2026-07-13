@@ -131,6 +131,17 @@ async fn run_import(
     s3_key: &str,
     reporter: &Reporter,
 ) -> std::result::Result<Photo, ImportError> {
+    // Refuse to touch a bucket the catalog wasn't built from, before this
+    // import creates any catalog rows (an empty catalog binds here).
+    {
+        let state = app.state::<S3State>();
+        let guard = state.0.read().await;
+        let ctx = guard
+            .as_ref()
+            .ok_or_else(|| (None, Error::msg("S3 is not configured — open Settings first")))?;
+        crate::settings::ensure_catalog_matches_bucket(app, ctx).map_err(|e| (None, e))?;
+    }
+
     let bytes = tokio::fs::read(path)
         .await
         .map_err(|e| (None, Error::msg(format!("could not read {path}: {e}"))))?;
