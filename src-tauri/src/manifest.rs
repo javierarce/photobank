@@ -330,6 +330,13 @@ fn replace_catalog(app: &AppHandle, manifest: Manifest, bucket_identity: &str) -
         )?;
     }
 
+    // A manifest snapshotted mid-batch (schedule_upload fires per completed
+    // photo) can carry pending/processing rows for imports that never finished.
+    // Restoring runs mid-session, so the startup sweep won't catch them — flip
+    // them here, in the same transaction, so a rebuild can't reinstate a wedged
+    // row that blocks its name and keeps the grid's processing poll alive.
+    db::reconcile_interrupted_imports(&tx)?;
+
     tx.commit()?;
     Ok(())
 }
