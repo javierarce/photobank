@@ -1,7 +1,7 @@
 /** The corner check badge shown on a selected thumbnail. */
 export function SelectionCheck() {
   return (
-    <span className="pointer-events-none absolute right-1.5 top-1.5 flex h-5 w-5 items-center justify-center rounded-full bg-accent text-white shadow-sm ring-2 ring-background">
+    <span className="badge-in pointer-events-none absolute right-1.5 top-1.5 flex h-5 w-5 items-center justify-center rounded-full bg-accent text-white shadow-sm ring-2 ring-background">
       <svg
         viewBox="0 0 24 24"
         className="h-3 w-3"

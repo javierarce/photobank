@@ -24,9 +24,9 @@ export function SelectionToolbar() {
   const subtle =
     "rounded-md px-1.5 py-0.5 text-sm text-foreground/50 transition-colors hover:text-foreground";
   const action =
-    "rounded-md border border-border px-3 py-1.5 text-sm transition-colors hover:bg-foreground/5 disabled:opacity-40 disabled:pointer-events-none";
+    "rounded-md border border-border px-3 py-1.5 text-sm transition hover:bg-foreground/5 active:scale-[0.97] disabled:opacity-40 disabled:pointer-events-none";
   const danger =
-    "rounded-md border border-red-500/30 px-3 py-1.5 text-sm text-red-600 transition-colors hover:bg-red-500/10 disabled:opacity-40 disabled:pointer-events-none dark:text-red-400";
+    "rounded-md border border-red-500/30 px-3 py-1.5 text-sm text-red-600 transition hover:bg-red-500/10 active:scale-[0.97] disabled:opacity-40 disabled:pointer-events-none dark:text-red-400";
 
   return (
     <div

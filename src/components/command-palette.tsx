@@ -322,7 +322,7 @@ export function CommandPalette() {
                   data-index={i}
                   onClick={() => activate(i)}
                   onMouseMove={() => setSelected(i)}
-                  className={`flex w-full items-center justify-between px-4 py-2 text-left text-sm transition-colors ${
+                  className={`flex w-full items-center justify-between px-4 py-2 text-left text-sm ${
                     isSelected ? "bg-foreground/5" : ""
                   }`}
                 >

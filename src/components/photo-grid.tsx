@@ -11,11 +11,17 @@ import { PhotoLightbox } from "@/components/photo-lightbox";
 import { SelectionCheck } from "@/components/selection-check";
 import { usePhotoActions } from "@/hooks/use-photo-actions";
 import { useSelection, useThumbnailActivation } from "@/hooks/use-selection";
+import { usePresence } from "@/hooks/use-presence";
+import type { Photo } from "@/lib/types";
 import type { UploadFile } from "@/hooks/use-upload";
 
 export type PhotoGridRef = {
   refresh: () => Promise<void>;
 };
+
+// Module-level so its identity is stable across renders (the presence hook
+// keys off it).
+const photoKey = (p: Photo) => p.id;
 
 type Props = {
   folder: string;
@@ -140,6 +146,13 @@ export const PhotoGrid = forwardRef<PhotoGridRef, Props>(function PhotoGrid(
     (u) => u.id && photoById.get(u.id)?.processingStatus === "completed"
   );
 
+  // Animate tiles as they come and go: new photos fade in, deleted ones fade
+  // out in place before neighbours settle. The grid is keyed by folder in the
+  // route, so a folder switch remounts this component and re-baselines from
+  // empty rather than cross-fading the old folder's tiles against the new
+  // ones. Nav/selection still read the live `visiblePhotos` below.
+  const tiles = usePresence(visiblePhotos, photoKey);
+
   // Failed processing hands off to the photo tile, which owns the error state.
   useEffect(() => {
     if (!onDismissUpload) return;
@@ -185,12 +198,15 @@ export const PhotoGrid = forwardRef<PhotoGridRef, Props>(function PhotoGrid(
             onDismiss={onDismissUpload}
           />
         ))}
-        {visiblePhotos.map((photo) => (
+        {tiles.map((entry) => {
+          const photo = entry.item;
+          return (
           <button
-            key={photo.id}
+            key={entry.key}
+            data-presence={entry.state}
             onClick={(e) => onClick(e, photo)}
             onDoubleClick={() => onDoubleClick(photo)}
-            className={`group relative aspect-square overflow-hidden rounded-md border-2 bg-foreground/5 ${
+            className={`photo-tile group relative aspect-square overflow-hidden rounded-md border-2 bg-foreground/5 ${
               isSelected(photo.id) ? "border-accent" : "border-transparent"
             }`}
           >
@@ -214,7 +230,8 @@ export const PhotoGrid = forwardRef<PhotoGridRef, Props>(function PhotoGrid(
             )}
             {isSelected(photo.id) && <SelectionCheck />}
           </button>
-        ))}
+          );
+        })}
       </div>
 
       {active &&
@@ -285,7 +302,7 @@ function UploadTile({
           </span>
           <div className="absolute inset-x-0 bottom-0 h-1 bg-foreground/10">
             <div
-              className="h-full bg-accent transition-all"
+              className="h-full bg-accent transition-[width] duration-200 ease-linear"
               style={{ width: `${upload.progress}%` }}
             />
           </div>
