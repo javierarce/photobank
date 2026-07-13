@@ -217,15 +217,26 @@ export const PhotoGrid = forwardRef<PhotoGridRef, Props>(function PhotoGrid(
         ))}
       </div>
 
-      {active && (
-        <PhotoLightbox
-          photo={active}
-          onClose={() => setActive(null)}
-          onDelete={handleDelete}
-          onMove={handleMove}
-          onRename={handleRename}
-        />
-      )}
+      {active &&
+        (() => {
+          const index = visiblePhotos.findIndex((p) => p.id === active.id);
+          const count = visiblePhotos.length;
+          // Wrap around so the arrows cycle through the folder endlessly.
+          const canNavigate = index >= 0 && count > 1;
+          const prev = visiblePhotos[(index - 1 + count) % count];
+          const next = visiblePhotos[(index + 1) % count];
+          return (
+            <PhotoLightbox
+              photo={active}
+              onClose={() => setActive(null)}
+              onDelete={handleDelete}
+              onMove={handleMove}
+              onRename={handleRename}
+              onPrev={canNavigate ? () => setActive(prev) : undefined}
+              onNext={canNavigate ? () => setActive(next) : undefined}
+            />
+          );
+        })()}
     </>
   );
 });
