@@ -8,6 +8,18 @@ vi.mock("@/lib/api", () => ({
   listFolders: vi.fn(),
 }));
 
+// FolderList reads live upload state from the provider; stub a quiet default so
+// these tests exercise the plain folder listing.
+vi.mock("@/hooks/use-upload", () => ({
+  useUpload: () => ({
+    files: [],
+    isDragging: false,
+    dropFolder: null,
+    clearCompleted: () => {},
+    onUploadComplete: () => () => {},
+  }),
+}));
+
 const mockListFolders = vi.mocked(listFolders);
 
 function renderFolderList() {
