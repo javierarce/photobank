@@ -76,6 +76,64 @@ async fn s3_delete_quiet(ctx: &S3Ctx, key: &str) {
         .await;
 }
 
+/// Batch-delete objects from the bucket, reporting failure. S3 treats deleting
+/// a missing key as success, so absent variants (a photo may not have every
+/// derivative) don't error — only a genuine failure such as a network drop or
+/// missing permission surfaces, which lets the caller keep the photo instead
+/// of orphaning its bucket objects. Note DeleteObjects can fail per key: on a
+/// partial failure some objects may already be gone, so we return Err (the
+/// photo is kept) but a subset of its variants can be left deleted.
+async fn s3_delete_many(ctx: &S3Ctx, keys: &[String]) -> Result<()> {
+    use aws_sdk_s3::types::{Delete, ObjectIdentifier};
+
+    let objects = keys
+        .iter()
+        .map(|key| {
+            ObjectIdentifier::builder()
+                .key(key)
+                .build()
+                .map_err(|e| Error::msg(e.to_string()))
+        })
+        .collect::<Result<Vec<_>>>()?;
+
+    let delete = Delete::builder()
+        .set_objects(Some(objects))
+        .quiet(true)
+        .build()
+        .map_err(|e| Error::msg(e.to_string()))?;
+
+    let output = ctx
+        .client
+        .delete_objects()
+        .bucket(&ctx.bucket)
+        .delete(delete)
+        .send()
+        .await
+        .map_err(|e| {
+            Error::msg(format!(
+                "delete failed: {}",
+                aws_smithy_types::error::display::DisplayErrorContext(&e)
+            ))
+        })?;
+
+    let errors = output.errors();
+    if !errors.is_empty() {
+        let detail = errors
+            .iter()
+            .map(|e| {
+                format!(
+                    "{}: {}",
+                    e.key().unwrap_or("?"),
+                    e.message().unwrap_or("unknown error")
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        return Err(Error::msg(format!("could not delete from bucket: {detail}")));
+    }
+    Ok(())
+}
+
 /// Move and/or rename. Order matters and mirrors the old PATCH route:
 /// copy original → copy variants (remembering which existed) → repoint the
 /// DB → delete old objects. A failure partway never loses the photo.
@@ -187,15 +245,17 @@ pub async fn delete_photo(app: AppHandle, id: String) -> Result<()> {
     let mut keys = vec![photo.s3_key.clone()];
     keys.extend(variant_suffixes().iter().map(|suffix| format!("{base}{suffix}")));
 
+    // Delete from the bucket first. If this genuinely fails, bail before
+    // touching the catalog so the photo stays intact and the UI can restore
+    // its thumbnail. (A partial DeleteObjects failure can still leave a subset
+    // of variants deleted while the row is kept — see s3_delete_many.)
     {
         let state = app.state::<S3State>();
         let guard = state.0.read().await;
         let ctx = guard
             .as_ref()
             .ok_or_else(|| Error::msg("S3 is not configured — open Settings first"))?;
-        for key in &keys {
-            s3_delete_quiet(ctx, key).await;
-        }
+        s3_delete_many(ctx, &keys).await?;
     }
 
     {
