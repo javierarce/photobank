@@ -45,7 +45,7 @@ export default function FolderPage() {
               <button
                 type="button"
                 onClick={() => openFilePicker(folder)}
-                className="shrink-0 rounded-md border border-border px-3 py-1.5 text-sm font-medium text-foreground/70 transition-colors hover:border-foreground/35 hover:text-foreground"
+                className="shrink-0 rounded-md border border-border px-3 py-1.5 text-sm font-medium text-foreground/70 transition hover:border-foreground/35 hover:text-foreground active:scale-[0.97]"
               >
                 Upload
               </button>
@@ -54,7 +54,12 @@ export default function FolderPage() {
         </div>
 
         <section className="mt-8">
+          {/* Key by folder so navigating between folders remounts the grid:
+              its photo state resets and the new folder loads fresh, rather than
+              the previous folder's tiles lingering (and animating out) while the
+              new fetch is in flight. */}
           <PhotoGrid
+            key={folder}
             folder={folder}
             ref={photoGridRef}
             uploads={folderUploads}
