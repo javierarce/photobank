@@ -39,6 +39,10 @@ impl S3Settings {
 pub struct S3Ctx {
     pub client: aws_sdk_s3::Client,
     pub bucket: String,
+    /// Human-readable bucket identity — "bucket", or "bucket @ endpoint" for
+    /// custom endpoints — recorded in the catalog so mutations can refuse a
+    /// bucket the catalog wasn't built from.
+    pub identity: String,
 }
 
 /// None until complete settings + a stored secret produce a client.
@@ -142,10 +146,25 @@ async fn build_ctx(settings: &S3Settings, secret: &str) -> S3Ctx {
         builder = builder.force_path_style(true);
     }
 
+    let bucket = settings.bucket.trim().to_string();
+    let identity = match settings.custom_endpoint() {
+        Some(endpoint) => format!("{bucket} @ {endpoint}"),
+        None => bucket.clone(),
+    };
     S3Ctx {
         client: aws_sdk_s3::Client::from_conf(builder.build()),
-        bucket: settings.bucket.trim().to_string(),
+        bucket,
+        identity,
     }
+}
+
+/// Guard for every operation that writes to S3 (imports, moves, deletes, the
+/// manifest upload): the local catalog must belong to the configured bucket.
+/// See db::ensure_catalog_bucket for the binding rules.
+pub fn ensure_catalog_matches_bucket(app: &AppHandle, ctx: &S3Ctx) -> Result<()> {
+    let db = app.state::<crate::db::Db>();
+    let conn = db.0.lock().unwrap();
+    crate::db::ensure_catalog_bucket(&conn, &ctx.identity)
 }
 
 /// Rebuild the shared client from the stored settings + secret. Runs at

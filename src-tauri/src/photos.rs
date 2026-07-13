@@ -188,6 +188,7 @@ pub async fn update_photo(
     let ctx = guard
         .as_ref()
         .ok_or_else(|| Error::msg("S3 is not configured — open Settings first"))?;
+    crate::settings::ensure_catalog_matches_bucket(&app, ctx)?;
 
     // Copy original; if this fails nothing has been touched yet
     s3_copy(ctx, &photo.s3_key, &new_s3_key).await?;
@@ -255,6 +256,7 @@ pub async fn delete_photo(app: AppHandle, id: String) -> Result<()> {
         let ctx = guard
             .as_ref()
             .ok_or_else(|| Error::msg("S3 is not configured — open Settings first"))?;
+        crate::settings::ensure_catalog_matches_bucket(&app, ctx)?;
         s3_delete_many(ctx, &keys).await?;
     }
 

@@ -30,6 +30,10 @@ webp = "0.3"
 img-parts = "0.3"
 kamadak-exif = "0.6"
 
+[dev-dependencies]
+# Constructing SdkError/HttpResponse values in manifest tests
+aws-smithy-runtime-api = "1"
+
 [features]
 default = ["custom-protocol"]
 custom-protocol = ["tauri/custom-protocol"]

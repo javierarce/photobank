@@ -35,14 +35,15 @@ export function usePhotoActions() {
 
     try {
       await deletePhoto(photo.id);
-    } catch {
+    } catch (err) {
       setPhotos((prev) => {
         if (prev.some((p) => p.id === photo.id)) return prev;
         const next = [...prev];
         next.splice(Math.min(Math.max(index, 0), next.length), 0, photo);
         return next;
       });
-      await message("Failed to delete photo", {
+      // Tauri commands reject with a plain message string (see src/lib/api.ts)
+      await message(typeof err === "string" ? err : "Failed to delete photo", {
         title: "Delete failed",
         kind: "error",
       });
@@ -109,10 +110,19 @@ export function usePhotoActions() {
         const added = prev.filter((p) => !known.has(p.id));
         return [...added, ...snapshot.filter((p) => keep.has(p.id))];
       });
+      // Tauri commands reject with a plain message string — surface the first
+      // one (e.g. the catalog↔bucket guard's rebuild instruction) over the
+      // generic count
+      const rejection = results.find(
+        (r): r is PromiseRejectedResult => r.status === "rejected"
+      );
+      const detail =
+        typeof rejection?.reason === "string" ? rejection.reason : null;
       await message(
-        failed.size === targets.length
-          ? "Failed to delete photos"
-          : `Failed to delete ${failed.size} of ${targets.length} photos`,
+        detail ??
+          (failed.size === targets.length
+            ? "Failed to delete photos"
+            : `Failed to delete ${failed.size} of ${targets.length} photos`),
         { title: "Delete failed", kind: "error" }
       );
     })();

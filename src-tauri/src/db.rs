@@ -5,7 +5,7 @@ use rusqlite::{Connection, Row};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager};
 
-use crate::error::Result;
+use crate::error::{Error, Result};
 
 /// The catalog connection, managed as Tauri state. Access is coarse-grained —
 /// a single mutex is plenty for a single-user catalog.
@@ -126,6 +126,67 @@ PRAGMA user_version = 1;
 COMMIT;
 ";
 
+const SCHEMA_V2: &str = "
+BEGIN;
+CREATE TABLE meta (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+PRAGMA user_version = 2;
+COMMIT;
+";
+
+/// meta key: the bucket identity this catalog was built from.
+pub const META_CATALOG_BUCKET: &str = "catalog_bucket";
+
+pub fn get_meta(conn: &Connection, key: &str) -> Result<Option<String>> {
+    match conn.query_row(
+        "SELECT value FROM meta WHERE key = ?1",
+        rusqlite::params![key],
+        |row| row.get(0),
+    ) {
+        Ok(value) => Ok(Some(value)),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(e) => Err(e.into()),
+    }
+}
+
+pub fn set_meta(conn: &Connection, key: &str, value: &str) -> Result<()> {
+    conn.execute(
+        "INSERT INTO meta (key, value) VALUES (?1, ?2)
+         ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+        rusqlite::params![key, value],
+    )?;
+    Ok(())
+}
+
+/// Every S3 write must target the bucket this catalog was built from —
+/// otherwise a stale catalog (e.g. after switching Settings from a test
+/// bucket to a production one) could delete or overwrite objects it never
+/// cataloged. An empty catalog binds to the configured bucket on first use;
+/// anything else re-binds only through "Rebuild from bucket".
+pub fn ensure_catalog_bucket(conn: &Connection, bucket: &str) -> Result<()> {
+    if let Some(bound) = get_meta(conn, META_CATALOG_BUCKET)? {
+        if bound == bucket {
+            return Ok(());
+        }
+        return Err(Error::msg(format!(
+            "This catalog was built from \u{201c}{bound}\u{201d} but the app is now configured \
+             for \u{201c}{bucket}\u{201d}. Run \u{201c}Rebuild from bucket\u{201d} in Settings \
+             before making changes."
+        )));
+    }
+
+    let photos: i64 = conn.query_row("SELECT COUNT(*) FROM photos", [], |row| row.get(0))?;
+    if photos > 0 {
+        return Err(Error::msg(format!(
+            "This catalog isn't linked to a bucket yet. Run \u{201c}Rebuild from bucket\u{201d} \
+             in Settings to link it to \u{201c}{bucket}\u{201d}."
+        )));
+    }
+    set_meta(conn, META_CATALOG_BUCKET, bucket)
+}
+
 /// Open (creating if needed) the catalog at
 /// `~/Library/Application Support/com.photobank.app/photobank.db`.
 pub fn init(app: &AppHandle) -> Result<Connection> {
@@ -147,9 +208,16 @@ pub fn open(path: &std::path::Path) -> Result<Connection> {
 fn configure(conn: &Connection) -> Result<()> {
     conn.pragma_update(None, "journal_mode", "WAL")?;
     conn.pragma_update(None, "foreign_keys", "ON")?;
+    migrate(conn)
+}
+
+fn migrate(conn: &Connection) -> Result<()> {
     let version: i64 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
     if version < 1 {
         conn.execute_batch(SCHEMA_V1)?;
+    }
+    if version < 2 {
+        conn.execute_batch(SCHEMA_V2)?;
     }
     Ok(())
 }
@@ -163,7 +231,7 @@ pub fn open_in_memory() -> Connection {
     let conn = Connection::open_in_memory().unwrap();
     // WAL doesn't apply to in-memory databases; run the rest of the setup.
     conn.pragma_update(None, "foreign_keys", "ON").unwrap();
-    conn.execute_batch(SCHEMA_V1).unwrap();
+    migrate(&conn).unwrap();
     conn
 }
 
@@ -217,6 +285,56 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM photo_tags", [], |row| row.get(0))
             .unwrap();
         assert_eq!(remaining, 0);
+    }
+
+    #[test]
+    fn migrating_a_v1_catalog_adds_the_meta_table() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.pragma_update(None, "foreign_keys", "ON").unwrap();
+        conn.execute_batch(SCHEMA_V1).unwrap();
+
+        migrate(&conn).unwrap();
+
+        let version: i64 = conn
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, 2);
+        assert_eq!(get_meta(&conn, "anything").unwrap(), None);
+    }
+
+    #[test]
+    fn meta_values_roundtrip_and_overwrite() {
+        let conn = open_in_memory();
+        assert_eq!(get_meta(&conn, "k").unwrap(), None);
+        set_meta(&conn, "k", "one").unwrap();
+        assert_eq!(get_meta(&conn, "k").unwrap(), Some("one".into()));
+        set_meta(&conn, "k", "two").unwrap();
+        assert_eq!(get_meta(&conn, "k").unwrap(), Some("two".into()));
+    }
+
+    #[test]
+    fn empty_catalog_binds_to_the_first_bucket_it_sees() {
+        let conn = open_in_memory();
+        ensure_catalog_bucket(&conn, "prod").unwrap();
+        assert_eq!(
+            get_meta(&conn, META_CATALOG_BUCKET).unwrap(),
+            Some("prod".into())
+        );
+        // Bound: the same bucket keeps working, another one is refused
+        ensure_catalog_bucket(&conn, "prod").unwrap();
+        let err = ensure_catalog_bucket(&conn, "other").unwrap_err();
+        assert!(err.to_string().contains("Rebuild from bucket"), "{err}");
+        assert!(err.to_string().contains("prod"), "{err}");
+    }
+
+    #[test]
+    fn unbound_catalog_with_photos_requires_a_rebuild() {
+        let conn = open_in_memory();
+        insert_photo(&conn, "a", "inbox", "photo.jpg");
+        let err = ensure_catalog_bucket(&conn, "prod").unwrap_err();
+        assert!(err.to_string().contains("Rebuild from bucket"), "{err}");
+        // The failed check must not have bound anything
+        assert_eq!(get_meta(&conn, META_CATALOG_BUCKET).unwrap(), None);
     }
 
     #[test]

@@ -8,14 +8,20 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
+use aws_sdk_s3::error::SdkError;
+use aws_sdk_s3::operation::get_object::GetObjectError;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager};
 
 use crate::db::{self, Db, Photo, PHOTO_COLUMNS};
 use crate::error::{Error, Result};
-use crate::settings::S3State;
+use crate::settings::{S3Ctx, S3State};
 
 pub const MANIFEST_KEY: &str = "photobank-manifest.json";
+/// One generation of history: the previous manifest is copied here before
+/// every upload, so a clobbered manifest (or a bad rebuild) can be undone by
+/// restoring this object.
+pub const MANIFEST_BACKUP_KEY: &str = "photobank-manifest.prev.json";
 const DEBOUNCE: Duration = Duration::from_secs(5);
 
 #[derive(Default)]
@@ -65,15 +71,20 @@ pub fn schedule_upload(app: &AppHandle) {
 }
 
 async fn upload(app: &AppHandle) -> Result<()> {
-    let manifest = build(app)?;
-    let json = serde_json::to_vec_pretty(&manifest)
-        .map_err(|e| Error::msg(format!("manifest serialize: {e}")))?;
-
     let state = app.state::<S3State>();
     let guard = state.0.read().await;
     let ctx = guard
         .as_ref()
         .ok_or_else(|| Error::msg("S3 is not configured"))?;
+    // A catalog from another bucket must never overwrite this bucket's
+    // manifest (e.g. right after switching buckets in Settings).
+    crate::settings::ensure_catalog_matches_bucket(app, ctx)?;
+
+    let manifest = build(app)?;
+    let json = serde_json::to_vec_pretty(&manifest)
+        .map_err(|e| Error::msg(format!("manifest serialize: {e}")))?;
+
+    backup_previous(ctx).await;
     ctx.client
         .put_object()
         .bucket(&ctx.bucket)
@@ -89,6 +100,30 @@ async fn upload(app: &AppHandle) -> Result<()> {
             ))
         })?;
     Ok(())
+}
+
+/// Best-effort copy of the current manifest to MANIFEST_BACKUP_KEY before it
+/// is overwritten. A missing manifest (first upload to the bucket) is normal;
+/// any other failure is logged but never blocks the upload itself.
+async fn backup_previous(ctx: &S3Ctx) {
+    let result = ctx
+        .client
+        .copy_object()
+        .bucket(&ctx.bucket)
+        .copy_source(format!("{}/{}", ctx.bucket, MANIFEST_KEY))
+        .key(MANIFEST_BACKUP_KEY)
+        .send()
+        .await;
+    if let Err(err) = result {
+        let missing = matches!(&err, SdkError::ServiceError(context)
+            if context.raw().status().as_u16() == 404);
+        if !missing {
+            eprintln!(
+                "[manifest] backup copy failed: {}",
+                aws_smithy_types::error::display::DisplayErrorContext(&err)
+            );
+        }
+    }
 }
 
 fn build(app: &AppHandle) -> Result<Manifest> {
@@ -154,6 +189,18 @@ pub struct RebuildReport {
 /// suffix) when no manifest exists, e.g. a bucket written by the old web app.
 #[tauri::command]
 pub async fn rebuild_from_bucket(app: AppHandle) -> Result<RebuildReport> {
+    // Rebuild is the one sanctioned way to (re-)bind the catalog to the
+    // configured bucket, so record the identity along with the new catalog.
+    let identity = {
+        let state = app.state::<S3State>();
+        let guard = state.0.read().await;
+        guard
+            .as_ref()
+            .ok_or_else(|| Error::msg("S3 is not configured — open Settings first"))?
+            .identity
+            .clone()
+    };
+
     let manifest = download_manifest(&app).await?;
 
     if let Some(manifest) = manifest {
@@ -162,13 +209,13 @@ pub async fn rebuild_from_bucket(app: AppHandle) -> Result<RebuildReport> {
             tags: manifest.tags.len(),
             source: "manifest",
         };
-        replace_catalog(&app, manifest)?;
+        replace_catalog(&app, manifest, &identity)?;
         return Ok(report);
     }
 
     let originals = list_originals(&app).await?;
     let count = originals.len();
-    replace_catalog_from_listing(&app, originals)?;
+    replace_catalog_from_listing(&app, originals, &identity)?;
     // The listing path has no tag data; the next mutation re-uploads a
     // manifest so future rebuilds take the fast path.
     schedule_upload(&app);
@@ -195,10 +242,17 @@ async fn download_manifest(app: &AppHandle) -> Result<Option<Manifest>> {
         .await;
     let object = match response {
         Ok(object) => object,
-        // Treat any fetch failure as "no manifest" and use the listing
-        // fallback; a genuinely broken connection will fail there too,
-        // with a clearer error.
-        Err(_) => return Ok(None),
+        // Only a genuine "no such object" may trigger the listing fallback.
+        // Any other failure (network, auth, throttling) must surface —
+        // otherwise a transient error during rebuild would silently produce
+        // a tag-less catalog and later overwrite the good manifest with it.
+        Err(err) if manifest_is_missing(&err) => return Ok(None),
+        Err(err) => {
+            return Err(Error::msg(format!(
+                "manifest download failed: {}",
+                aws_smithy_types::error::display::DisplayErrorContext(&err)
+            )))
+        }
     };
     let bytes = object
         .body
@@ -211,7 +265,16 @@ async fn download_manifest(app: &AppHandle) -> Result<Option<Manifest>> {
     Ok(Some(manifest))
 }
 
-fn replace_catalog(app: &AppHandle, manifest: Manifest) -> Result<()> {
+fn manifest_is_missing(err: &SdkError<GetObjectError>) -> bool {
+    match err {
+        SdkError::ServiceError(context) => {
+            context.err().is_no_such_key() || context.raw().status().as_u16() == 404
+        }
+        _ => false,
+    }
+}
+
+fn replace_catalog(app: &AppHandle, manifest: Manifest, bucket_identity: &str) -> Result<()> {
     let db = app.state::<Db>();
     let mut guard = db.0.lock().unwrap();
     let tx = guard.transaction()?;
@@ -219,6 +282,7 @@ fn replace_catalog(app: &AppHandle, manifest: Manifest) -> Result<()> {
     tx.execute("DELETE FROM photo_tags", [])?;
     tx.execute("DELETE FROM tags", [])?;
     tx.execute("DELETE FROM photos", [])?;
+    db::set_meta(&tx, db::META_CATALOG_BUCKET, bucket_identity)?;
 
     for p in &manifest.photos {
         tx.execute(
@@ -312,8 +376,9 @@ async fn list_originals(app: &AppHandle) -> Result<Vec<String>> {
         for object in page.contents() {
             if let Some(key) = object.key() {
                 // Originals live at "folder/filename"; skip variants, the
-                // manifest itself, and anything not in the two-segment scheme
-                if key == MANIFEST_KEY || is_variant_key(key) {
+                // manifest and its backup, and anything not in the
+                // two-segment scheme
+                if key == MANIFEST_KEY || key == MANIFEST_BACKUP_KEY || is_variant_key(key) {
                     continue;
                 }
                 if key.split('/').count() != 2 {
@@ -330,7 +395,11 @@ async fn list_originals(app: &AppHandle) -> Result<Vec<String>> {
     Ok(keys)
 }
 
-fn replace_catalog_from_listing(app: &AppHandle, keys: Vec<String>) -> Result<()> {
+fn replace_catalog_from_listing(
+    app: &AppHandle,
+    keys: Vec<String>,
+    bucket_identity: &str,
+) -> Result<()> {
     let db = app.state::<Db>();
     let mut guard = db.0.lock().unwrap();
     let tx = guard.transaction()?;
@@ -338,6 +407,7 @@ fn replace_catalog_from_listing(app: &AppHandle, keys: Vec<String>) -> Result<()
     tx.execute("DELETE FROM photo_tags", [])?;
     tx.execute("DELETE FROM tags", [])?;
     tx.execute("DELETE FROM photos", [])?;
+    db::set_meta(&tx, db::META_CATALOG_BUCKET, bucket_identity)?;
 
     for key in keys {
         let Some((folder, filename)) = key.split_once('/') else {
@@ -365,7 +435,48 @@ fn replace_catalog_from_listing(app: &AppHandle, keys: Vec<String>) -> Result<()
 
 #[cfg(test)]
 mod tests {
-    use super::is_variant_key;
+    use super::{is_variant_key, manifest_is_missing};
+    use aws_sdk_s3::error::SdkError;
+    use aws_sdk_s3::operation::get_object::GetObjectError;
+    use aws_sdk_s3::types::error::NoSuchKey;
+    use aws_smithy_runtime_api::http::{Response, StatusCode};
+    use aws_smithy_types::body::SdkBody;
+
+    fn service_error(err: GetObjectError, status: u16) -> SdkError<GetObjectError> {
+        let raw = Response::new(StatusCode::try_from(status).unwrap(), SdkBody::empty());
+        SdkError::service_error(err, raw)
+    }
+
+    #[test]
+    fn a_missing_manifest_allows_the_listing_fallback() {
+        let no_such_key = GetObjectError::NoSuchKey(NoSuchKey::builder().build());
+        assert!(manifest_is_missing(&service_error(no_such_key, 404)));
+
+        // Some S3-compatible services return a bare 404 without a NoSuchKey
+        // error code
+        let bare_404 = GetObjectError::generic(
+            aws_sdk_s3::error::ErrorMetadata::builder().code("NotFound").build(),
+        );
+        assert!(manifest_is_missing(&service_error(bare_404, 404)));
+    }
+
+    #[test]
+    fn transient_failures_do_not_allow_the_listing_fallback() {
+        let throttled = GetObjectError::generic(
+            aws_sdk_s3::error::ErrorMetadata::builder().code("SlowDown").build(),
+        );
+        assert!(!manifest_is_missing(&service_error(throttled, 503)));
+
+        let denied = GetObjectError::generic(
+            aws_sdk_s3::error::ErrorMetadata::builder().code("AccessDenied").build(),
+        );
+        assert!(!manifest_is_missing(&service_error(denied, 403)));
+
+        let timeout: SdkError<GetObjectError> = SdkError::timeout_error(Box::new(
+            std::io::Error::new(std::io::ErrorKind::TimedOut, "request timed out"),
+        ));
+        assert!(!manifest_is_missing(&timeout));
+    }
 
     #[test]
     fn variant_keys_are_detected() {
