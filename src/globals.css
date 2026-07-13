@@ -33,6 +33,10 @@
     Roboto, "Helvetica Neue", Arial, sans-serif;
   --font-mono: "Geist Mono Variable", ui-monospace, SFMono-Regular, "SF Mono",
     Menlo, Consolas, monospace;
+  /* Custom easings — the built-in curves are too weak to feel intentional.
+     `ease-snappy` is a strong ease-out for entrances and press feedback; it's
+     exposed as the `ease-snappy` utility. */
+  --ease-snappy: cubic-bezier(0.23, 1, 0.32, 1);
 }
 
 body {
@@ -75,4 +79,82 @@ summary {
 
 .fade-in {
   animation: fade-in 400ms ease-out;
+}
+
+/* Modal entrance: fade the backdrop in, and scale the panel up from its
+   center. A modal isn't anchored to a trigger, so it scales from center (not
+   origin-aware like a popover). Starting from 0.96 rather than 0 keeps the
+   panel from appearing out of nowhere. Runs once — the lightbox mounts on open
+   rather than toggling rapidly, so a keyframe is fine here. */
+@keyframes backdrop-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes modal-in {
+  from {
+    opacity: 0;
+    transform: scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+.backdrop-in {
+  animation: backdrop-in 150ms ease-out;
+}
+
+.modal-in {
+  animation: modal-in 200ms var(--ease-snappy);
+}
+
+/* The badge that appears on a selected thumbnail. A one-shot scale-in on mount
+   so it settles in rather than popping onto the tile. It's mounted/unmounted
+   with the selection, so a rapid toggle simply replays from the start — fine
+   for a small badge that's either there or not. */
+.badge-in {
+  animation: modal-in 150ms var(--ease-snappy);
+}
+
+/* Grid tiles enter and exit rather than popping in and teleporting out. A
+   transition (not a keyframe) so a delete that's rolled back — or a rapid
+   add/remove — retargets from wherever it is instead of restarting. Border
+   colour rides the same transition so selection stays smooth. Enter is gentle;
+   exit is quick (the system responding), per fast-out asymmetry. */
+.photo-tile {
+  transition:
+    opacity 200ms ease-out,
+    transform 200ms var(--ease-snappy),
+    border-color 150ms ease-out;
+}
+
+.photo-tile[data-presence="entering"],
+.photo-tile[data-presence="exiting"] {
+  opacity: 0;
+  transform: scale(0.92);
+}
+
+.photo-tile[data-presence="exiting"] {
+  transition-duration: 150ms;
+  pointer-events: none;
+}
+
+/* Reduced motion means gentler, not none: keep the opacity fades that aid
+   comprehension, drop the scale/position movement that can cause discomfort. */
+@media (prefers-reduced-motion: reduce) {
+  .modal-in,
+  .badge-in {
+    animation: fade-in 150ms ease-out;
+  }
+
+  .photo-tile[data-presence="entering"],
+  .photo-tile[data-presence="exiting"] {
+    transform: none;
+  }
 }

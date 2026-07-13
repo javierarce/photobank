@@ -24,7 +24,7 @@ export function SearchBar() {
       />
       <button
         type="submit"
-        className="rounded-lg bg-foreground px-4 py-2 text-sm font-medium text-background transition-colors hover:bg-foreground/85"
+        className="rounded-lg bg-foreground px-4 py-2 text-sm font-medium text-background transition hover:bg-foreground/85 active:scale-[0.97]"
       >
         Search
       </button>
