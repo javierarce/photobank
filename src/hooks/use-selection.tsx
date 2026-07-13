@@ -2,6 +2,8 @@ import {
   createContext,
   useCallback,
   useContext,
+  useEffect,
+  useRef,
   type MouseEvent,
 } from "react";
 import type { Photo } from "@/lib/types";
@@ -42,34 +44,72 @@ export function useSelection() {
   return ctx;
 }
 
+/** How long to wait for a second click before treating a click as a select.
+ * Matches a typical OS double-click threshold. */
+const DOUBLE_CLICK_MS = 250;
+
 /**
- * Thumbnail interaction: a single click selects (toggles) instantly, a double
- * click opens. Selecting happens immediately for a snappy feel; the second
- * click of a double click (detail > 1) is ignored so it doesn't undo the
- * first, and the dblclick handler opens the photo.
+ * Thumbnail interaction: a single click selects (toggles), a double click
+ * opens. The select is deferred by one double-click window so a double click
+ * can cancel it — otherwise the first click of a double click would flash the
+ * thumb selected before the photo opens, and leave the anchor moved.
  */
 export function useThumbnailActivation(onOpen: (photo: Photo) => void) {
   const { toggle, selectRange } = useSelection();
+  // A single pending select, holding the timer plus the select to run so it can
+  // be committed early. One hook instance is shared by every thumbnail, so the
+  // pending select may belong to a different photo than the one now clicked.
+  const pending = useRef<{
+    timer: ReturnType<typeof setTimeout>;
+    run: () => void;
+  } | null>(null);
+
+  const cancelPending = useCallback(() => {
+    if (pending.current !== null) {
+      clearTimeout(pending.current.timer);
+      pending.current = null;
+    }
+  }, []);
+
+  const flushPending = useCallback(() => {
+    const p = pending.current;
+    if (p !== null) {
+      clearTimeout(p.timer);
+      pending.current = null;
+      p.run();
+    }
+  }, []);
 
   const onClick = useCallback(
     (e: MouseEvent, photo: Photo) => {
+      // Ignore the trailing click of a double click; the dblclick handler owns
+      // it. Reading shiftKey up front keeps it available inside the timer.
       if (e.detail > 1) return;
-      if (e.shiftKey) selectRange(photo);
-      else toggle(photo);
+      const range = e.shiftKey;
+      // A fresh click means any pending select was a genuine single click (a
+      // double click lands on the same photo and fires dblclick, not a second
+      // onClick). Commit it now so rapid clicks across thumbnails all register.
+      flushPending();
+      const run = () => (range ? selectRange(photo) : toggle(photo));
+      const timer = setTimeout(() => {
+        pending.current = null;
+        run();
+      }, DOUBLE_CLICK_MS);
+      pending.current = { timer, run };
     },
-    [toggle, selectRange]
+    [toggle, selectRange, flushPending]
   );
 
   const onDoubleClick = useCallback(
     (photo: Photo) => {
-      // The first click of this double click already toggled the photo; undo
-      // it so opening doesn't change the selection. (The lightbox covers the
-      // grid, so the momentary flip isn't visible.)
-      toggle(photo);
+      // Drop the pending select so opening never touches the selection.
+      cancelPending();
       onOpen(photo);
     },
-    [toggle, onOpen]
+    [onOpen, cancelPending]
   );
+
+  useEffect(() => cancelPending, [cancelPending]);
 
   return { onClick, onDoubleClick };
 }

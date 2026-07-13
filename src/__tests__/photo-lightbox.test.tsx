@@ -49,6 +49,71 @@ describe("PhotoLightbox", () => {
     expect(onClose).toHaveBeenCalled();
   });
 
+  it("navigates with the arrow keys when handlers are provided", () => {
+    const onPrev = vi.fn();
+    const onNext = vi.fn();
+    render(
+      <PhotoLightbox
+        photo={photo}
+        onClose={vi.fn()}
+        onPrev={onPrev}
+        onNext={onNext}
+      />
+    );
+
+    fireEvent.keyDown(document, { key: "ArrowLeft" });
+    expect(onPrev).toHaveBeenCalledTimes(1);
+
+    fireEvent.keyDown(document, { key: "ArrowRight" });
+    expect(onNext).toHaveBeenCalledTimes(1);
+  });
+
+  it("navigates when the on-screen arrows are clicked", () => {
+    const onPrev = vi.fn();
+    const onNext = vi.fn();
+    render(
+      <PhotoLightbox
+        photo={photo}
+        onClose={vi.fn()}
+        onPrev={onPrev}
+        onNext={onNext}
+      />
+    );
+
+    fireEvent.click(screen.getByLabelText("Previous photo"));
+    expect(onPrev).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(screen.getByLabelText("Next photo"));
+    expect(onNext).toHaveBeenCalledTimes(1);
+  });
+
+  it("hides navigation arrows at the ends of the list", () => {
+    render(<PhotoLightbox photo={photo} onClose={vi.fn()} />);
+
+    expect(screen.queryByLabelText("Previous photo")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Next photo")).not.toBeInTheDocument();
+  });
+
+  it("does not navigate while renaming", () => {
+    const onPrev = vi.fn();
+    const onNext = vi.fn();
+    render(
+      <PhotoLightbox
+        photo={photo}
+        onClose={vi.fn()}
+        onRename={vi.fn()}
+        onPrev={onPrev}
+        onNext={onNext}
+      />
+    );
+
+    fireEvent.click(screen.getByTestId("filename-display"));
+    fireEvent.keyDown(document, { key: "ArrowLeft" });
+    fireEvent.keyDown(document, { key: "ArrowRight" });
+    expect(onPrev).not.toHaveBeenCalled();
+    expect(onNext).not.toHaveBeenCalled();
+  });
+
   it("shows action buttons when callbacks are provided", () => {
     render(
       <PhotoLightbox
@@ -79,6 +144,13 @@ describe("PhotoLightbox", () => {
     const img = screen.getByAltText("test.jpg");
     expect(img).toHaveClass("opacity-0");
     expect(document.querySelector("svg.animate-spin")).toBeInTheDocument();
+
+    // The spinner overlay must be positioned relative to the image column so it
+    // stays centered over the photo and not the photo + sidebar.
+    const overlay = document.querySelector("svg.animate-spin")?.closest(
+      ".absolute",
+    );
+    expect(overlay?.parentElement).toHaveClass("relative", "bg-black");
 
     fireEvent.load(img);
     expect(img).toHaveClass("opacity-100");
