@@ -6,6 +6,7 @@ import {
   testConnection,
   type S3Settings,
 } from "@/lib/api";
+import { useTheme, type Theme } from "@/lib/theme-context";
 
 type Status = { kind: "idle" } | { kind: "ok" | "error" | "busy"; message: string };
 
@@ -13,6 +14,7 @@ const inputClass =
   "w-full rounded-lg border border-border bg-transparent px-3 py-2 text-sm text-foreground placeholder:text-foreground/40 outline-none focus:border-foreground/30";
 
 export default function SettingsPage() {
+  const { theme, setTheme } = useTheme();
   const [settings, setSettings] = useState<S3Settings>({
     endpoint: null,
     region: "",
@@ -99,12 +101,46 @@ export default function SettingsPage() {
     <div className="min-h-screen font-sans">
       <main className="mx-auto max-w-2xl px-6 py-8">
         <h1 className="text-xl font-semibold text-foreground">Settings</h1>
-        <p className="mt-1 text-sm text-foreground/50">
-          Photobank keeps your originals in an S3-compatible bucket and caches
-          thumbnails locally. Your secret key never leaves this Mac.
-        </p>
 
-        <section className="mt-8 flex flex-col gap-4">
+        <section className="mt-8">
+          <h2 className="text-lg font-semibold text-foreground">Appearance</h2>
+          <p className="mt-1 text-sm text-foreground/50">
+            Use a light or dark theme, or follow your system.
+          </p>
+          <div
+            role="radiogroup"
+            aria-label="Theme"
+            className="mt-4 inline-flex rounded-lg border border-border p-0.5"
+          >
+            {(["light", "dark", "system"] as Theme[]).map((option) => {
+              const selected = theme === option;
+              return (
+                <button
+                  key={option}
+                  type="button"
+                  role="radio"
+                  aria-checked={selected}
+                  onClick={() => setTheme(option)}
+                  className={`rounded-md px-3 py-1.5 text-sm font-medium capitalize transition active:scale-[0.97] ${
+                    selected
+                      ? "bg-foreground text-background"
+                      : "text-foreground/60 hover:text-foreground"
+                  }`}
+                >
+                  {option}
+                </button>
+              );
+            })}
+          </div>
+        </section>
+
+        <section className="mt-12">
+          <h2 className="text-lg font-semibold text-foreground">Storage</h2>
+          <p className="mt-1 text-sm text-foreground/50">
+            Photobank keeps your originals in an S3-compatible bucket and caches
+            thumbnails locally. Your secret key never leaves this Mac.
+          </p>
+          <div className="mt-4 flex flex-col gap-4">
           <label className="flex flex-col gap-1.5">
             <span className="text-sm font-medium text-foreground">Endpoint</span>
             <input
@@ -166,6 +202,7 @@ export default function SettingsPage() {
               className={inputClass}
             />
           </label>
+          </div>
         </section>
 
         <div className="mt-6 flex items-center gap-3">
