@@ -130,6 +130,23 @@ describe("PhotoGrid", () => {
     });
   });
 
+  it("keeps thumbnail tiles unfilled in light mode and gray only in dark", async () => {
+    mockListPhotos.mockResolvedValueOnce([mockPhotos[0]]);
+
+    render(<PhotoGrid folder="vacation" />);
+
+    await waitFor(() => {
+      expect(screen.getByAltText("beach.jpg")).toBeInTheDocument();
+    });
+
+    // No gray frame around thumbnails in light mode — the tile fill is a
+    // foreground color at 0% opacity, with the subtle placeholder kept for dark
+    // mode only.
+    const tile = screen.getByAltText("beach.jpg").closest(".photo-tile");
+    expect(tile).toHaveClass("bg-foreground/0", "dark:bg-foreground/5");
+    expect(tile).not.toHaveClass("bg-foreground/5");
+  });
+
   it("wraps around when navigating past the ends of the folder", async () => {
     mockListPhotos.mockResolvedValueOnce(mockPhotos);
 

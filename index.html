@@ -5,6 +5,20 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Photobank</title>
     <meta name="description" content="Photo management and search" />
+    <script>
+      // Apply the saved theme before React loads so there's no flash of the
+      // wrong appearance. The ThemeProvider keeps this class in sync afterward.
+      (function () {
+        try {
+          var t = localStorage.getItem("theme");
+          var d =
+            t === "dark" ||
+            (t !== "light" &&
+              matchMedia("(prefers-color-scheme:dark)").matches);
+          if (d) document.documentElement.classList.add("dark");
+        } catch (e) {}
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>
