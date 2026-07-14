@@ -83,7 +83,7 @@ export function PhotoLightbox({
       }}
     >
       <div
-        className="modal-in relative flex h-[85vh] w-[min(95vw,1200px)] overflow-hidden rounded-lg border border-border bg-background"
+        className="modal-in relative flex h-[85vh] w-[min(95vw,1200px)] overflow-hidden rounded-lg border-0 bg-background dark:border dark:border-border"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="relative flex w-0 flex-1 items-center justify-center bg-black">

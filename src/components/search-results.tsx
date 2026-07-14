@@ -142,7 +142,7 @@ export function SearchResults() {
             key={photo.id}
             onClick={(e) => onClick(e, photo)}
             onDoubleClick={() => onDoubleClick(photo)}
-            className={`group relative aspect-square overflow-hidden rounded-md border-2 bg-foreground/5 ${
+            className={`group relative aspect-square overflow-hidden rounded-md border-2 bg-foreground/0 dark:bg-foreground/5 ${
               isSelected(photo.id) ? "border-accent" : "border-transparent"
             }`}
           >
