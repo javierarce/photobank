@@ -156,6 +156,21 @@ describe("PhotoLightbox", () => {
     expect(backdrop?.firstElementChild).toHaveClass("modal-in");
   });
 
+  it("has no border in light mode and a gray hairline only in dark", () => {
+    const { container } = render(
+      <PhotoLightbox photo={photo} onClose={vi.fn()} />
+    );
+
+    // The panel carries no border width in light mode — a transparent border
+    // would still reserve 1px, and background-clip: border-box would paint the
+    // white panel background under it, showing as a 1px white ring. The gray
+    // hairline is scoped to dark mode, where it separates the panel from the
+    // near-black background.
+    const panel = container.firstElementChild?.firstElementChild;
+    expect(panel).toHaveClass("border-0", "dark:border", "dark:border-border");
+    expect(panel).not.toHaveClass("border-border");
+  });
+
   it("spins the loading indicator faster than the default", () => {
     render(<PhotoLightbox photo={photo} onClose={vi.fn()} />);
 

@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
 import { listFolders } from "@/lib/api";
+import { useTheme } from "@/lib/theme-context";
 import type { FolderCount } from "@/lib/types";
 
 // A lightweight command palette, in the spirit of ankitron's. Cmd/Ctrl+K opens
@@ -73,6 +74,53 @@ const FolderIcon: IconComponent = ({ className }) => (
   </svg>
 );
 
+const SunIcon: IconComponent = ({ className }) => (
+  <svg
+    viewBox="0 0 16 16"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth={1.5}
+    strokeLinecap="round"
+    strokeLinejoin="round"
+    className={className}
+    aria-hidden
+  >
+    <circle cx="8" cy="8" r="3" />
+    <path d="M8 1v1.5M8 13.5V15M15 8h-1.5M2.5 8H1M12.9 3.1l-1 1M4.1 11.9l-1 1M12.9 12.9l-1-1M4.1 4.1l-1-1" />
+  </svg>
+);
+
+const MoonIcon: IconComponent = ({ className }) => (
+  <svg
+    viewBox="0 0 16 16"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth={1.5}
+    strokeLinecap="round"
+    strokeLinejoin="round"
+    className={className}
+    aria-hidden
+  >
+    <path d="M13.5 9.5A5.5 5.5 0 0 1 6.5 2.5a5.5 5.5 0 1 0 7 7Z" />
+  </svg>
+);
+
+const MonitorIcon: IconComponent = ({ className }) => (
+  <svg
+    viewBox="0 0 16 16"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth={1.5}
+    strokeLinecap="round"
+    strokeLinejoin="round"
+    className={className}
+    aria-hidden
+  >
+    <rect x="1.5" y="2.5" width="13" height="9" rx="1" />
+    <path d="M5.5 14h5M8 11.5V14" />
+  </svg>
+);
+
 const ArrowUpIcon: IconComponent = ({ className }) => (
   <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth={1.75} strokeLinecap="round" strokeLinejoin="round" className={className} aria-hidden>
     <path d="M8 13V3M4 7l4-4 4 4" />
@@ -91,7 +139,12 @@ const EnterIcon: IconComponent = ({ className }) => (
   </svg>
 );
 
-type ActionId = "home" | "search" | "settings";
+type ActionId =
+  | "home"
+  | "search"
+  | "settings"
+  | "theme-toggle"
+  | "theme-system";
 
 type ActionDef = {
   id: ActionId;
@@ -116,6 +169,7 @@ function foldText(s: string) {
 
 export function CommandPalette() {
   const navigate = useNavigate();
+  const { theme, setTheme } = useTheme();
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [folders, setFolders] = useState<FolderCount[]>([]);
@@ -170,6 +224,11 @@ export function CommandPalette() {
 
   const q = foldText(query.trim());
 
+  // Resolve the appearance actually on screen (the ThemeProvider keeps this
+  // `dark` class in sync) so the toggle flips to the opposite even when the
+  // theme is following the system.
+  const isDark = document.documentElement.classList.contains("dark");
+
   const actions: ActionDef[] = [
     {
       id: "home",
@@ -192,6 +251,20 @@ export function CommandPalette() {
       keywords: "settings preferences s3 bucket account",
       icon: GearIcon,
       hint: "open",
+    },
+    {
+      id: "theme-toggle",
+      label: isDark ? "Switch to light theme" : "Switch to dark theme",
+      keywords: "theme appearance dark light mode color toggle switch",
+      icon: isDark ? SunIcon : MoonIcon,
+      hint: "switch",
+    },
+    {
+      id: "theme-system",
+      label: "Use system theme",
+      keywords: "theme appearance system auto mode color",
+      icon: MonitorIcon,
+      hint: theme === "system" ? "current" : "switch",
     },
   ];
 
@@ -237,6 +310,8 @@ export function CommandPalette() {
     if (item.kind === "action") {
       if (item.id === "home") navigate("/");
       else if (item.id === "settings") navigate("/settings");
+      else if (item.id === "theme-toggle") setTheme(isDark ? "light" : "dark");
+      else if (item.id === "theme-system") setTheme("system");
       else if (item.id === "search") {
         const term = query.trim();
         if (!term) return; // nothing to search yet — keep the palette open

@@ -2,6 +2,12 @@
 @import "@fontsource-variable/geist-mono";
 @import "tailwindcss";
 
+/* Drive Tailwind's `dark:` variant off the `.dark` class the ThemeProvider
+   toggles on <html>, not the OS media query — so an explicit Light/Dark choice
+   wins. "System" is handled in JS by resolving the OS preference to that class,
+   which keeps CSS and the `dark:` utilities in agreement. */
+@custom-variant dark (&:where(.dark, .dark *));
+
 :root {
   --background: #ffffff;
   --foreground: #171717;
@@ -14,14 +20,12 @@
   --border: color-mix(in srgb, var(--foreground) 13%, transparent);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-    /* Lighter blue so accents stay legible against the near-black background */
-    --accent: #60a5fa;
-    --border: color-mix(in srgb, var(--foreground) 20%, transparent);
-  }
+:root.dark {
+  --background: #0a0a0a;
+  --foreground: #ededed;
+  /* Lighter blue so accents stay legible against the near-black background */
+  --accent: #60a5fa;
+  --border: color-mix(in srgb, var(--foreground) 20%, transparent);
 }
 
 @theme inline {
