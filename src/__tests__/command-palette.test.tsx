@@ -8,6 +8,7 @@ import {
 } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { CommandPalette } from "@/components/command-palette";
+import { ThemeProvider } from "@/lib/theme";
 import { listFolders } from "@/lib/api";
 
 const mockNavigate = vi.fn();
@@ -25,6 +26,8 @@ const mockListFolders = vi.mocked(listFolders);
 
 beforeEach(() => {
   vi.clearAllMocks();
+  localStorage.clear();
+  document.documentElement.classList.remove("dark");
   mockListFolders.mockResolvedValue([
     { folder: "vacation", count: 12 },
     { folder: "barcelona", count: 1 },
@@ -37,9 +40,11 @@ afterEach(() => {
 
 function renderPalette() {
   return render(
-    <MemoryRouter>
-      <CommandPalette />
-    </MemoryRouter>
+    <ThemeProvider>
+      <MemoryRouter>
+        <CommandPalette />
+      </MemoryRouter>
+    </ThemeProvider>
   );
 }
 
@@ -97,9 +102,9 @@ describe("CommandPalette", () => {
     pressCmdK();
     await waitFor(() => expect(screen.getByText("vacation")).toBeInTheDocument());
 
-    // Move past the three actions to the first folder, then activate.
+    // Move past the actions to the first folder, then activate.
     const input = getInput();
-    for (let i = 0; i < 3; i++) fireEvent.keyDown(input, { key: "ArrowDown" });
+    for (let i = 0; i < 5; i++) fireEvent.keyDown(input, { key: "ArrowDown" });
     fireEvent.keyDown(input, { key: "Enter" });
 
     expect(mockNavigate).toHaveBeenCalledWith("/folders/vacation");
@@ -141,6 +146,49 @@ describe("CommandPalette", () => {
     // ...and reopening shows a fresh, empty palette.
     pressCmdK();
     expect((getInput() as HTMLInputElement).value).toBe("");
+  });
+
+  it("toggles the theme from the palette and persists the choice", async () => {
+    renderPalette();
+    pressCmdK();
+
+    // Starts light (no .dark class), so the toggle offers dark.
+    const toggle = screen.getByText("Switch to dark theme");
+    fireEvent.click(toggle);
+
+    expect(document.documentElement.classList.contains("dark")).toBe(true);
+    expect(localStorage.getItem("theme")).toBe("dark");
+
+    // Reopen: the toggle now offers the opposite direction.
+    pressCmdK();
+    expect(screen.getByText("Switch to light theme")).toBeInTheDocument();
+    fireEvent.click(screen.getByText("Switch to light theme"));
+
+    expect(document.documentElement.classList.contains("dark")).toBe(false);
+    expect(localStorage.getItem("theme")).toBe("light");
+  });
+
+  it("switches to the system theme from the palette", async () => {
+    localStorage.setItem("theme", "dark");
+    renderPalette();
+    pressCmdK();
+
+    fireEvent.click(screen.getByText("Use system theme"));
+
+    // matchMedia is stubbed to light, so system resolves to light here.
+    expect(localStorage.getItem("theme")).toBe("system");
+    expect(document.documentElement.classList.contains("dark")).toBe(false);
+  });
+
+  it("filters to the theme actions by keyword", async () => {
+    renderPalette();
+    pressCmdK();
+
+    fireEvent.change(getInput(), { target: { value: "theme" } });
+
+    expect(screen.getByText("Switch to dark theme")).toBeInTheDocument();
+    expect(screen.getByText("Use system theme")).toBeInTheDocument();
+    expect(screen.queryByText("Home")).not.toBeInTheDocument();
   });
 
   it("closes on Escape and stops the event from reaching document handlers", async () => {
