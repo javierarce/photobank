@@ -184,6 +184,33 @@ describe("UpdatePrompt download progress", () => {
     expect(screen.getByText(/^downloading…$/i)).toBeInTheDocument();
     expect(document.querySelector(".progress-indeterminate")).not.toBeNull();
   });
+
+  it("swallows Escape mid-install without dismissing or leaking", () => {
+    const docEscape = vi.fn();
+    const listener = (e: KeyboardEvent) => {
+      if (e.key === "Escape") docEscape();
+    };
+    document.addEventListener("keydown", listener);
+
+    const d = deferredInstall();
+    const update = makeUpdate({ downloadAndInstall: d.fn } as Partial<Update>);
+    const ctx = renderWithUpdate(<UpdatePrompt />, {
+      update,
+      isDialogOpen: true,
+    });
+
+    // Enter the busy phase — the install promise stays pending.
+    fireEvent.click(screen.getByRole("button", { name: /install and restart/i }));
+
+    fireEvent.keyDown(document.body, { key: "Escape" });
+
+    // Escape is still swallowed (no selection-clear leak) but the dialog must
+    // NOT be dismissed mid-install.
+    expect(docEscape).not.toHaveBeenCalled();
+    expect(ctx.closeDialog).not.toHaveBeenCalled();
+
+    document.removeEventListener("keydown", listener);
+  });
 });
 
 describe("UpdatePrompt Escape handling", () => {

@@ -49,10 +49,13 @@ export function UpdatePrompt() {
   useEffect(() => {
     if (!isDialogOpen) return;
     function onKey(e: KeyboardEvent) {
-      if (e.key === "Escape" && !busy) {
-        e.stopPropagation();
-        dismiss();
-      }
+      if (e.key !== "Escape") return;
+      // Always swallow Escape while the dialog is open so it never reaches the
+      // document-level selection-clear handlers behind the modal — including
+      // mid-install, when the dialog stays up but must not be dismissed (a
+      // download/relaunch can't be cancelled partway through).
+      e.stopPropagation();
+      if (!busy) dismiss();
     }
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
