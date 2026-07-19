@@ -1,32 +1,25 @@
-import { check } from "@tauri-apps/plugin-updater";
-import { ask } from "@tauri-apps/plugin-dialog";
-import { relaunch } from "@tauri-apps/plugin-process";
+import type { Update } from "@tauri-apps/plugin-updater";
 
 /**
- * Check the GitHub release feed (latest.json) once, offer to install, and
- * relaunch. Never throws — an offline launch or a draft release must not
- * break the app.
+ * True only inside the Tauri desktop shell. The updater/process plugins don't
+ * exist in a plain browser (`npm run dev`) or under test, so anything touching
+ * them must guard on this first.
  */
-export async function checkForUpdates() {
-  try {
-    const update = await check();
-    if (!update) return;
+export function isTauri(): boolean {
+  return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+}
 
-    const notes = update.body?.trim();
-    const install = await ask(
-      `Photobank ${update.version} is available.${notes ? `\n\n${notes}` : ""}`,
-      {
-        title: "Update available",
-        kind: "info",
-        okLabel: "Install and relaunch",
-        cancelLabel: "Later",
-      }
-    );
-    if (!install) return;
-
-    await update.downloadAndInstall();
-    await relaunch();
-  } catch {
-    // Silent by design.
-  }
+/**
+ * Ask the GitHub release feed (latest.json) whether a newer version exists.
+ * Resolves to the pending Update, or null when up to date or not running in
+ * the desktop app.
+ *
+ * Deliberately does *not* swallow errors: a real fetch failure throws so each
+ * caller can decide what to do — the launch check ignores it (never block
+ * startup), while the Settings button surfaces it to the user.
+ */
+export async function checkForUpdate(): Promise<Update | null> {
+  if (!isTauri()) return null;
+  const { check } = await import("@tauri-apps/plugin-updater");
+  return (await check()) ?? null;
 }

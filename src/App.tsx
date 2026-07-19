@@ -5,8 +5,9 @@ import { Header } from "@/components/header";
 import { CommandPalette } from "@/components/command-palette";
 import { SelectionProvider } from "@/hooks/selection-provider";
 import { UploadProvider } from "@/hooks/upload-provider";
+import { UpdateProvider } from "@/components/update-provider";
+import { UpdatePrompt } from "@/components/update-prompt";
 import { getSettings } from "@/lib/api";
-import { checkForUpdates } from "@/lib/updater";
 import HomePage from "@/routes/home";
 import FolderPage from "@/routes/folder";
 import SearchPage from "@/routes/search";
@@ -22,7 +23,6 @@ export default function App() {
         if (!info.configured) navigate("/settings", { replace: true });
       })
       .catch(() => {});
-    if (import.meta.env.PROD) checkForUpdates();
     // eslint-disable-next-line react-hooks/exhaustive-deps -- run once on mount
   }, []);
 
@@ -37,14 +37,17 @@ export default function App() {
   return (
     <SelectionProvider>
       <UploadProvider>
-        <Header />
-        <CommandPalette />
-        <Routes>
-          <Route path="/" element={<HomePage />} />
-          <Route path="/folders/:folder" element={<FolderPage />} />
-          <Route path="/search" element={<SearchPage />} />
-          <Route path="/settings" element={<SettingsPage />} />
-        </Routes>
+        <UpdateProvider>
+          <Header />
+          <CommandPalette />
+          <Routes>
+            <Route path="/" element={<HomePage />} />
+            <Route path="/folders/:folder" element={<FolderPage />} />
+            <Route path="/search" element={<SearchPage />} />
+            <Route path="/settings" element={<SettingsPage />} />
+          </Routes>
+          <UpdatePrompt />
+        </UpdateProvider>
       </UploadProvider>
     </SelectionProvider>
   );

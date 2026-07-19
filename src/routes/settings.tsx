@@ -13,14 +13,22 @@ import {
   type S3Settings,
 } from "@/lib/api";
 import { useTheme, type Theme } from "@/lib/theme-context";
+import { useUpdate } from "@/lib/update-context";
+import { checkForUpdate, isTauri } from "@/lib/updater";
 
 type Status = { kind: "idle" } | { kind: "ok" | "error" | "busy"; message: string };
+
+type UpdateCheck = "idle" | "checking" | "uptodate" | "error";
 
 const inputClass =
   "w-full rounded-lg border border-border bg-transparent px-3 py-2 text-sm text-foreground placeholder:text-foreground/40 outline-none focus:border-foreground/30";
 
 export default function SettingsPage() {
   const { theme, setTheme } = useTheme();
+  const { update, openDialog, presentUpdate } = useUpdate();
+  const [appVersion, setAppVersion] = useState("");
+  const [updateCheck, setUpdateCheck] = useState<UpdateCheck>("idle");
+  const [updateError, setUpdateError] = useState("");
   const [settings, setSettings] = useState<S3Settings>({
     endpoint: null,
     region: "",
@@ -53,6 +61,15 @@ export default function SettingsPage() {
       .catch(() => {})
       .finally(() => setLoading(false));
     refreshPendingCount().then(setRefreshPending).catch(() => {});
+  }, []);
+
+  // Show the running app version next to the update control (desktop only).
+  useEffect(() => {
+    if (!isTauri()) return;
+    import("@tauri-apps/api/app")
+      .then(({ getVersion }) => getVersion())
+      .then(setAppVersion)
+      .catch(() => {});
   }, []);
 
   // Progress events also arrive for refreshes this page didn't start (the
@@ -146,6 +163,26 @@ export default function SettingsPage() {
       refreshPendingCount().then(setRefreshPending).catch(() => {});
     } catch (err) {
       setRebuildStatus({ kind: "error", message: String(err) });
+    }
+  };
+
+  const handleCheckUpdates = async () => {
+    if (updateCheck === "checking") return;
+    setUpdateCheck("checking");
+    setUpdateError("");
+    try {
+      const found = await checkForUpdate();
+      if (found) {
+        // Hand it to the provider: the header badge appears and the install
+        // dialog opens right away, since this was a deliberate check.
+        presentUpdate(found);
+        setUpdateCheck("idle");
+      } else {
+        setUpdateCheck("uptodate");
+      }
+    } catch (err) {
+      setUpdateError(err instanceof Error ? err.message : String(err));
+      setUpdateCheck("error");
     }
   };
 
@@ -406,6 +443,31 @@ export default function SettingsPage() {
             </ul>
           )}
         </section>
+
+        {isTauri() && (
+          <section className="mt-12">
+            <h2 className="text-lg font-semibold text-foreground">Updates</h2>
+            <p className="mt-1 text-sm text-foreground/50">
+              {appVersion ? `Photobank ${appVersion}` : "Photobank"}
+              {updateCheck === "uptodate" && " — you’re up to date."}
+              {updateCheck === "error" && ` — ${updateError}`}
+            </p>
+            <div className="mt-4 flex items-center gap-3">
+              <button
+                type="button"
+                onClick={update ? openDialog : handleCheckUpdates}
+                disabled={updateCheck === "checking"}
+                className="rounded-lg border border-border px-4 py-2 text-sm font-medium text-foreground/70 transition hover:border-foreground/35 hover:text-foreground active:scale-[0.97] disabled:opacity-50"
+              >
+                {update
+                  ? "Update now"
+                  : updateCheck === "checking"
+                    ? "Checking…"
+                    : "Check for updates"}
+              </button>
+            </div>
+          </section>
+        )}
       </main>
     </div>
   );
