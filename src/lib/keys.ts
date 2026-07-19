@@ -30,6 +30,16 @@ export function variantBase(s3Key: string) {
   return baseKey(s3Key).replace(/_original$/, "");
 }
 
+/**
+ * The filename to show a user. Legacy web-pipeline originals are stored as
+ * "<base>_original.<ext>"; the marker is an internal detail of the old variant
+ * scheme, so hide it from anything the user reads. The extension is preserved.
+ * Mirrors the suffix `variantBase` strips for key derivation.
+ */
+export function displayName(filename: string) {
+  return filename.replace(/_original(\.[^.]+)?$/, "$1");
+}
+
 /** "folder/photo.jpg" -> "folder/photo_640.webp" */
 export function variantKey(
   s3Key: string,
