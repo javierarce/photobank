@@ -10,14 +10,18 @@ vi.mock("@/lib/api", () => ({
     settings: { endpoint: null, region: "", bucket: "", accessKeyId: "" },
     hasSecret: false,
     configured: false,
+    catalogBucket: null,
+    bucketMismatch: false,
   }),
   saveSettings: vi.fn(),
   testConnection: vi.fn(),
   rebuildFromBucket: vi.fn(),
   refreshPendingCount: vi.fn().mockResolvedValue(0),
   refreshLibrary: vi.fn(),
+  refreshStatus: vi.fn().mockResolvedValue(null),
   cancelRefresh: vi.fn(),
   REFRESH_PROGRESS_EVENT: "refresh://progress",
+  REBUILD_PROGRESS_EVENT: "rebuild://progress",
 }));
 
 vi.mock("@tauri-apps/api/event", () => ({
