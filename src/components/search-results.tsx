@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { imageUrl } from "@/lib/image-url";
+import { displayName } from "@/lib/keys";
 import { searchPhotos } from "@/lib/api";
 import { PhotoLightbox } from "@/components/photo-lightbox";
 import { SelectionCheck } from "@/components/selection-check";
@@ -162,7 +163,7 @@ export function SearchResults() {
               </div>
             )}
             <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/60 to-transparent px-2 pb-2 pt-6">
-              <p className="truncate text-xs text-white">{photo.filename}</p>
+              <p className="truncate text-xs text-white">{displayName(photo.filename)}</p>
               <p className="text-[10px] text-white/70">{photo.folder}</p>
             </div>
             {isSelected(photo.id) && <SelectionCheck />}
