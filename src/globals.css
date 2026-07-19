@@ -126,6 +126,24 @@ summary {
   animation: modal-in 150ms var(--ease-snappy);
 }
 
+/* Indeterminate download bar: a short segment sweeping across the track, used
+   when the total size is unknown (no Content-Length) so it reads as "working"
+   rather than a full/complete bar. The segment is a third of the track wide;
+   translateX is relative to the segment, so -100%..300% carries it from just
+   off the left to just off the right. */
+@keyframes progress-indeterminate {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(300%);
+  }
+}
+
+.progress-indeterminate {
+  animation: progress-indeterminate 1.15s ease-in-out infinite;
+}
+
 /* Grid tiles enter and exit rather than popping in and teleporting out. A
    transition (not a keyframe) so a delete that's rolled back — or a rapid
    add/remove — retargets from wherever it is instead of restarting. Border
@@ -160,5 +178,10 @@ summary {
   .photo-tile[data-presence="entering"],
   .photo-tile[data-presence="exiting"] {
     transform: none;
+  }
+
+  /* Drop the sweep; pulse the segment in place instead of translating it. */
+  .progress-indeterminate {
+    animation: fade-in 900ms ease-in-out infinite alternate;
   }
 }

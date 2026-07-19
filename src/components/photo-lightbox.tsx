@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { imageUrl, originalUrl } from "@/lib/image-url";
+import { displayName } from "@/lib/keys";
 import { exportPhotos } from "@/lib/api";
 import { ExportButton } from "@/components/export-button";
 import { PhotoTags } from "@/components/photo-tags";
@@ -43,7 +44,9 @@ export function PhotoLightbox({
   const [renaming, setRenaming] = useState(false);
   const [loadingInfo, setLoadingInfo] = useState(false);
   const [infoError, setInfoError] = useState<string | null>(null);
-  const [name, ext] = splitFilename(photo.filename);
+  // Show and edit the user-facing name (legacy "_original" marker stripped),
+  // never the raw stored filename.
+  const [name, ext] = splitFilename(displayName(photo.filename));
   const [editValue, setEditValue] = useState(name);
   const [error, setError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -62,7 +65,7 @@ export function PhotoLightbox({
   const [prevFilename, setPrevFilename] = useState(photo.filename);
   if (prevFilename !== photo.filename) {
     setPrevFilename(photo.filename);
-    setEditValue(splitFilename(photo.filename)[0]);
+    setEditValue(splitFilename(displayName(photo.filename))[0]);
     setEditing(false);
   }
 

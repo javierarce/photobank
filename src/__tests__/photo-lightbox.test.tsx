@@ -442,6 +442,66 @@ describe("PhotoLightbox", () => {
       expect(onRename).not.toHaveBeenCalled();
     });
 
+    it("hides the legacy _original marker in the displayed and edited name", () => {
+      const legacy = {
+        ...photo,
+        filename: "2025-07-01-Berlin-R0012750_original.jpg",
+        s3Key: "berlin/2025-07-01-Berlin-R0012750_original.jpg",
+      };
+      render(
+        <PhotoLightbox photo={legacy} onClose={vi.fn()} onRename={vi.fn()} />
+      );
+
+      expect(screen.getByTestId("filename-display")).toHaveTextContent(
+        "2025-07-01-Berlin-R0012750.jpg"
+      );
+      expect(
+        screen.queryByText(/_original/)
+      ).not.toBeInTheDocument();
+
+      fireEvent.click(screen.getByTestId("filename-display"));
+      expect(screen.getByTestId("filename-input")).toHaveValue(
+        "2025-07-01-Berlin-R0012750"
+      );
+    });
+
+    it("renames a legacy _original photo to the clean name (backend re-keys variants)", async () => {
+      const legacy = {
+        ...photo,
+        filename: "2025-07-01-Berlin-R0012750_original.jpg",
+        s3Key: "berlin/2025-07-01-Berlin-R0012750_original.jpg",
+      };
+      const onRename = vi.fn().mockResolvedValue(undefined);
+      render(
+        <PhotoLightbox photo={legacy} onClose={vi.fn()} onRename={onRename} />
+      );
+
+      fireEvent.click(screen.getByTestId("filename-display"));
+      fireEvent.change(screen.getByTestId("filename-input"), {
+        target: { value: "sunset" },
+      });
+      await act(() => fireEvent.blur(screen.getByTestId("filename-input")));
+
+      expect(onRename).toHaveBeenCalledWith(legacy, "sunset.jpg");
+    });
+
+    it("does not rename a legacy photo when the visible name is left unchanged", async () => {
+      const legacy = {
+        ...photo,
+        filename: "2025-07-01-Berlin-R0012750_original.jpg",
+        s3Key: "berlin/2025-07-01-Berlin-R0012750_original.jpg",
+      };
+      const onRename = vi.fn();
+      render(
+        <PhotoLightbox photo={legacy} onClose={vi.fn()} onRename={onRename} />
+      );
+
+      fireEvent.click(screen.getByTestId("filename-display"));
+      await act(() => fireEvent.blur(screen.getByTestId("filename-input")));
+
+      expect(onRename).not.toHaveBeenCalled();
+    });
+
     it("preserves the original file extension", async () => {
       const pngPhoto = { ...photo, filename: "image.png", s3Key: "inbox/image.png" };
       const onRename = vi.fn().mockResolvedValue(undefined);
