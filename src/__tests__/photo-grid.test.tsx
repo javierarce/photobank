@@ -5,6 +5,7 @@ import {
   cleanup,
   waitFor,
   fireEvent,
+  act,
 } from "@testing-library/react";
 import { SelectionProvider } from "@/hooks/selection-provider";
 import { PhotoGrid } from "@/components/photo-grid";
@@ -23,6 +24,20 @@ vi.mock("@/lib/api", () => ({
   listPhotos: vi.fn(),
   deletePhoto: vi.fn(),
   updatePhoto: vi.fn(),
+  REFRESH_PROGRESS_EVENT: "refresh://progress",
+}));
+
+// The grid subscribes to refresh://progress to reload once a library refresh
+// settles; capture the handler so tests can emit events.
+const hoisted = vi.hoisted(() => ({
+  refreshListener: null as null | ((event: { payload: unknown }) => void),
+}));
+
+vi.mock("@tauri-apps/api/event", () => ({
+  listen: (_name: string, cb: (event: { payload: unknown }) => void) => {
+    hoisted.refreshListener = cb;
+    return Promise.resolve(() => {});
+  },
 }));
 
 // A minimal stand-in that surfaces the active photo and the nav callbacks the
@@ -128,6 +143,96 @@ describe("PhotoGrid", () => {
     await waitFor(() => {
       expect(screen.getByAltText("beach.jpg")).toBeInTheDocument();
     });
+  });
+
+  it("falls back to the original image when the thumbnail variant is missing", async () => {
+    mockListPhotos.mockResolvedValueOnce([mockPhotos[0]]);
+
+    render(<PhotoGrid folder="vacation" />);
+
+    const img = await screen.findByAltText("beach.jpg");
+    expect(img).toHaveAttribute(
+      "src",
+      "photo://localhost/vacation/beach_640.webp"
+    );
+
+    // A photo synced into the bucket externally has no variants yet — the
+    // 640px request 404s and the tile must degrade to the original object
+    // instead of a broken image.
+    fireEvent.error(img);
+    expect(img).toHaveAttribute("src", "photo://localhost/vacation/beach.jpg");
+  });
+
+  it("retries the variant after a refresh touches a fallen-back photo", async () => {
+    mockListPhotos.mockResolvedValueOnce([mockPhotos[0]]);
+
+    render(<PhotoGrid folder="vacation" />);
+    const img = await screen.findByAltText("beach.jpg");
+    fireEvent.error(img);
+    expect(img).toHaveAttribute("src", "photo://localhost/vacation/beach.jpg");
+
+    // The refresh regenerated the variants under the same key and bumped
+    // updated_at; the reload it triggers must swap the tile off the original.
+    mockListPhotos.mockResolvedValueOnce([
+      { ...mockPhotos[0], updatedAt: "2026-07-18T00:00:00Z" },
+    ]);
+    await act(async () => {
+      hoisted.refreshListener?.({
+        payload: { total: 1, done: 1, failed: 0, status: "done" },
+      });
+    });
+    await waitFor(() =>
+      expect(screen.getByAltText("beach.jpg")).toHaveAttribute(
+        "src",
+        "photo://localhost/vacation/beach_640.webp"
+      )
+    );
+  });
+
+  it("addresses old-scheme originals' variants without the _original marker", async () => {
+    mockListPhotos.mockResolvedValueOnce([
+      makePhoto({
+        id: "old",
+        filename: "R0007098_original.jpg",
+        s3Key: "calella/R0007098_original.jpg",
+        folder: "calella",
+      }),
+    ]);
+
+    render(<PhotoGrid folder="calella" />);
+
+    // The old web pipeline stored "<base>_original.jpg" + "<base>_640.webp";
+    // the thumbnail must strip the marker to find the existing variant.
+    const img = await screen.findByAltText("R0007098_original.jpg");
+    expect(img).toHaveAttribute(
+      "src",
+      "photo://localhost/calella/R0007098_640.webp"
+    );
+  });
+
+  it("reloads the folder once a library refresh settles", async () => {
+    mockListPhotos.mockResolvedValue([mockPhotos[0]]);
+
+    render(<PhotoGrid folder="vacation" />);
+    await screen.findByAltText("beach.jpg");
+    expect(mockListPhotos).toHaveBeenCalledTimes(1);
+
+    // The final refresh event (status !== "running") must trigger a reload so
+    // tiles pick up regenerated thumbnails and metadata.
+    await act(async () => {
+      hoisted.refreshListener?.({
+        payload: { total: 2, done: 2, failed: 0, status: "done" },
+      });
+    });
+    await waitFor(() => expect(mockListPhotos).toHaveBeenCalledTimes(2));
+
+    // Per-photo "running" events must not hammer the backend.
+    await act(async () => {
+      hoisted.refreshListener?.({
+        payload: { total: 2, done: 1, failed: 0, status: "running" },
+      });
+    });
+    expect(mockListPhotos).toHaveBeenCalledTimes(2);
   });
 
   it("keeps thumbnail tiles unfilled in light mode and gray only in dark", async () => {

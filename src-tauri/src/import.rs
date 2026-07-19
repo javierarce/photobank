@@ -392,16 +392,7 @@ async fn cleanup_cancelled(app: &AppHandle, photo_id: &str) {
         .flatten()
     };
 
-    let keys: Vec<String> = s3_key
-        .map(|s3_key| {
-            let base = crate::keys::base_key(&s3_key).to_string();
-            let mut keys = vec![s3_key];
-            keys.extend(
-                crate::keys::variant_suffixes().iter().map(|suffix| format!("{base}{suffix}")),
-            );
-            keys
-        })
-        .unwrap_or_default();
+    let keys: Vec<String> = s3_key.map(|key| deletion_keys(&key)).unwrap_or_default();
 
     {
         let state = app.state::<S3State>();
@@ -426,7 +417,17 @@ async fn cleanup_cancelled(app: &AppHandle, photo_id: &str) {
     crate::manifest::schedule_upload(app);
 }
 
-async fn put_object(
+/// Every object an import may have created for `s3_key`: the original plus
+/// all possible variants. Variants hang off `variant_base` (which strips a
+/// legacy `_original` stem marker), matching where the pipeline uploads them.
+fn deletion_keys(s3_key: &str) -> Vec<String> {
+    let base = crate::keys::variant_base(s3_key).to_string();
+    let mut keys = vec![s3_key.to_string()];
+    keys.extend(crate::keys::variant_suffixes().iter().map(|suffix| format!("{base}{suffix}")));
+    keys
+}
+
+pub(crate) async fn put_object(
     ctx: &crate::settings::S3Ctx,
     key: &str,
     bytes: Vec<u8>,
@@ -515,6 +516,15 @@ fn reserve_row_conn(
         match existing {
             // Free slot — insert a brand-new row. A cancel can delete it wholesale.
             None => {
+                // The exact name is free, but a different filename can still
+                // claim the same variant stem ("photo.png" vs "photo.jpg", or
+                // legacy "photo_original.jpg") — its derivatives would be
+                // overwritten. Suffix past it like any other occupant.
+                if db::variant_stem_occupant(conn, folder, &filename)?.is_some() {
+                    filename = indexed_filename(desired, n);
+                    n += 1;
+                    continue;
+                }
                 let id = uuid::Uuid::new_v4().to_string();
                 conn.execute(
                     "INSERT INTO photos (id, filename, s3_key, folder, mime_type, file_size, processing_status, created_at, updated_at)
@@ -681,6 +691,23 @@ mod tests {
     }
 
     #[test]
+    fn deletion_keys_cover_where_the_pipeline_actually_uploads() {
+        // Legacy-named file: variants are uploaded under the stripped stem,
+        // so a cancelled import must delete them there — not under a
+        // "photo_original_640.webp" key that never existed.
+        let keys = deletion_keys("inbox/photo_original.jpg");
+        assert!(keys.contains(&"inbox/photo_original.jpg".to_string()));
+        assert!(keys.contains(&"inbox/photo_640.webp".to_string()));
+        assert!(!keys.iter().any(|k| k.contains("_original_")));
+
+        let keys = deletion_keys("inbox/photo.jpg");
+        assert!(keys.contains(&"inbox/photo.jpg".to_string()));
+        assert!(keys.contains(&"inbox/photo_2880.jpg".to_string()));
+        // Original + 4 widths × 2 formats.
+        assert_eq!(keys.len(), 9);
+    }
+
+    #[test]
     fn indexed_filename_matches_the_export_suffix_scheme() {
         assert_eq!(indexed_filename("photo.jpg", 2), "photo (2).jpg");
         assert_eq!(indexed_filename("photo.tar.gz", 1), "photo.tar (1).gz");
@@ -750,6 +777,24 @@ mod tests {
 
         let reserved = reserve_row_conn(&conn, "inbox", "a.jpg", Some("image/jpeg"), 5).unwrap();
         assert_eq!(reserved.s3_key, "inbox/a (3).jpg");
+    }
+
+    #[test]
+    fn reserve_suffixes_past_a_variant_stem_collision() {
+        let conn = crate::db::open_in_memory();
+        // A legacy photo owns the "R0007098" variant stem even though the
+        // exact filename "R0007098.jpg" is free.
+        insert_photo(&conn, "legacy", "R0007098_original.jpg", "completed");
+
+        let reserved =
+            reserve_row_conn(&conn, "inbox", "R0007098.jpg", Some("image/jpeg"), 5).unwrap();
+        assert_eq!(reserved.s3_key, "inbox/R0007098 (1).jpg");
+
+        // Same stem via a different extension collides too, and must also
+        // step past the row the previous reserve just created.
+        let reserved =
+            reserve_row_conn(&conn, "inbox", "R0007098.png", Some("image/png"), 5).unwrap();
+        assert_eq!(reserved.s3_key, "inbox/R0007098 (2).png");
     }
 
     #[test]

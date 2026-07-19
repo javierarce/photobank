@@ -20,13 +20,23 @@ export function baseKey(s3Key: string) {
   return s3Key.replace(/\.[^.]+$/, "");
 }
 
+/**
+ * The stem a photo's variants hang off. Normally `baseKey`, but originals
+ * written by the old web pipeline live at "<base>_original.<ext>" with their
+ * variants at "<base>_<width>.<format>" — strip the marker so both schemes
+ * address the same variant objects. Mirrors keys.rs `variant_base`.
+ */
+export function variantBase(s3Key: string) {
+  return baseKey(s3Key).replace(/_original$/, "");
+}
+
 /** "folder/photo.jpg" -> "folder/photo_640.webp" */
 export function variantKey(
   s3Key: string,
   width: VariantWidth,
   format: VariantFormat
 ) {
-  return `${baseKey(s3Key)}_${width}.${format}`;
+  return `${variantBase(s3Key)}_${width}.${format}`;
 }
 
 /** Percent-encode each path segment of an S3 key for use in a URL. */

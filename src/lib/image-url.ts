@@ -1,4 +1,4 @@
-import { baseKey, encodeKey, type VariantWidth, type VariantFormat } from "./keys";
+import { encodeKey, variantBase, type VariantWidth, type VariantFormat } from "./keys";
 
 type Resolution = `${VariantWidth}`;
 
@@ -14,7 +14,7 @@ export function imageUrl(
   resolution: Resolution = "640",
   format: VariantFormat = "webp"
 ) {
-  return resolveUrl(`${baseKey(s3Key)}_${resolution}.${format}`);
+  return resolveUrl(`${variantBase(s3Key)}_${resolution}.${format}`);
 }
 
 export function originalUrl(s3Key: string) {
