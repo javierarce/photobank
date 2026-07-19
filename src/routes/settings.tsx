@@ -211,7 +211,32 @@ export default function SettingsPage() {
       <main className="mx-auto max-w-2xl px-6 py-8">
         <h1 className="text-xl font-semibold text-foreground">Settings</h1>
 
-        <section className="mt-8">
+        {isTauri() && (
+          <section className="mt-8">
+            <h2 className="text-lg font-semibold text-foreground">Updates</h2>
+            <p className="mt-1 text-sm text-foreground/50">
+              {appVersion ? `Photobank ${appVersion}` : "Photobank"}
+              {updateCheck === "uptodate" && " — you’re up to date."}
+              {updateCheck === "error" && ` — ${updateError}`}
+            </p>
+            <div className="mt-4 flex items-center gap-3">
+              <button
+                type="button"
+                onClick={update ? openDialog : handleCheckUpdates}
+                disabled={updateCheck === "checking"}
+                className="rounded-lg border border-border px-4 py-2 text-sm font-medium text-foreground/70 transition hover:border-foreground/35 hover:text-foreground active:scale-[0.97] disabled:opacity-50"
+              >
+                {update
+                  ? "Update now"
+                  : updateCheck === "checking"
+                    ? "Checking…"
+                    : "Check for updates"}
+              </button>
+            </div>
+          </section>
+        )}
+
+        <section className="mt-12">
           <h2 className="text-lg font-semibold text-foreground">Appearance</h2>
           <p className="mt-1 text-sm text-foreground/50">
             Use a light or dark theme, or follow your system.
@@ -443,31 +468,6 @@ export default function SettingsPage() {
             </ul>
           )}
         </section>
-
-        {isTauri() && (
-          <section className="mt-12">
-            <h2 className="text-lg font-semibold text-foreground">Updates</h2>
-            <p className="mt-1 text-sm text-foreground/50">
-              {appVersion ? `Photobank ${appVersion}` : "Photobank"}
-              {updateCheck === "uptodate" && " — you’re up to date."}
-              {updateCheck === "error" && ` — ${updateError}`}
-            </p>
-            <div className="mt-4 flex items-center gap-3">
-              <button
-                type="button"
-                onClick={update ? openDialog : handleCheckUpdates}
-                disabled={updateCheck === "checking"}
-                className="rounded-lg border border-border px-4 py-2 text-sm font-medium text-foreground/70 transition hover:border-foreground/35 hover:text-foreground active:scale-[0.97] disabled:opacity-50"
-              >
-                {update
-                  ? "Update now"
-                  : updateCheck === "checking"
-                    ? "Checking…"
-                    : "Check for updates"}
-              </button>
-            </div>
-          </section>
-        )}
       </main>
     </div>
   );
