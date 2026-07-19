@@ -2,6 +2,9 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
 import { listFolders } from "@/lib/api";
 import { useTheme } from "@/lib/theme-context";
+import { useUpdate } from "@/lib/update-context";
+import { checkForUpdate, isTauri } from "@/lib/updater";
+import { UpdateIcon } from "@/components/update-icon";
 import type { FolderCount } from "@/lib/types";
 
 // A lightweight command palette, in the spirit of ankitron's. Cmd/Ctrl+K opens
@@ -144,7 +147,8 @@ type ActionId =
   | "search"
   | "settings"
   | "theme-toggle"
-  | "theme-system";
+  | "theme-system"
+  | "check-updates";
 
 type ActionDef = {
   id: ActionId;
@@ -170,6 +174,7 @@ function foldText(s: string) {
 export function CommandPalette() {
   const navigate = useNavigate();
   const { theme, setTheme } = useTheme();
+  const { update, openDialog, presentUpdate } = useUpdate();
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [folders, setFolders] = useState<FolderCount[]>([]);
@@ -268,6 +273,19 @@ export function CommandPalette() {
     },
   ];
 
+  // Updates only make sense in the desktop app, so the action only exists
+  // there. When one is already pending it jumps straight to the install
+  // dialog; otherwise it runs a fresh check.
+  if (isTauri()) {
+    actions.push({
+      id: "check-updates",
+      label: update ? `Update to Photobank ${update.version}` : "Check for updates",
+      keywords: "update upgrade version check new release download",
+      icon: UpdateIcon,
+      hint: update ? "update" : "check",
+    });
+  }
+
   const filteredActions = actions.filter(
     (a) =>
       a.always ||
@@ -304,6 +322,18 @@ export function CommandPalette() {
     el?.scrollIntoView({ block: "nearest" });
   }, [selected]);
 
+  // Run a manual check and, if something's there, hand it to the provider so
+  // the install dialog opens. Silent on failure — Settings is where check
+  // errors are surfaced.
+  async function runUpdateCheck() {
+    try {
+      const found = await checkForUpdate();
+      if (found) presentUpdate(found);
+    } catch {
+      // ignored — see Settings for a visible check with error reporting.
+    }
+  }
+
   function activate(index: number) {
     const item = items[index];
     if (!item) return;
@@ -312,7 +342,10 @@ export function CommandPalette() {
       else if (item.id === "settings") navigate("/settings");
       else if (item.id === "theme-toggle") setTheme(isDark ? "light" : "dark");
       else if (item.id === "theme-system") setTheme("system");
-      else if (item.id === "search") {
+      else if (item.id === "check-updates") {
+        if (update) openDialog();
+        else void runUpdateCheck();
+      } else if (item.id === "search") {
         const term = query.trim();
         if (!term) return; // nothing to search yet — keep the palette open
         navigate(`/search?q=${encodeURIComponent(term)}`);
