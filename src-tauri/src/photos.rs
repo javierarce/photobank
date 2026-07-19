@@ -134,6 +134,65 @@ async fn s3_delete_many(ctx: &S3Ctx, keys: &[String]) -> Result<()> {
     Ok(())
 }
 
+/// Best-effort batch delete, chunked to DeleteObjects' 1000-key limit.
+async fn s3_delete_keys_quiet(ctx: &S3Ctx, keys: &[String]) {
+    for chunk in keys.chunks(1000) {
+        let _ = s3_delete_many(ctx, chunk).await;
+    }
+}
+
+/// Every bucket key the catalog currently references under the two folder
+/// names a rename touches: each row's object plus all the variant keys it may
+/// own. Rename sweeps consult this at delete time because a concurrent import
+/// or move can claim a key mid-rename (the target folder has no catalog rows
+/// until commit, so nothing stops it): deleting such a key would destroy the
+/// only copy behind a live row — real loss, not an orphan.
+fn keys_referenced_under(
+    conn: &rusqlite::Connection,
+    folders: [&str; 2],
+) -> Result<HashSet<String>> {
+    let mut stmt =
+        conn.prepare("SELECT s3_key FROM photos WHERE folder = ?1 OR folder = ?2")?;
+    let keys = stmt.query_map(rusqlite::params![folders[0], folders[1]], |row| {
+        row.get::<_, String>(0)
+    })?;
+    let mut referenced = HashSet::new();
+    for key in keys {
+        let key = key?;
+        let base = base_key(&key).to_string();
+        for suffix in variant_suffixes() {
+            referenced.insert(format!("{base}{suffix}"));
+        }
+        referenced.insert(key);
+    }
+    Ok(referenced)
+}
+
+/// Best-effort sweep of a rename's leftover objects, skipping any key the
+/// catalog references by now (see keys_referenced_under). If the referenced-
+/// keys query itself fails, skip the whole sweep: orphaned objects are
+/// recoverable, a deleted original isn't.
+async fn sweep_rename_leftovers(
+    app: &AppHandle,
+    ctx: &S3Ctx,
+    folders: [&str; 2],
+    candidates: Vec<String>,
+) {
+    let referenced = {
+        let db = app.state::<Db>();
+        let conn = db.0.lock().unwrap();
+        match keys_referenced_under(&conn, folders) {
+            Ok(referenced) => referenced,
+            Err(_) => return,
+        }
+    };
+    let keys: Vec<String> = candidates
+        .into_iter()
+        .filter(|key| !referenced.contains(key))
+        .collect();
+    s3_delete_keys_quiet(ctx, &keys).await;
+}
+
 /// Move and/or rename. Order matters and mirrors the old PATCH route:
 /// copy original → copy variants (remembering which existed) → repoint the
 /// DB → delete old objects. A failure partway never loses the photo.
@@ -231,6 +290,208 @@ pub async fn update_photo(
 
     crate::manifest::schedule_upload(&app);
     Ok(updated)
+}
+
+/// Guard a folder rename's names: refuses renaming inbox (imports default
+/// into it, so it would immediately reappear), sanitizes the target, and
+/// returns None when the rename is a no-op.
+fn validate_folder_rename(old: &str, new: &str) -> Result<Option<String>> {
+    if old == "inbox" {
+        return Err(Error::msg("The inbox folder can't be renamed"));
+    }
+    let new = sanitize_folder(new).ok_or_else(|| Error::msg("Invalid folder name"))?;
+    if new == old {
+        return Ok(None);
+    }
+    Ok(Some(new))
+}
+
+/// The photos a folder rename would move, or why it can't proceed. Runs
+/// against the catalog only, so the S3 work starts from a validated plan.
+fn plan_folder_rename(
+    conn: &rusqlite::Connection,
+    old: &str,
+    new: &str,
+) -> Result<Vec<Photo>> {
+    let occupied: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM photos WHERE folder = ?1",
+        rusqlite::params![new],
+        |row| row.get(0),
+    )?;
+    if occupied > 0 {
+        return Err(Error::msg("A folder with that name already exists"));
+    }
+    // An in-flight import owns its old-prefix keys (its objects may not exist
+    // yet, and its pipeline keeps writing to them), so renaming around it can
+    // only end badly. The UI disables Rename during uploads; this backs it up.
+    let importing: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM photos
+         WHERE folder = ?1 AND processing_status IN ('pending', 'processing')",
+        rusqlite::params![old],
+        |row| row.get(0),
+    )?;
+    if importing > 0 {
+        return Err(Error::msg(
+            "Photos are still importing into this folder — wait for them to finish",
+        ));
+    }
+    let mut stmt =
+        conn.prepare(&format!("SELECT {PHOTO_COLUMNS} FROM photos WHERE folder = ?1"))?;
+    let photos = stmt
+        .query_map(rusqlite::params![old], db::photo_from_row)?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    if photos.is_empty() {
+        return Err(Error::msg("Folder not found"));
+    }
+    Ok(photos)
+}
+
+/// Flip the snapshot's rows to the new folder in a single transaction,
+/// re-checking the collision guard first (an import may have raced the copy
+/// phase). Scoped to the snapshot — not `WHERE folder = old` — so a row only
+/// flips if its objects were actually copied: each UPDATE also requires the
+/// photo's s3_key to be unchanged, which skips photos moved, renamed, or
+/// deleted mid-copy, and photos added to the folder mid-rename simply stay
+/// behind under the old name. Either the whole batch commits or none of it.
+fn commit_folder_rename(
+    conn: &mut rusqlite::Connection,
+    new: &str,
+    snapshot: &[Photo],
+) -> Result<usize> {
+    let tx = conn.transaction()?;
+    let occupied: i64 = tx.query_row(
+        "SELECT COUNT(*) FROM photos WHERE folder = ?1",
+        rusqlite::params![new],
+        |row| row.get(0),
+    )?;
+    if occupied > 0 {
+        return Err(Error::msg("A folder with that name already exists"));
+    }
+    let now = db::now();
+    let mut moved = 0;
+    for photo in snapshot {
+        moved += tx.execute(
+            "UPDATE photos SET folder = ?1, s3_key = ?1 || '/' || filename, updated_at = ?2
+             WHERE id = ?3 AND s3_key = ?4",
+            rusqlite::params![new, now, photo.id, photo.s3_key],
+        )?;
+    }
+    tx.commit()?;
+    Ok(moved)
+}
+
+/// Rename a folder by re-keying every photo in it. S3 has no cross-object
+/// transaction, so update_photo's copy-first discipline applies, scaled up:
+/// copy everything to the new keys (aborting — and sweeping the copies — if
+/// any original fails), flip all catalog rows in one SQLite transaction, then
+/// best-effort delete the old objects. The catalog is what the UI reads, so
+/// the folder never appears half-renamed; the worst a partial failure leaves
+/// behind is orphaned bucket objects. Returns the number of photos moved.
+pub async fn rename_folder(app: AppHandle, old_name: String, new_name: String) -> Result<usize> {
+    let Some(new_name) = validate_folder_rename(&old_name, &new_name)? else {
+        return Ok(0); // same name — nothing to do
+    };
+
+    let photos = {
+        let db = app.state::<Db>();
+        let conn = db.0.lock().unwrap();
+        plan_folder_rename(&conn, &old_name, &new_name)?
+    };
+
+    let ctx = {
+        let state = app.state::<S3State>();
+        let guard = state.0.read().await;
+        let ctx = guard
+            .as_ref()
+            .ok_or_else(|| Error::msg("S3 is not configured — open Settings first"))?;
+        crate::settings::ensure_catalog_matches_bucket(&app, ctx)?;
+        std::sync::Arc::new(ctx.clone())
+    };
+
+    // Copy phase, fanned out with bounded concurrency (a folder is up to nine
+    // objects per photo). A photo's original failing to copy is fatal; a
+    // missing variant isn't (it may still be processing), matching
+    // update_photo. Each task reports the (old, new) pairs it actually
+    // created, so failure cleanup and the delete phase touch only real
+    // objects.
+    let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(16));
+    let mut tasks = tokio::task::JoinSet::new();
+    for photo in &photos {
+        let ctx = ctx.clone();
+        let semaphore = semaphore.clone();
+        let old_key = photo.s3_key.clone();
+        let new_key = format!("{new_name}/{}", photo.filename);
+        tasks.spawn(async move {
+            let _permit = semaphore.acquire_owned().await.expect("semaphore closed");
+            s3_copy(&ctx, &old_key, &new_key).await?;
+            let old_base = base_key(&old_key).to_string();
+            let new_base = base_key(&new_key).to_string();
+            let mut pairs = vec![(old_key, new_key)];
+            for suffix in variant_suffixes() {
+                let from = format!("{old_base}{suffix}");
+                let to = format!("{new_base}{suffix}");
+                if s3_copy(&ctx, &from, &to).await.is_ok() {
+                    pairs.push((from, to));
+                }
+            }
+            Ok::<_, Error>(pairs)
+        });
+    }
+
+    // Let every task finish even after a failure — aborting mid-copy would
+    // lose track of which new keys were created and orphan them.
+    let mut copied: Vec<(String, String)> = Vec::new();
+    let mut failure: Option<Error> = None;
+    while let Some(joined) = tasks.join_next().await {
+        match joined {
+            Ok(Ok(pairs)) => copied.extend(pairs),
+            Ok(Err(e)) => {
+                failure.get_or_insert(e);
+            }
+            Err(e) => {
+                failure.get_or_insert(Error::msg(e.to_string()));
+            }
+        }
+    }
+
+    let folders = [old_name.as_str(), new_name.as_str()];
+
+    if let Some(e) = failure {
+        // Leave the old folder fully intact: sweep whatever the successful
+        // tasks copied and report the failure.
+        let new_keys: Vec<String> = copied.iter().map(|(_, to)| to.clone()).collect();
+        sweep_rename_leftovers(&app, &ctx, folders, new_keys).await;
+        return Err(e);
+    }
+
+    let commit = {
+        let db = app.state::<Db>();
+        let mut conn = db.0.lock().unwrap();
+        commit_folder_rename(&mut conn, &new_name, &photos)
+    };
+    let moved = match commit {
+        Ok(moved) => moved,
+        Err(e) => {
+            // The collision re-check failing means something raced into the
+            // target folder mid-copy — its rows may reference keys we copied,
+            // which is exactly what the sweep filter protects.
+            let new_keys: Vec<String> = copied.iter().map(|(_, to)| to.clone()).collect();
+            sweep_rename_leftovers(&app, &ctx, folders, new_keys).await;
+            return Err(e);
+        }
+    };
+
+    // The catalog now points at the new keys, so old-object deletes are
+    // best-effort — a failure here only leaves orphans behind. Still filtered:
+    // an import can reserve a just-vacated old name post-commit.
+    let old_keys: Vec<String> = copied.iter().map(|(from, _)| from.clone()).collect();
+    sweep_rename_leftovers(&app, &ctx, folders, old_keys).await;
+    for (from, to) in &copied {
+        rename_cached(&app, from, to).await;
+    }
+
+    crate::manifest::schedule_upload(&app);
+    Ok(moved)
 }
 
 /// Delete a photo, its variants, its catalog row (cascading to tags), and
@@ -434,7 +695,12 @@ pub(crate) async fn fetch_bytes(app: &AppHandle, key: &str) -> Result<Vec<u8>> {
 
 #[cfg(test)]
 mod tests {
-    use super::encode_key;
+    use super::{
+        commit_folder_rename, encode_key, keys_referenced_under, plan_folder_rename,
+        validate_folder_rename,
+    };
+    use crate::db;
+    use rusqlite::{params, Connection};
 
     #[test]
     fn encode_key_matches_encode_uri_component() {
@@ -444,5 +710,207 @@ mod tests {
             "my%20photos/caf%C3%A9%20%231.jpg"
         );
         assert_eq!(encode_key("a(1)!~*'/b_c-d.e"), "a(1)!~*'/b_c-d.e");
+    }
+
+    fn insert_photo(conn: &Connection, id: &str, folder: &str, filename: &str) {
+        insert_photo_with_status(conn, id, folder, filename, "completed");
+    }
+
+    fn insert_photo_with_status(
+        conn: &Connection,
+        id: &str,
+        folder: &str,
+        filename: &str,
+        status: &str,
+    ) {
+        conn.execute(
+            "INSERT INTO photos (id, filename, s3_key, folder, processing_status, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)",
+            params![id, filename, format!("{folder}/{filename}"), folder, status, db::now()],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn validate_folder_rename_guards_names() {
+        // inbox is the import default; renaming it would only see it reappear
+        let err = validate_folder_rename("inbox", "archive").unwrap_err();
+        assert!(err.to_string().contains("inbox"));
+
+        assert!(validate_folder_rename("trips", "a/b").is_err());
+        assert!(validate_folder_rename("trips", "  ").is_err());
+        assert!(validate_folder_rename("trips", "..").is_err());
+
+        // Same name (after trimming) is a no-op, not an error
+        assert_eq!(validate_folder_rename("trips", " trips ").unwrap(), None);
+
+        assert_eq!(
+            validate_folder_rename("trips", " voyages ").unwrap(),
+            Some("voyages".to_string())
+        );
+    }
+
+    #[test]
+    fn plan_folder_rename_rejects_missing_source_and_taken_target() {
+        let conn = db::open_in_memory();
+        insert_photo(&conn, "a", "trips", "a.jpg");
+        insert_photo(&conn, "b", "trips", "b.jpg");
+        insert_photo(&conn, "c", "beach", "c.jpg");
+
+        let err = plan_folder_rename(&conn, "trips", "beach").unwrap_err();
+        assert!(err.to_string().contains("already exists"));
+
+        let err = plan_folder_rename(&conn, "nope", "elsewhere").unwrap_err();
+        assert!(err.to_string().contains("not found"));
+
+        let photos = plan_folder_rename(&conn, "trips", "voyages").unwrap();
+        assert_eq!(photos.len(), 2);
+        assert!(photos.iter().all(|p| p.folder == "trips"));
+    }
+
+    #[test]
+    fn plan_folder_rename_refuses_folders_with_imports_in_flight() {
+        let conn = db::open_in_memory();
+        insert_photo(&conn, "a", "trips", "a.jpg");
+        insert_photo_with_status(&conn, "b", "trips", "b.jpg", "pending");
+
+        let err = plan_folder_rename(&conn, "trips", "voyages").unwrap_err();
+        assert!(err.to_string().contains("still importing"));
+
+        // Once the import settles the rename can proceed; failed imports
+        // don't hold the folder hostage
+        conn.execute(
+            "UPDATE photos SET processing_status = 'failed' WHERE id = 'b'",
+            [],
+        )
+        .unwrap();
+        assert!(plan_folder_rename(&conn, "trips", "voyages").is_ok());
+    }
+
+    #[test]
+    fn keys_referenced_under_shields_raced_rows_and_their_variants() {
+        let conn = db::open_in_memory();
+        // An import raced into the rename's target folder mid-copy
+        insert_photo(&conn, "raced", "voyages", "a.jpg");
+        // Unrelated folders don't shield anything
+        insert_photo(&conn, "other", "beach", "c.jpg");
+
+        let referenced = keys_referenced_under(&conn, ["trips", "voyages"]).unwrap();
+
+        // The raced photo's object and every variant it may own are shielded,
+        // so the rename's sweep of its copied "voyages/a.*" keys skips them
+        assert!(referenced.contains("voyages/a.jpg"));
+        assert!(referenced.contains("voyages/a_640.webp"));
+        assert!(referenced.contains("voyages/a_2880.jpg"));
+        assert!(referenced.contains("voyages/a_128.jpg"));
+
+        // Keys nothing references stay sweepable
+        assert!(!referenced.contains("voyages/b.jpg"));
+        assert!(!referenced.contains("beach/c.jpg"));
+    }
+
+    #[test]
+    fn commit_folder_rename_flips_folder_and_s3_key_atomically() {
+        let mut conn = db::open_in_memory();
+        insert_photo(&conn, "a", "trips", "a.jpg");
+        insert_photo(&conn, "b", "trips", "b.jpg");
+
+        let snapshot = plan_folder_rename(&conn, "trips", "voyages").unwrap();
+        let moved = commit_folder_rename(&mut conn, "voyages", &snapshot).unwrap();
+        assert_eq!(moved, 2);
+
+        let keys: Vec<(String, String)> = conn
+            .prepare("SELECT folder, s3_key FROM photos ORDER BY filename")
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(
+            keys,
+            vec![
+                ("voyages".into(), "voyages/a.jpg".into()),
+                ("voyages".into(), "voyages/b.jpg".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn commit_folder_rename_rechecks_collision_and_rolls_back() {
+        let mut conn = db::open_in_memory();
+        insert_photo(&conn, "a", "trips", "a.jpg");
+        let snapshot = plan_folder_rename(&conn, "trips", "voyages").unwrap();
+
+        // Simulates an import racing into the target between plan and commit
+        insert_photo(&conn, "b", "voyages", "b.jpg");
+
+        let err = commit_folder_rename(&mut conn, "voyages", &snapshot).unwrap_err();
+        assert!(err.to_string().contains("already exists"));
+
+        // Nothing moved: the source row is untouched
+        let folder: String = conn
+            .query_row("SELECT folder FROM photos WHERE id = 'a'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(folder, "trips");
+    }
+
+    #[test]
+    fn commit_folder_rename_leaves_photos_added_mid_rename_behind() {
+        let mut conn = db::open_in_memory();
+        insert_photo(&conn, "a", "trips", "a.jpg");
+        let snapshot = plan_folder_rename(&conn, "trips", "voyages").unwrap();
+
+        // Uploaded into the folder during the copy phase — its objects were
+        // never copied, so it must not be flipped to keys that don't exist
+        insert_photo(&conn, "late", "trips", "late.jpg");
+
+        let moved = commit_folder_rename(&mut conn, "voyages", &snapshot).unwrap();
+        assert_eq!(moved, 1);
+
+        let (folder, s3_key): (String, String) = conn
+            .query_row(
+                "SELECT folder, s3_key FROM photos WHERE id = 'late'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(folder, "trips");
+        assert_eq!(s3_key, "trips/late.jpg");
+    }
+
+    #[test]
+    fn commit_folder_rename_skips_photos_changed_mid_rename() {
+        let mut conn = db::open_in_memory();
+        insert_photo(&conn, "a", "trips", "a.jpg");
+        insert_photo(&conn, "b", "trips", "b.jpg");
+        insert_photo(&conn, "c", "trips", "c.jpg");
+        let snapshot = plan_folder_rename(&conn, "trips", "voyages").unwrap();
+
+        // During the copy phase: "a" was moved to another folder, "b" was
+        // renamed in place, "c" was deleted. Their copied objects no longer
+        // match the rows, so none of them may flip.
+        conn.execute(
+            "UPDATE photos SET folder = 'beach', s3_key = 'beach/a.jpg' WHERE id = 'a'",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE photos SET filename = 'b2.jpg', s3_key = 'trips/b2.jpg' WHERE id = 'b'",
+            [],
+        )
+        .unwrap();
+        conn.execute("DELETE FROM photos WHERE id = 'c'", []).unwrap();
+
+        let moved = commit_folder_rename(&mut conn, "voyages", &snapshot).unwrap();
+        assert_eq!(moved, 0);
+
+        let a: String = conn
+            .query_row("SELECT folder FROM photos WHERE id = 'a'", [], |r| r.get(0))
+            .unwrap();
+        let b: String = conn
+            .query_row("SELECT s3_key FROM photos WHERE id = 'b'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(a, "beach");
+        assert_eq!(b, "trips/b2.jpg");
     }
 }

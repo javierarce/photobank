@@ -36,6 +36,7 @@ impl S3Settings {
     }
 }
 
+#[derive(Clone)]
 pub struct S3Ctx {
     pub client: aws_sdk_s3::Client,
     pub bucket: String,
