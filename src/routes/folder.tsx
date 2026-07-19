@@ -1,5 +1,6 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
+import { FolderTitle } from "@/components/folder-title";
 import { PhotoGrid, PhotoGridRef } from "@/components/photo-grid";
 import { SelectionToolbar } from "@/components/selection-toolbar";
 import { useUpload } from "@/hooks/use-upload";
@@ -8,6 +9,11 @@ import { useBackgroundDeselect, useSelection } from "@/hooks/use-selection";
 export default function FolderPage() {
   // react-router decodes the param, so "My%20Trip" arrives as "My Trip"
   const { folder = "" } = useParams();
+  const [editingTitle, setEditingTitle] = useState(false);
+  // While the backend rename is re-keying the folder's photos, mutations of
+  // the folder are locked out (Upload, Rename, drag-and-drop): a photo added
+  // mid-rename would be left behind under the old name.
+  const [renamingFolder, setRenamingFolder] = useState(false);
   const photoGridRef = useRef<PhotoGridRef>(null);
   const { selected } = useSelection();
   const handleBackgroundClick = useBackgroundDeselect();
@@ -33,11 +39,19 @@ export default function FolderPage() {
   const cancellable = folderUploads.filter(
     (u) => u.status === "pending" || u.status === "uploading"
   );
+  // Renaming while an import is writing into this folder would race it (the
+  // backend refuses too), so Rename waits for uploads to settle.
+  const importing = folderUploads.some(
+    (u) =>
+      u.status === "pending" ||
+      u.status === "uploading" ||
+      u.status === "cancelling"
+  );
 
   return (
     <div
       className="relative min-h-screen font-sans"
-      data-drop-folder={folder}
+      data-drop-folder={renamingFolder ? undefined : folder}
       onClick={handleBackgroundClick}
     >
       <main className="mx-auto max-w-5xl px-6 py-8">
@@ -48,9 +62,12 @@ export default function FolderPage() {
             <SelectionToolbar />
           ) : (
             <>
-              <h1 className="text-xl font-semibold text-foreground">
-                {folder}
-              </h1>
+              <FolderTitle
+                folder={folder}
+                editing={editingTitle}
+                onEditingChange={setEditingTitle}
+                onRenamingChange={setRenamingFolder}
+              />
               <div className="flex shrink-0 items-center gap-2">
                 {cancellable.length > 0 && (
                   <button
@@ -64,10 +81,23 @@ export default function FolderPage() {
                     {cancellable.length > 1 ? "s" : ""}
                   </button>
                 )}
+                {/* inbox is the import default — renaming it would only see
+                    it reappear on the next upload (the backend refuses too) */}
+                {folder !== "inbox" && (
+                  <button
+                    type="button"
+                    onClick={() => setEditingTitle(true)}
+                    disabled={renamingFolder || importing}
+                    className="rounded-md border border-border px-3 py-1.5 text-sm font-medium text-foreground/70 transition hover:border-foreground/35 hover:text-foreground active:scale-[0.97] disabled:pointer-events-none disabled:opacity-50"
+                  >
+                    Rename
+                  </button>
+                )}
                 <button
                   type="button"
                   onClick={() => openFilePicker(folder)}
-                  className="rounded-md border border-border px-3 py-1.5 text-sm font-medium text-foreground/70 transition hover:border-foreground/35 hover:text-foreground active:scale-[0.97]"
+                  disabled={renamingFolder}
+                  className="rounded-md border border-border px-3 py-1.5 text-sm font-medium text-foreground/70 transition hover:border-foreground/35 hover:text-foreground active:scale-[0.97] disabled:pointer-events-none disabled:opacity-50"
                 >
                   Upload
                 </button>
