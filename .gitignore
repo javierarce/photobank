@@ -3,6 +3,10 @@
 # dependencies
 /node_modules
 
+# this repo uses npm (package-lock.json); a stray pnpm lockfile makes
+# tauri-action pick pnpm and breaks releases — keep it out (see #22)
+pnpm-lock.yaml
+
 # testing
 /coverage
 

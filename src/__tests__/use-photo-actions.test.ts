@@ -129,6 +129,32 @@ describe("usePhotoActions — handleDelete (optimistic)", () => {
     expect(result.current.active).toBeNull();
   });
 
+  it("names the clean filename in the confirm dialog for a legacy photo", async () => {
+    mockDeletePhoto.mockResolvedValue(undefined);
+
+    const { result } = renderHook(() => usePhotoActions());
+    const legacy = makePhoto({
+      id: "a",
+      filename: "R0012750_original.jpg",
+      s3Key: "berlin/R0012750_original.jpg",
+    });
+    act(() => result.current.setPhotos([legacy]));
+
+    await act(async () => {
+      await result.current.handleDelete(legacy);
+    });
+
+    // The dialog must name what the user actually saw, not the raw stored key.
+    expect(mockAsk).toHaveBeenCalledWith(
+      expect.stringContaining("R0012750.jpg"),
+      expect.anything()
+    );
+    expect(mockAsk).not.toHaveBeenCalledWith(
+      expect.stringContaining("_original"),
+      expect.anything()
+    );
+  });
+
   it("does nothing when the confirmation is dismissed", async () => {
     mockAsk.mockResolvedValue(false);
 
