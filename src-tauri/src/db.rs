@@ -160,6 +160,30 @@ pub fn set_meta(conn: &Connection, key: &str, value: &str) -> Result<()> {
     Ok(())
 }
 
+/// Another cataloged photo in `folder` whose filename maps to the same
+/// variant stem as `filename` — "photo.jpg" vs "photo.png" vs
+/// "photo_original.jpg" all derive "photo_640.webp" etc., so their
+/// derivative objects would overwrite each other in the bucket. Imports
+/// suffix past such names and renames refuse them.
+pub fn variant_stem_occupant(
+    conn: &Connection,
+    folder: &str,
+    filename: &str,
+) -> Result<Option<String>> {
+    let stem = crate::keys::variant_base(filename).to_string();
+    let mut stmt = conn.prepare("SELECT id, filename FROM photos WHERE folder = ?1")?;
+    let rows = stmt.query_map(rusqlite::params![folder], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    })?;
+    for row in rows {
+        let (id, name) = row?;
+        if crate::keys::variant_base(&name) == stem {
+            return Ok(Some(id));
+        }
+    }
+    Ok(None)
+}
+
 /// Every S3 write must target the bucket this catalog was built from —
 /// otherwise a stale catalog (e.g. after switching Settings from a test
 /// bucket to a production one) could delete or overwrite objects it never
@@ -297,6 +321,26 @@ mod tests {
         assert_eq!(status_of(&conn, "proc"), "failed");
         assert_eq!(status_of(&conn, "done"), "completed");
         assert_eq!(status_of(&conn, "fail"), "failed");
+    }
+
+    #[test]
+    fn variant_stem_occupant_detects_cross_scheme_collisions() {
+        let conn = open_in_memory();
+        insert_photo(&conn, "legacy", "inbox", "photo_original.jpg");
+
+        // Same stem through the legacy marker or another extension — both
+        // would overwrite the legacy photo's derivative objects.
+        assert_eq!(
+            variant_stem_occupant(&conn, "inbox", "photo.jpg").unwrap(),
+            Some("legacy".into())
+        );
+        assert_eq!(
+            variant_stem_occupant(&conn, "inbox", "photo.png").unwrap(),
+            Some("legacy".into())
+        );
+        // Different folder or different stem: no collision.
+        assert_eq!(variant_stem_occupant(&conn, "trips", "photo.jpg").unwrap(), None);
+        assert_eq!(variant_stem_occupant(&conn, "inbox", "other.jpg").unwrap(), None);
     }
 
     #[test]
