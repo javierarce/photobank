@@ -5,8 +5,13 @@ import {
   useImperativeHandle,
   forwardRef,
 } from "react";
-import { imageUrl } from "@/lib/image-url";
-import { listPhotos } from "@/lib/api";
+import { listen } from "@tauri-apps/api/event";
+import { imageUrl, originalUrl } from "@/lib/image-url";
+import {
+  listPhotos,
+  REFRESH_PROGRESS_EVENT,
+  type RefreshProgress,
+} from "@/lib/api";
 import { PhotoLightbox } from "@/components/photo-lightbox";
 import { SelectionCheck } from "@/components/selection-check";
 import { usePhotoActions } from "@/hooks/use-photo-actions";
@@ -133,6 +138,18 @@ export const PhotoGrid = forwardRef<PhotoGridRef, Props>(function PhotoGrid(
 
   useImperativeHandle(ref, () => ({ refresh: loadPhotos }));
 
+  // A library refresh (Settings, or auto-started after a rebuild) fills in
+  // metadata and regenerates variants; reload once it settles so tiles swap
+  // from their original-image fallback to the real thumbnails.
+  useEffect(() => {
+    const unlisten = listen<RefreshProgress>(REFRESH_PROGRESS_EVENT, (event) => {
+      if (event.payload.status !== "running") loadPhotos();
+    });
+    return () => {
+      unlisten.then((fn) => fn());
+    };
+  }, [loadPhotos]);
+
   // Keep showing the local preview while the photo is pending/processing —
   // the real tile has nothing to render until the worker finishes. Hand off
   // only once the 640px variant has actually loaded (preloaded below), so the
@@ -213,13 +230,7 @@ export const PhotoGrid = forwardRef<PhotoGridRef, Props>(function PhotoGrid(
             }`}
           >
             {photo.processingStatus === "completed" ? (
-              <img
-                src={imageUrl(photo.s3Key, "640", "webp")}
-                alt={photo.filename}
-                className="h-full w-full object-cover"
-                loading="lazy"
-                draggable={false}
-              />
+              <Thumbnail photo={photo} />
             ) : (
               <div className="flex h-full items-center justify-center">
                 <span className="text-xs text-foreground/40">
@@ -259,6 +270,34 @@ export const PhotoGrid = forwardRef<PhotoGridRef, Props>(function PhotoGrid(
     </>
   );
 });
+
+/** Grid thumbnail that never shows a broken image: if the 640px variant is
+ * missing from the bucket (original synced in externally, refresh not done
+ * yet), fall back to the original object. */
+function Thumbnail({ photo }: { photo: Photo }) {
+  const [fallback, setFallback] = useState(false);
+  // Retry the variant when the key changes (rename/move) or the row is
+  // touched at all — a refresh regenerates variants under the same key and
+  // bumps updated_at, and the tile instance survives the reload (keyed by id).
+  const marker = `${photo.s3Key}@${photo.updatedAt}`;
+  const [prevMarker, setPrevMarker] = useState(marker);
+  if (prevMarker !== marker) {
+    setPrevMarker(marker);
+    setFallback(false);
+  }
+  return (
+    <img
+      src={
+        fallback ? originalUrl(photo.s3Key) : imageUrl(photo.s3Key, "640", "webp")
+      }
+      alt={photo.filename}
+      className="h-full w-full object-cover"
+      loading="lazy"
+      draggable={false}
+      onError={() => setFallback(true)}
+    />
+  );
+}
 
 /** A grid tile for an in-flight import: filename + inline progress. The
  * pixels arrive when the finished photo replaces this tile, so the preview

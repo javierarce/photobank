@@ -23,6 +23,18 @@ describe("image-url", () => {
     );
   });
 
+  it("strips the old-scheme _original marker when addressing variants", () => {
+    // The old web pipeline stored originals at "<base>_original.jpg" with
+    // variants at "<base>_<width>.<format>".
+    expect(imageUrl("calella/R0007098_original.jpg", "640", "webp")).toBe(
+      "photo://localhost/calella/R0007098_640.webp"
+    );
+    // A name that merely contains "original" elsewhere is untouched.
+    expect(imageUrl("inbox/original_takes.jpg", "640", "webp")).toBe(
+      "photo://localhost/inbox/original_takes_640.webp"
+    );
+  });
+
   it("returns the original object URL untouched by variant naming", () => {
     expect(originalUrl("inbox/photo.jpg")).toBe(
       "photo://localhost/inbox/photo.jpg"
