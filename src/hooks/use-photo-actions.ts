@@ -1,6 +1,7 @@
 import { useCallback, useState } from "react";
 import { ask, message } from "@tauri-apps/plugin-dialog";
 import { deletePhoto, updatePhoto } from "@/lib/api";
+import { displayName } from "@/lib/keys";
 import type { Photo } from "@/lib/types";
 
 /** Native OS confirm dialog — the webview's window.confirm doesn't render. */
@@ -23,7 +24,7 @@ export function usePhotoActions() {
   const [active, setActive] = useState<Photo | null>(null);
 
   const handleDelete = async (photo: Photo) => {
-    if (!(await confirmDelete(photo.filename))) return;
+    if (!(await confirmDelete(displayName(photo.filename)))) return;
 
     // Remove the thumbnail immediately for a snappy delete; the bucket cleanup
     // happens in the background. If it fails, splice the photo back at its
@@ -70,7 +71,7 @@ export function usePhotoActions() {
     if (!targets.length) return false;
     const label =
       targets.length === 1
-        ? targets[0].filename
+        ? displayName(targets[0].filename)
         : `${targets.length} photos`;
     if (!(await confirmDelete(label))) return false;
 
