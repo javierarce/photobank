@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { imageUrl } from "@/lib/image-url";
+import { imageUrl, originalUrl } from "@/lib/image-url";
 import { exportPhotos } from "@/lib/api";
 import { ExportButton } from "@/components/export-button";
 import { PhotoTags } from "@/components/photo-tags";
@@ -33,6 +33,9 @@ export function PhotoLightbox({
   onNext,
 }: Props) {
   const [loaded, setLoaded] = useState(false);
+  // When the 2880px variant is missing (photo synced into the bucket
+  // externally, refresh not done yet), fall back to the original object.
+  const [fallback, setFallback] = useState(false);
   const [editing, setEditing] = useState(false);
   const [renaming, setRenaming] = useState(false);
   const [name, ext] = splitFilename(photo.filename);
@@ -46,6 +49,7 @@ export function PhotoLightbox({
   if (prevPhotoId !== photo.id) {
     setPrevPhotoId(photo.id);
     setLoaded(false);
+    setFallback(false);
   }
 
   const [prevFilename, setPrevFilename] = useState(photo.filename);
@@ -112,9 +116,14 @@ export function PhotoLightbox({
             </div>
           )}
           <img
-            src={imageUrl(photo.s3Key, "2880", "webp")}
+            src={
+              fallback
+                ? originalUrl(photo.s3Key)
+                : imageUrl(photo.s3Key, "2880", "webp")
+            }
             alt={photo.filename}
             onLoad={() => setLoaded(true)}
+            onError={() => setFallback(true)}
             className={`h-full w-full object-contain transition-opacity duration-150 ease-out ${
               loaded ? "opacity-100" : "opacity-0"
             }`}

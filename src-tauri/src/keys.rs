@@ -42,9 +42,18 @@ pub fn base_key(s3_key: &str) -> &str {
     }
 }
 
+/// The stem a photo's variants hang off. Normally `base_key`, but originals
+/// written by the old web pipeline live at "<base>_original.<ext>" with their
+/// variants at "<base>_<width>.<fmt>" — strip the marker so both schemes
+/// address the same variant objects.
+pub fn variant_base(s3_key: &str) -> &str {
+    let base = base_key(s3_key);
+    base.strip_suffix("_original").unwrap_or(base)
+}
+
 /// "folder/photo.jpg" -> "folder/photo_640.webp"
 pub fn variant_key(s3_key: &str, width: u32, format: VariantFormat) -> String {
-    format!("{}_{}.{}", base_key(s3_key), width, format.ext())
+    format!("{}_{}.{}", variant_base(s3_key), width, format.ext())
 }
 
 /// All suffixes a photo's variants may live under, for moves and deletes.
@@ -116,6 +125,21 @@ mod tests {
             variant_key("folder/photo.jpg", 2880, VariantFormat::Jpg),
             "folder/photo_2880.jpg"
         );
+    }
+
+    #[test]
+    fn variant_base_strips_the_old_original_marker() {
+        // Old web pipeline: original at "<base>_original.jpg", variants at
+        // "<base>_<width>.<fmt>".
+        assert_eq!(variant_base("calella/R0007098_original.jpg"), "calella/R0007098");
+        assert_eq!(
+            variant_key("calella/R0007098_original.jpg", 640, VariantFormat::Webp),
+            "calella/R0007098_640.webp"
+        );
+        // Current scheme is untouched.
+        assert_eq!(variant_base("inbox/photo.jpg"), "inbox/photo");
+        // The marker only counts as a stem suffix, not anywhere in the name.
+        assert_eq!(variant_base("inbox/original_takes.jpg"), "inbox/original_takes");
     }
 
     #[test]

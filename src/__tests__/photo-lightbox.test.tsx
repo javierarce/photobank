@@ -47,6 +47,19 @@ describe("PhotoLightbox", () => {
     expect(screen.getByText(/1920/)).toBeInTheDocument();
   });
 
+  it("falls back to the original image when the 2880px variant is missing", () => {
+    render(<PhotoLightbox photo={photo} onClose={vi.fn()} />);
+
+    const img = screen.getByAltText("test.jpg");
+    expect(img).toHaveAttribute(
+      "src",
+      "photo://localhost/inbox/test_2880.webp"
+    );
+
+    fireEvent.error(img);
+    expect(img).toHaveAttribute("src", "photo://localhost/inbox/test.jpg");
+  });
+
   it("calls onClose when pressing Escape", () => {
     const onClose = vi.fn();
     render(<PhotoLightbox photo={photo} onClose={onClose} />);

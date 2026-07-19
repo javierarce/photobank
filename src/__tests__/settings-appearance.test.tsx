@@ -14,6 +14,14 @@ vi.mock("@/lib/api", () => ({
   saveSettings: vi.fn(),
   testConnection: vi.fn(),
   rebuildFromBucket: vi.fn(),
+  refreshPendingCount: vi.fn().mockResolvedValue(0),
+  refreshLibrary: vi.fn(),
+  cancelRefresh: vi.fn(),
+  REFRESH_PROGRESS_EVENT: "refresh://progress",
+}));
+
+vi.mock("@tauri-apps/api/event", () => ({
+  listen: () => Promise.resolve(() => {}),
 }));
 
 beforeEach(() => {

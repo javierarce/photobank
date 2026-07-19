@@ -182,6 +182,10 @@ pub struct RebuildReport {
     /// "manifest" when photobank-manifest.json was found, otherwise
     /// "listing" (bucket scan, EXIF/tags unavailable).
     pub source: &'static str,
+    /// Photos left without variants/metadata (never processed by this app —
+    /// e.g. synced into the bucket externally). A background refresh has
+    /// already been started for them.
+    pub needs_refresh: usize,
 }
 
 /// Replace the local catalog with the bucket's contents. Prefers the
@@ -203,27 +207,47 @@ pub async fn rebuild_from_bucket(app: AppHandle) -> Result<RebuildReport> {
 
     let manifest = download_manifest(&app).await?;
 
-    if let Some(manifest) = manifest {
+    let report = if let Some(manifest) = manifest {
         let report = RebuildReport {
             photos: manifest.photos.len(),
             tags: manifest.tags.len(),
             source: "manifest",
+            needs_refresh: 0,
         };
         replace_catalog(&app, manifest, &identity)?;
-        return Ok(report);
-    }
+        report
+    } else {
+        let originals = list_originals(&app).await?;
+        let count = originals.len();
+        replace_catalog_from_listing(&app, originals, &identity)?;
+        // The listing path has no tag data; the next mutation re-uploads a
+        // manifest so future rebuilds take the fast path.
+        schedule_upload(&app);
+        RebuildReport {
+            photos: count,
+            tags: 0,
+            source: "listing",
+            needs_refresh: 0,
+        }
+    };
 
-    let originals = list_originals(&app).await?;
-    let count = originals.len();
-    replace_catalog_from_listing(&app, originals, &identity)?;
-    // The listing path has no tag data; the next mutation re-uploads a
-    // manifest so future rebuilds take the fast path.
-    schedule_upload(&app);
-    Ok(RebuildReport {
-        photos: count,
-        tags: 0,
-        source: "listing",
-    })
+    // Either path can leave rows this app never processed (a listing rebuild
+    // always does; a manifest can too, when it was itself written right after
+    // one). Those have no variants — the grid would show broken tiles — so
+    // start regenerating them in the background right away.
+    let needs_refresh = {
+        let db = app.state::<crate::db::Db>();
+        let conn = db.0.lock().unwrap();
+        conn.query_row(
+            "SELECT COUNT(*) FROM photos WHERE processing_status = 'completed' AND width IS NULL",
+            [],
+            |row| row.get::<_, i64>(0),
+        )? as usize
+    };
+    if needs_refresh > 0 {
+        crate::refresh::spawn_if_needed(&app);
+    }
+    Ok(RebuildReport { needs_refresh, ..report })
 }
 
 async fn download_manifest(app: &AppHandle) -> Result<Option<Manifest>> {

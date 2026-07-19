@@ -1,9 +1,15 @@
 import { useEffect, useState } from "react";
+import { listen } from "@tauri-apps/api/event";
 import {
+  cancelRefresh,
   getSettings,
   rebuildFromBucket,
+  refreshLibrary,
+  refreshPendingCount,
+  REFRESH_PROGRESS_EVENT,
   saveSettings,
   testConnection,
+  type RefreshProgress,
   type S3Settings,
 } from "@/lib/api";
 import { useTheme, type Theme } from "@/lib/theme-context";
@@ -26,6 +32,17 @@ export default function SettingsPage() {
   const [loading, setLoading] = useState(true);
   const [status, setStatus] = useState<Status>({ kind: "idle" });
   const [rebuildStatus, setRebuildStatus] = useState<Status>({ kind: "idle" });
+  const [refreshStatus, setRefreshStatus] = useState<Status>({ kind: "idle" });
+  /** Photos still missing thumbnails/metadata; null until first loaded. */
+  const [refreshPending, setRefreshPending] = useState<number | null>(null);
+  /** Live progress of a running refresh (manual or auto-started). */
+  const [refreshProgress, setRefreshProgress] = useState<RefreshProgress | null>(
+    null
+  );
+  /** Per-photo errors from the current/last run, so failures have names. */
+  const [refreshFailures, setRefreshFailures] = useState<
+    { filename: string; error: string }[]
+  >([]);
 
   useEffect(() => {
     getSettings()
@@ -35,6 +52,43 @@ export default function SettingsPage() {
       })
       .catch(() => {})
       .finally(() => setLoading(false));
+    refreshPendingCount().then(setRefreshPending).catch(() => {});
+  }, []);
+
+  // Progress events also arrive for refreshes this page didn't start (the
+  // background run after a rebuild), so the section always reflects reality.
+  useEffect(() => {
+    const unlisten = listen<RefreshProgress>(REFRESH_PROGRESS_EVENT, (event) => {
+      const p = event.payload;
+      if (p.status === "running") {
+        setRefreshProgress(p);
+        const failure = p.error
+          ? { filename: p.filename ?? "unknown file", error: p.error }
+          : null;
+        // Each event settles exactly one photo, so done+failed === 1 marks
+        // the start of a run — reset the failure list from the previous one.
+        if (p.done + p.failed === 1) {
+          setRefreshFailures(failure ? [failure] : []);
+        } else if (failure) {
+          setRefreshFailures((prev) => [...prev, failure]);
+        }
+        return;
+      }
+      setRefreshProgress(null);
+      setRefreshStatus({
+        kind: p.failed > 0 || p.status === "cancelled" ? "error" : "ok",
+        message:
+          p.status === "cancelled"
+            ? `Refresh cancelled — ${p.done} of ${p.total} photos done.`
+            : p.failed > 0
+              ? `Refreshed ${p.done} of ${p.total} photos; ${p.failed} failed — refresh again to retry them.`
+              : `Refreshed ${p.done} photo${p.done === 1 ? "" : "s"}.`,
+      });
+      refreshPendingCount().then(setRefreshPending).catch(() => {});
+    });
+    return () => {
+      unlisten.then((fn) => fn());
+    };
   }, []);
 
   const set = (patch: Partial<S3Settings>) =>
@@ -77,15 +131,33 @@ export default function SettingsPage() {
     setRebuildStatus({ kind: "busy", message: "Rebuilding from bucket…" });
     try {
       const report = await rebuildFromBucket();
+      const refreshNote =
+        report.needsRefresh > 0
+          ? ` Regenerating thumbnails and metadata for ${report.needsRefresh} photos in the background…`
+          : "";
       setRebuildStatus({
         kind: "ok",
         message:
-          report.source === "manifest"
+          (report.source === "manifest"
             ? `Rebuilt from the manifest: ${report.photos} photos, ${report.tags} tags.`
-            : `Rebuilt by scanning the bucket: ${report.photos} photos (no manifest found — EXIF and tags will refill as you use the app).`,
+            : `Rebuilt by scanning the bucket: ${report.photos} photos (no manifest found).`) +
+          refreshNote,
       });
+      refreshPendingCount().then(setRefreshPending).catch(() => {});
     } catch (err) {
       setRebuildStatus({ kind: "error", message: String(err) });
+    }
+  };
+
+  const handleRefresh = async () => {
+    setRefreshStatus({ kind: "busy", message: "Refreshing…" });
+    try {
+      // Progress events drive the UI; the resolved report is already
+      // reflected by the final event, so only failures need handling here.
+      await refreshLibrary();
+    } catch (err) {
+      setRefreshProgress(null);
+      setRefreshStatus({ kind: "error", message: String(err) });
     }
   };
 
@@ -267,6 +339,72 @@ export default function SettingsPage() {
               </p>
             )}
           </div>
+
+          {refreshProgress ? (
+            <div className="mt-6 flex items-center gap-3">
+              <button
+                type="button"
+                onClick={() => cancelRefresh().catch(() => {})}
+                className="rounded-lg border border-border px-4 py-2 text-sm font-medium text-foreground/70 transition hover:border-foreground/35 hover:text-foreground active:scale-[0.97]"
+              >
+                Cancel
+              </button>
+              <p className="text-sm text-foreground/50" role="status">
+                Refreshing photos… {refreshProgress.done + refreshProgress.failed}{" "}
+                of {refreshProgress.total}
+                {refreshProgress.failed > 0 &&
+                  ` (${refreshProgress.failed} failed)`}
+              </p>
+            </div>
+          ) : (
+            (refreshPending ?? 0) > 0 && (
+              <div className="mt-6">
+                <p className="text-sm text-foreground/50">
+                  {refreshPending} photo{refreshPending === 1 ? "" : "s"} in the
+                  catalog {refreshPending === 1 ? "is" : "are"} missing
+                  thumbnails or metadata (added to the bucket outside this
+                  app). Refreshing downloads each original, fills in EXIF and
+                  dimensions, and regenerates missing thumbnails.
+                </p>
+                <div className="mt-3 flex items-center gap-3">
+                  <button
+                    type="button"
+                    onClick={handleRefresh}
+                    disabled={refreshStatus.kind === "busy"}
+                    className="rounded-lg border border-border px-4 py-2 text-sm font-medium text-foreground/70 transition hover:border-foreground/35 hover:text-foreground active:scale-[0.97] disabled:opacity-50"
+                  >
+                    Refresh thumbnails &amp; metadata
+                  </button>
+                </div>
+              </div>
+            )
+          )}
+          {refreshStatus.kind !== "idle" && !refreshProgress && (
+            <p
+              className={`mt-3 text-sm ${
+                refreshStatus.kind === "error"
+                  ? "text-red-600 dark:text-red-400"
+                  : refreshStatus.kind === "ok"
+                    ? "text-accent"
+                    : "text-foreground/50"
+              }`}
+            >
+              {refreshStatus.message}
+            </p>
+          )}
+          {refreshFailures.length > 0 && (
+            <ul className="mt-2 flex flex-col gap-1 text-sm text-red-600 dark:text-red-400">
+              {refreshFailures.slice(0, 5).map((failure) => (
+                <li key={failure.filename} className="truncate">
+                  <span className="font-mono">{failure.filename}</span> —{" "}
+                  {failure.error}
+                </li>
+              ))}
+              {refreshFailures.length > 5 && (
+                <li>…and {refreshFailures.length - 5} more</li>
+              )}
+            </ul>
+          )}
         </section>
       </main>
     </div>
