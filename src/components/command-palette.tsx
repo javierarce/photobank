@@ -4,6 +4,7 @@ import { listFolders } from "@/lib/api";
 import { useTheme } from "@/lib/theme-context";
 import { useUpdate } from "@/lib/update-context";
 import { checkForUpdate, isTauri } from "@/lib/updater";
+import { UpdateIcon } from "@/components/update-icon";
 import type { FolderCount } from "@/lib/types";
 
 // A lightweight command palette, in the spirit of ankitron's. Cmd/Ctrl+K opens
@@ -138,22 +139,6 @@ const ArrowDownIcon: IconComponent = ({ className }) => (
 const EnterIcon: IconComponent = ({ className }) => (
   <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth={1.75} strokeLinecap="round" strokeLinejoin="round" className={className} aria-hidden>
     <path d="M13 4v3a2 2 0 0 1-2 2H3M6 6 3 9l3 3" />
-  </svg>
-);
-
-const UpdateIcon: IconComponent = ({ className }) => (
-  <svg
-    viewBox="0 0 16 16"
-    fill="none"
-    stroke="currentColor"
-    strokeWidth={1.5}
-    strokeLinecap="round"
-    strokeLinejoin="round"
-    className={className}
-    aria-hidden
-  >
-    <circle cx="8" cy="8" r="6.5" />
-    <path d="M8 11V5M5.5 7.5 8 5l2.5 2.5" />
   </svg>
 );
 

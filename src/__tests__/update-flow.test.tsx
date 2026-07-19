@@ -5,6 +5,7 @@ import {
   cleanup,
   fireEvent,
   waitFor,
+  act,
 } from "@testing-library/react";
 import type { Update } from "@tauri-apps/plugin-updater";
 import { UpdateBadge } from "@/components/update-badge";
@@ -122,5 +123,89 @@ describe("UpdatePrompt", () => {
     );
     expect(screen.getByText("boom")).toBeInTheDocument();
     expect(relaunch).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * Drives the Tauri download callback by hand so the Started/Progress/Finished
+ * state machine and the indeterminate-bar branch are actually exercised (the
+ * happy-path test above resolves without ever emitting an event).
+ */
+describe("UpdatePrompt download progress", () => {
+  // downloadAndInstall(cb) that hands the callback back to the test and blocks
+  // until we resolve it, so intermediate phases can be observed.
+  function deferredInstall() {
+    let emit!: (e: unknown) => void;
+    let finish!: () => void;
+    const fn = vi.fn((cb: (e: unknown) => void) => {
+      emit = cb;
+      return new Promise<void>((resolve) => {
+        finish = resolve;
+      });
+    });
+    return { fn, emit: (e: unknown) => emit(e), finish: () => finish() };
+  }
+
+  it("reports percentage during a sized download, then Installing…", async () => {
+    const d = deferredInstall();
+    const update = makeUpdate({ downloadAndInstall: d.fn } as Partial<Update>);
+    renderWithUpdate(<UpdatePrompt />, { update, isDialogOpen: true });
+
+    fireEvent.click(screen.getByRole("button", { name: /install and restart/i }));
+
+    act(() => d.emit({ event: "Started", data: { contentLength: 100 } }));
+    act(() => d.emit({ event: "Progress", data: { chunkLength: 40 } }));
+    expect(screen.getByText(/downloading… 40%/i)).toBeInTheDocument();
+
+    act(() => d.emit({ event: "Progress", data: { chunkLength: 60 } }));
+    // 100/100 = 1, but the label must NOT say "Installing…" until Finished.
+    expect(screen.getByText(/downloading… 100%/i)).toBeInTheDocument();
+    expect(screen.queryByText(/installing/i)).not.toBeInTheDocument();
+
+    act(() => d.emit({ event: "Finished" }));
+    expect(screen.getByText(/installing/i)).toBeInTheDocument();
+
+    await act(async () => {
+      d.finish();
+    });
+    await waitFor(() => expect(relaunch).toHaveBeenCalledOnce());
+  });
+
+  it("shows an indeterminate bar when the total size is unknown", () => {
+    const d = deferredInstall();
+    const update = makeUpdate({ downloadAndInstall: d.fn } as Partial<Update>);
+    renderWithUpdate(<UpdatePrompt />, { update, isDialogOpen: true });
+
+    fireEvent.click(screen.getByRole("button", { name: /install and restart/i }));
+    // No contentLength -> indeterminate: label stays generic and the bar uses
+    // the sweeping segment rather than a full/complete-looking bar.
+    act(() => d.emit({ event: "Started", data: {} }));
+
+    expect(screen.getByText(/^downloading…$/i)).toBeInTheDocument();
+    expect(document.querySelector(".progress-indeterminate")).not.toBeNull();
+  });
+});
+
+describe("UpdatePrompt Escape handling", () => {
+  it("dismisses without leaking Escape to document-level handlers", () => {
+    // Sibling views (photo-grid/search-results) clear their selection on a
+    // document-level Escape; the modal must swallow it in the capture phase.
+    const docEscape = vi.fn();
+    const listener = (e: KeyboardEvent) => {
+      if (e.key === "Escape") docEscape();
+    };
+    document.addEventListener("keydown", listener);
+
+    const ctx = renderWithUpdate(<UpdatePrompt />, {
+      update: makeUpdate(),
+      isDialogOpen: true,
+    });
+
+    fireEvent.keyDown(document.body, { key: "Escape" });
+
+    expect(ctx.closeDialog).toHaveBeenCalledOnce();
+    expect(docEscape).not.toHaveBeenCalled();
+
+    document.removeEventListener("keydown", listener);
   });
 });
