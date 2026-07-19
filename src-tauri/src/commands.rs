@@ -210,6 +210,17 @@ pub async fn update_photo(
     crate::photos::update_photo(app, id, folder, filename).await
 }
 
+/// Rename a folder, re-keying every photo in it. Resolves with the number of
+/// photos moved.
+#[tauri::command]
+pub async fn rename_folder(
+    app: tauri::AppHandle,
+    old_name: String,
+    new_name: String,
+) -> Result<usize> {
+    crate::photos::rename_folder(app, old_name, new_name).await
+}
+
 #[tauri::command]
 pub async fn delete_photo(app: tauri::AppHandle, id: String) -> Result<()> {
     crate::photos::delete_photo(app, id).await

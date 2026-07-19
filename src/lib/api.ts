@@ -55,6 +55,16 @@ export function updatePhoto(
   });
 }
 
+/** Rename a folder, re-keying every photo it contains. Rejects if the target
+ * name is taken or invalid; "inbox" can't be renamed. Resolves with the
+ * number of photos moved. */
+export function renameFolder(
+  oldName: string,
+  newName: string
+): Promise<number> {
+  return invoke("rename_folder", { oldName, newName });
+}
+
 export function deletePhoto(id: string): Promise<void> {
   return invoke("delete_photo", { id });
 }
