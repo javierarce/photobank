@@ -22,6 +22,7 @@ export function SearchResults() {
     handleBulkDelete,
     handleBulkMove,
     handleRename,
+    handleLoadInfo,
   } = usePhotoActions();
   const searchKey = q || tag ? `${q}|${tag}` : null;
   // Track the request lifecycle per search key; adjusting state during
@@ -185,6 +186,7 @@ export function SearchResults() {
               onDelete={handleDelete}
               onMove={handleMove}
               onRename={handleRename}
+              onLoadInfo={handleLoadInfo}
               onPrev={canNavigate ? () => setActive(prev) : undefined}
               onNext={canNavigate ? () => setActive(next) : undefined}
             />

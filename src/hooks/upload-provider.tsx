@@ -9,6 +9,7 @@ import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open } from "@tauri-apps/plugin-dialog";
 import { cancelImport, importPhotos } from "@/lib/api";
+import { isSupportedImage, SUPPORTED_EXTENSIONS } from "@/lib/keys";
 import {
   UploadContext,
   type CompleteListener,
@@ -31,12 +32,7 @@ type ImportProgressEvent = {
   error: string | null;
 };
 
-const IMPORT_EXTENSIONS = ["jpg", "jpeg", "png", "webp", "gif", "tif", "tiff", "bmp"];
-
-function isImportable(path: string) {
-  const ext = path.split(".").pop()?.toLowerCase();
-  return !!ext && IMPORT_EXTENSIONS.includes(ext);
-}
+const isImportable = isSupportedImage;
 
 function basename(path: string) {
   return path.split("/").pop() ?? path;
@@ -226,7 +222,7 @@ export function UploadProvider({ children }: { children: ReactNode }) {
   const openFilePicker = useCallback(async (folder: string) => {
     const selection = await open({
       multiple: true,
-      filters: [{ name: "Images", extensions: [...IMPORT_EXTENSIONS] }],
+      filters: [{ name: "Images", extensions: [...SUPPORTED_EXTENSIONS] }],
     });
     if (!selection) return;
     const paths = Array.isArray(selection) ? selection : [selection];

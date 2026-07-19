@@ -29,15 +29,12 @@ pub struct ProcessedImage {
     pub variants: Vec<Variant>,
 }
 
-/// Extensions the importer accepts. HEIC/RAW are out of scope for v1.
-pub const IMPORT_EXTENSIONS: [&str; 8] =
-    ["jpg", "jpeg", "png", "webp", "gif", "tif", "tiff", "bmp"];
-
+/// The importer accepts exactly what the catalog supports (jpg/jpeg/png/webp
+/// — see keys::SUPPORTED_EXTENSIONS). Anything the frontend picker can't
+/// offer must not slip in through the path-based command either, or the next
+/// bucket scan would drop it from the catalog.
 pub fn is_importable(path: &str) -> bool {
-    path.rsplit('.')
-        .next()
-        .map(|ext| IMPORT_EXTENSIONS.contains(&ext.to_ascii_lowercase().as_str()))
-        .unwrap_or(false)
+    crate::keys::is_supported_image(path)
 }
 
 /// CPU-bound; call from spawn_blocking.

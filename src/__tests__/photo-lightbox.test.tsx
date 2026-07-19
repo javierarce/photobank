@@ -459,4 +459,87 @@ describe("PhotoLightbox", () => {
       expect(onRename).toHaveBeenCalledWith(pngPhoto, "renamed.png");
     });
   });
+
+  describe("on-demand info loading", () => {
+    // A photo cataloged from a bucket listing: no dimensions or EXIF yet.
+    const bare = makePhoto({
+      id: "2",
+      filename: "bare.jpg",
+      s3Key: "inbox/bare.jpg",
+      width: null,
+      height: null,
+    });
+
+    it("offers Load info only when metadata is missing and a handler exists", () => {
+      const { rerender } = render(
+        <PhotoLightbox photo={bare} onClose={vi.fn()} onLoadInfo={vi.fn()} />
+      );
+      expect(screen.getByTestId("load-info")).toBeInTheDocument();
+
+      // Metadata already known — nothing to load.
+      rerender(
+        <PhotoLightbox photo={photo} onClose={vi.fn()} onLoadInfo={vi.fn()} />
+      );
+      expect(screen.queryByTestId("load-info")).not.toBeInTheDocument();
+    });
+
+    it("hides the button when no handler is provided", () => {
+      render(<PhotoLightbox photo={bare} onClose={vi.fn()} />);
+      expect(screen.queryByTestId("load-info")).not.toBeInTheDocument();
+    });
+
+    it("calls onLoadInfo and shows a busy label while pending", async () => {
+      let resolveLoad!: () => void;
+      const onLoadInfo = vi.fn().mockImplementation(
+        () => new Promise<void>((resolve) => { resolveLoad = resolve; })
+      );
+      render(
+        <PhotoLightbox photo={bare} onClose={vi.fn()} onLoadInfo={onLoadInfo} />
+      );
+
+      act(() => { fireEvent.click(screen.getByTestId("load-info")); });
+
+      expect(onLoadInfo).toHaveBeenCalledWith(bare);
+      expect(screen.getByTestId("load-info")).toHaveTextContent("Loading info…");
+      expect(screen.getByTestId("load-info")).toBeDisabled();
+
+      await act(() => { resolveLoad(); });
+      expect(screen.getByTestId("load-info")).toHaveTextContent("Load info");
+    });
+
+    it("shows the rejection message when loading fails", async () => {
+      // Tauri commands reject with a plain string.
+      const onLoadInfo = vi.fn().mockRejectedValue("download of inbox/bare.jpg failed");
+      render(
+        <PhotoLightbox photo={bare} onClose={vi.fn()} onLoadInfo={onLoadInfo} />
+      );
+
+      await act(() => fireEvent.click(screen.getByTestId("load-info")));
+
+      await waitFor(() => {
+        expect(screen.getByTestId("load-info-error")).toHaveTextContent(
+          "download of inbox/bare.jpg failed"
+        );
+      });
+      expect(screen.getByTestId("load-info")).not.toBeDisabled();
+    });
+
+    it("clears the error when moving to another photo", async () => {
+      const onLoadInfo = vi.fn().mockRejectedValue("nope");
+      const { rerender } = render(
+        <PhotoLightbox photo={bare} onClose={vi.fn()} onLoadInfo={onLoadInfo} />
+      );
+      await act(() => fireEvent.click(screen.getByTestId("load-info")));
+      await waitFor(() => {
+        expect(screen.getByTestId("load-info-error")).toBeInTheDocument();
+      });
+
+      const other = makePhoto({ id: "3", filename: "other.jpg", width: null, height: null });
+      rerender(
+        <PhotoLightbox photo={other} onClose={vi.fn()} onLoadInfo={onLoadInfo} />
+      );
+      expect(screen.queryByTestId("load-info-error")).not.toBeInTheDocument();
+    });
+  });
+
 });
