@@ -76,6 +76,7 @@ fn main() {
             commands::add_photo_tag,
             commands::remove_photo_tag,
             commands::update_photo,
+            commands::rename_folder,
             commands::delete_photo,
             commands::import_photos,
             commands::cancel_import,
