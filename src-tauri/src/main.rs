@@ -11,6 +11,7 @@ mod manifest;
 mod photos;
 mod pipeline;
 mod protocol;
+mod refresh;
 mod settings;
 
 use std::sync::Mutex;
@@ -36,6 +37,7 @@ fn main() {
             app.manage(settings::S3State::default());
             app.manage(manifest::ManifestState::default());
             app.manage(import::CancelRegistry::default());
+            app.manage(refresh::RefreshState::default());
 
             // Native menu: start from the default macOS menu and slip a
             // "Settings…" item (Cmd+,) into the app submenu, right after About.
@@ -84,6 +86,9 @@ fn main() {
             settings::save_settings,
             settings::test_connection,
             manifest::rebuild_from_bucket,
+            refresh::refresh_library,
+            refresh::refresh_pending_count,
+            refresh::cancel_refresh,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

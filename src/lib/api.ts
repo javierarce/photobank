@@ -121,9 +121,47 @@ export type RebuildReport = {
   tags: number;
   /** "manifest" (full metadata) or "listing" (bucket scan fallback). */
   source: "manifest" | "listing";
+  /** Photos without variants/metadata; a background refresh has started. */
+  needsRefresh: number;
 };
 
 /** Replace the local catalog with the bucket's contents. */
 export function rebuildFromBucket(): Promise<RebuildReport> {
   return invoke("rebuild_from_bucket");
+}
+
+/** Emitted once per refreshed photo, plus a final "done"/"cancelled" event. */
+export type RefreshProgress = {
+  total: number;
+  done: number;
+  failed: number;
+  status: "running" | "done" | "cancelled";
+  photoId: string | null;
+  filename: string | null;
+  error: string | null;
+};
+
+export const REFRESH_PROGRESS_EVENT = "refresh://progress";
+
+export type RefreshReport = {
+  total: number;
+  refreshed: number;
+  failed: number;
+  cancelled: boolean;
+};
+
+/** Photos that a refresh would regenerate (no variants/metadata yet). */
+export function refreshPendingCount(): Promise<number> {
+  return invoke("refresh_pending_count");
+}
+
+/** Regenerate variants and metadata for every photo that needs it. Progress
+ * arrives via `refresh://progress` events; resolves when the run settles. */
+export function refreshLibrary(): Promise<RefreshReport> {
+  return invoke("refresh_library");
+}
+
+/** Ask the running refresh to stop at the next photo boundary. */
+export function cancelRefresh(): Promise<void> {
+  return invoke("cancel_refresh");
 }

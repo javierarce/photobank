@@ -11,7 +11,7 @@ use tauri_plugin_dialog::DialogExt;
 
 use crate::db::{self, Db, Photo, PHOTO_COLUMNS};
 use crate::error::{Error, Result};
-use crate::keys::{base_key, sanitize_filename, sanitize_folder, variant_suffixes};
+use crate::keys::{base_key, sanitize_filename, sanitize_folder, variant_base, variant_suffixes};
 use crate::protocol;
 use crate::settings::{S3Ctx, S3State};
 
@@ -162,26 +162,22 @@ pub async fn update_photo(
     }
 
     // Refuse to move onto another photo — the copy would overwrite its S3
-    // objects before the DB unique constraint had a chance to complain.
+    // objects before the DB unique constraint had a chance to complain. The
+    // check is by variant stem, not exact name: "photo.png", "photo.jpg" and
+    // legacy "photo_original.jpg" all own the same derivative objects.
     {
         let db = app.state::<Db>();
         let conn = db.0.lock().unwrap();
-        let occupant: Option<String> = conn
-            .query_row(
-                "SELECT id FROM photos WHERE folder = ?1 AND filename = ?2",
-                rusqlite::params![new_folder, new_filename],
-                |row| row.get(0),
-            )
-            .ok();
+        let occupant = db::variant_stem_occupant(&conn, &new_folder, &new_filename)?;
         if occupant.is_some_and(|other| other != id) {
             return Err(Error::msg(
-                "A photo with that name already exists in the target folder",
+                "A photo with a conflicting name already exists in the target folder",
             ));
         }
     }
 
-    let old_base = base_key(&photo.s3_key).to_string();
-    let new_base = base_key(&new_s3_key).to_string();
+    let old_base = variant_base(&photo.s3_key).to_string();
+    let new_base = variant_base(&new_s3_key).to_string();
 
     let state = app.state::<S3State>();
     let guard = state.0.read().await;
@@ -241,7 +237,7 @@ pub async fn update_photo(
 /// any cached files.
 pub async fn delete_photo(app: AppHandle, id: String) -> Result<()> {
     let photo = get_photo(&app, &id)?;
-    let base = base_key(&photo.s3_key).to_string();
+    let base = variant_base(&photo.s3_key).to_string();
 
     let mut keys = vec![photo.s3_key.clone()];
     keys.extend(variant_suffixes().iter().map(|suffix| format!("{base}{suffix}")));
@@ -330,7 +326,7 @@ pub async fn export_photos(
             (photo.s3_key.clone(), ext)
         } else {
             (
-                format!("{}_{resolution}.jpg", base_key(&photo.s3_key)),
+                format!("{}_{resolution}.jpg", variant_base(&photo.s3_key)),
                 "jpg".to_string(),
             )
         }
@@ -403,8 +399,8 @@ pub async fn export_photos(
 }
 
 /// Cache-first object read, warming the cache on a miss (same policy as the
-/// photo:// protocol).
-async fn fetch_bytes(app: &AppHandle, key: &str) -> Result<Vec<u8>> {
+/// photo:// protocol). Also used by the refresh backfill to pull originals.
+pub(crate) async fn fetch_bytes(app: &AppHandle, key: &str) -> Result<Vec<u8>> {
     let cache_path = protocol::cache_path(app, key);
     if let Ok(bytes) = tokio::fs::read(&cache_path).await {
         return Ok(bytes);
