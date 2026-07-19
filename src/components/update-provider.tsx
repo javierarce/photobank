@@ -22,8 +22,13 @@ export function UpdateProvider({ children }: { children: ReactNode }) {
 
   // Background check on launch — surfaces the badge, never auto-opens. Offline,
   // a draft release, or a transient fetch error must never block startup, so
-  // failures are only logged. (checkForUpdate() is a no-op outside the app.)
+  // failures are only logged.
+  //
+  // Gated to production builds so `tauri dev` doesn't offer to replace the
+  // development binary with a real release; a manual check from Settings or the
+  // command palette still works in dev.
   useEffect(() => {
+    if (!import.meta.env.PROD) return;
     let cancelled = false;
     checkForUpdate()
       .then((found) => {

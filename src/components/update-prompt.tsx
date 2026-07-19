@@ -1,7 +1,11 @@
 import { useEffect, useState } from "react";
 import { useUpdate } from "@/lib/update-context";
 
-type Phase = "available" | "installing" | "restarting" | "error";
+// available -> downloading -> installing -> restarting (or -> error at any step).
+// A distinct `installing` phase (entered on the Finished event) is what lets the
+// label say "Installing…" only once the download is genuinely done, rather than
+// inferring it from progress hitting 1 (which a final chunk can do early).
+type Phase = "available" | "downloading" | "installing" | "restarting" | "error";
 
 /**
  * The install dialog for a pending update. It only renders once opened — from
@@ -20,10 +24,12 @@ export function UpdatePrompt() {
   const [phase, setPhase] = useState<Phase>("available");
   const [errMsg, setErrMsg] = useState("");
   // Download progress as a 0–1 fraction, or null when the total size is unknown
-  // (no Content-Length) — the bar then shows an indeterminate pulse.
+  // (no Content-Length) — the bar then shows an indeterminate sweep. Only
+  // meaningful while phase === "downloading".
   const [progress, setProgress] = useState<number | null>(0);
 
-  const busy = phase === "installing" || phase === "restarting";
+  const busy =
+    phase === "downloading" || phase === "installing" || phase === "restarting";
 
   // Close and reset to the offer view, so a prior install error doesn't linger
   // when the badge is tapped to reopen the dialog.
@@ -34,6 +40,12 @@ export function UpdatePrompt() {
 
   // Esc closes the dialog — but not mid-install, where the buttons are disabled
   // too, since a download/relaunch can't be cancelled partway through.
+  //
+  // Registered in the CAPTURE phase: sibling views (photo-grid, search-results)
+  // clear their selection on a document-level Escape, and in the bubble phase
+  // document fires before window — so a window bubble listener's stopPropagation
+  // would run too late to stop them. Capturing on window runs first, so
+  // dismissing the dialog no longer also wipes the selection underneath.
   useEffect(() => {
     if (!isDialogOpen) return;
     function onKey(e: KeyboardEvent) {
@@ -42,20 +54,20 @@ export function UpdatePrompt() {
         dismiss();
       }
     }
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- dismiss is stable enough for a keydown listener
   }, [isDialogOpen, busy]);
 
   async function install() {
     if (!update) return;
-    setPhase("installing");
+    setPhase("downloading");
     setProgress(0);
     try {
       // Report download progress so the dialog doesn't look frozen during the
       // download. Tauri streams Started (with the total) -> Progress (per
       // chunk) -> Finished; after Finished the plugin extracts and swaps the
-      // bundle, which has no progress, so we show "Installing…" at that point.
+      // bundle, which has no progress, so we switch to the "installing" phase.
       let total = 0;
       let downloaded = 0;
       await update.downloadAndInstall((event) => {
@@ -69,7 +81,7 @@ export function UpdatePrompt() {
             if (total > 0) setProgress(Math.min(downloaded / total, 1));
             break;
           case "Finished":
-            setProgress(1);
+            setPhase("installing");
             break;
         }
       });
@@ -86,14 +98,24 @@ export function UpdatePrompt() {
 
   if (!isDialogOpen || !update) return null;
 
+  const indeterminate = phase === "downloading" && progress === null;
+  const label =
+    phase === "restarting"
+      ? "Restarting…"
+      : phase === "installing"
+        ? "Installing…"
+        : progress === null
+          ? "Downloading…"
+          : `Downloading… ${Math.round(progress * 100)}%`;
+
   return (
     <div
-      className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50"
+      className="backdrop-in fixed inset-0 z-[100] flex items-center justify-center bg-black/50"
       onMouseDown={(e) => {
         if (e.target === e.currentTarget && !busy) dismiss();
       }}
     >
-      <div className="mx-4 w-full max-w-md rounded-xl border border-border bg-background p-6 shadow-[0_20px_50px_rgba(0,0,0,0.25)]">
+      <div className="modal-in mx-4 w-full max-w-md rounded-xl border border-border bg-background p-6 shadow-[0_20px_50px_rgba(0,0,0,0.25)]">
         {phase === "error" ? (
           <>
             <h3 className="mb-2 text-lg font-semibold text-foreground">
@@ -118,31 +140,27 @@ export function UpdatePrompt() {
               Updating to {update.version}
             </h3>
             <p className="mb-4 text-sm text-foreground/60" role="status">
-              {phase === "restarting"
-                ? "Restarting…"
-                : progress === 1
-                  ? "Installing…"
-                  : progress === null
-                    ? "Downloading…"
-                    : `Downloading… ${Math.round(progress * 100)}%`}
+              {label}
             </p>
             <div className="h-1.5 w-full overflow-hidden rounded-full bg-foreground/10">
-              <div
-                className={
-                  "h-full rounded-full bg-foreground transition-[width] duration-200" +
-                  (phase === "restarting" || progress === null
-                    ? " animate-pulse"
-                    : "")
-                }
-                style={{
-                  width:
-                    phase === "restarting" ||
-                    progress === null ||
-                    progress === 1
-                      ? "100%"
-                      : `${Math.round(progress * 100)}%`,
-                }}
-              />
+              {indeterminate ? (
+                <div className="progress-indeterminate h-full w-1/3 rounded-full bg-foreground" />
+              ) : (
+                <div
+                  className={
+                    "h-full rounded-full bg-foreground transition-[width] duration-200" +
+                    (phase === "installing" || phase === "restarting"
+                      ? " animate-pulse"
+                      : "")
+                  }
+                  style={{
+                    width:
+                      phase === "installing" || phase === "restarting"
+                        ? "100%"
+                        : `${Math.round((progress ?? 0) * 100)}%`,
+                  }}
+                />
+              )}
             </div>
           </>
         ) : (
