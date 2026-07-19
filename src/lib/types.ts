@@ -24,6 +24,9 @@ export type Photo = {
   gpsLatitude: number | null;
   gpsLongitude: number | null;
 
+  /** The photo's derivative set (640/1280/2880) exists in the bucket. */
+  variantsOk: boolean;
+
   createdAt: string;
   updatedAt: string;
 };

@@ -89,7 +89,9 @@ fn main() {
             manifest::rebuild_from_bucket,
             refresh::refresh_library,
             refresh::refresh_pending_count,
+            refresh::refresh_status,
             refresh::cancel_refresh,
+            refresh::load_photo_metadata,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

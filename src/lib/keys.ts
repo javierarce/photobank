@@ -4,6 +4,20 @@
 export const VARIANT_WIDTHS = [640, 1280, 2880] as const;
 export const VARIANT_FORMATS = ["jpg", "webp"] as const;
 
+/** The only formats the catalog handles for now. Mirrors keys.rs
+ * `SUPPORTED_EXTENSIONS` — bucket scans, refreshes, and the import picker all
+ * gate on this list. */
+export const SUPPORTED_EXTENSIONS = ["jpg", "jpeg", "png", "webp"] as const;
+
+/** Does the file name (or S3 key) carry a supported image extension? */
+export function isSupportedImage(name: string) {
+  const dot = name.lastIndexOf(".");
+  if (dot < 0) return false;
+  return (SUPPORTED_EXTENSIONS as readonly string[]).includes(
+    name.slice(dot + 1).toLowerCase()
+  );
+}
+
 export type VariantWidth = (typeof VARIANT_WIDTHS)[number];
 export type VariantFormat = (typeof VARIANT_FORMATS)[number];
 
@@ -25,6 +39,9 @@ export function baseKey(s3Key: string) {
  * written by the old web pipeline live at "<base>_original.<ext>" with their
  * variants at "<base>_<width>.<format>" — strip the marker so both schemes
  * address the same variant objects. Mirrors keys.rs `variant_base`.
+ *
+ * Deliberately does NOT strip `_<width>` suffixes: real camera files are
+ * named like `DSC_1280.jpg`, and stripping would collide their derivatives.
  */
 export function variantBase(s3Key: string) {
   return baseKey(s3Key).replace(/_original$/, "");
