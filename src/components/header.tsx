@@ -1,5 +1,6 @@
 import { Link } from "react-router-dom";
 import { SearchBar } from "@/components/search-bar";
+import { UpdateBadge } from "@/components/update-badge";
 
 export function Header() {
   return (
@@ -22,6 +23,7 @@ export function Header() {
         <div className="flex-1">
           <SearchBar />
         </div>
+        <UpdateBadge />
         <Link
           to="/settings"
           aria-label="Settings"
