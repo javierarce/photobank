@@ -1,6 +1,18 @@
 import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
-import { render, screen, cleanup, waitFor } from "@testing-library/react";
-import { MemoryRouter } from "react-router-dom";
+import {
+  render,
+  screen,
+  cleanup,
+  waitFor,
+  fireEvent,
+} from "@testing-library/react";
+import {
+  MemoryRouter,
+  Routes,
+  Route,
+  useLocation,
+  useParams,
+} from "react-router-dom";
 import { FolderList } from "@/components/folder-list";
 import { listFolders } from "@/lib/api";
 
@@ -22,10 +34,24 @@ vi.mock("@/hooks/use-upload", () => ({
 
 const mockListFolders = vi.mocked(listFolders);
 
+// react-router decodes the route param (see routes/folder.tsx), so this reports
+// the folder name exactly as the folder page would receive it.
+function FolderProbe() {
+  return <div data-testid="folder-param">{useParams().folder}</div>;
+}
+
+function LocationProbe() {
+  return <div data-testid="location">{useLocation().pathname}</div>;
+}
+
 function renderFolderList() {
   return render(
     <MemoryRouter>
       <FolderList />
+      <Routes>
+        <Route path="/folders/:folder" element={<FolderProbe />} />
+        <Route path="*" element={<LocationProbe />} />
+      </Routes>
     </MemoryRouter>
   );
 }
@@ -53,9 +79,71 @@ describe("FolderList", () => {
 
     await waitFor(() => {
       expect(
-        screen.getByText("No folders yet. Upload some photos to get started.")
+        screen.getByText(
+          "No folders yet. Create one, or upload some photos to get started."
+        )
       ).toBeInTheDocument();
     });
+  });
+
+  it("navigates to a newly named folder's page", async () => {
+    mockListFolders.mockResolvedValueOnce([{ folder: "vacation", count: 3 }]);
+
+    renderFolderList();
+
+    fireEvent.click(await screen.findByTestId("new-folder-card"));
+    const input = screen.getByTestId("new-folder-input");
+    fireEvent.change(input, { target: { value: "  My Trip  " } });
+    fireEvent.keyDown(input, { key: "Enter" });
+
+    await waitFor(() => {
+      expect(screen.getByTestId("folder-param")).toHaveTextContent("My Trip");
+    });
+  });
+
+  it("opens the existing folder when the name matches (case-insensitively)", async () => {
+    mockListFolders.mockResolvedValueOnce([{ folder: "Vacation", count: 3 }]);
+
+    renderFolderList();
+
+    fireEvent.click(await screen.findByTestId("new-folder-card"));
+    const input = screen.getByTestId("new-folder-input");
+    fireEvent.change(input, { target: { value: "vacation" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+
+    await waitFor(() => {
+      expect(screen.getByTestId("folder-param")).toHaveTextContent("Vacation");
+    });
+  });
+
+  it("dismisses the new-folder input on blur without navigating", async () => {
+    mockListFolders.mockResolvedValueOnce([{ folder: "vacation", count: 3 }]);
+
+    renderFolderList();
+
+    fireEvent.click(await screen.findByTestId("new-folder-card"));
+    const input = screen.getByTestId("new-folder-input");
+    fireEvent.change(input, { target: { value: "scratch" } });
+    fireEvent.blur(input);
+
+    expect(screen.queryByTestId("new-folder-input")).not.toBeInTheDocument();
+    expect(screen.getByTestId("location")).toHaveTextContent("/");
+    expect(screen.getByTestId("new-folder-card")).toBeInTheDocument();
+  });
+
+  it("cancels the new-folder input on Escape without navigating", async () => {
+    mockListFolders.mockResolvedValueOnce([{ folder: "vacation", count: 3 }]);
+
+    renderFolderList();
+
+    fireEvent.click(await screen.findByTestId("new-folder-card"));
+    const input = screen.getByTestId("new-folder-input");
+    fireEvent.change(input, { target: { value: "scratch" } });
+    fireEvent.keyDown(input, { key: "Escape" });
+
+    expect(screen.queryByTestId("new-folder-input")).not.toBeInTheDocument();
+    expect(screen.getByTestId("location")).toHaveTextContent("/");
+    expect(screen.getByTestId("new-folder-card")).toBeInTheDocument();
   });
 
   it("renders folders with counts", async () => {

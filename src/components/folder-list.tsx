@@ -1,5 +1,5 @@
-import { useEffect, useState, useCallback } from "react";
-import { Link } from "react-router-dom";
+import { useEffect, useState, useCallback, useRef } from "react";
+import { Link, useNavigate } from "react-router-dom";
 import { listFolders } from "@/lib/api";
 import { useUpload, type UploadFile } from "@/hooks/use-upload";
 import type { FolderCount } from "@/lib/types";
@@ -42,22 +42,95 @@ export function FolderList() {
     return <p className="text-sm text-red-600 dark:text-red-400">{error}</p>;
   }
 
-  if (!folders.length) {
-    return <p className="text-sm text-foreground/60">No folders yet. Upload some photos to get started.</p>;
+  return (
+    <>
+      <div className="fade-in grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+        <NewFolderCard existing={folders.map((f) => f.folder)} />
+        {folders.map((f) => (
+          <FolderCard
+            key={f.folder}
+            folder={f}
+            uploads={files.filter((u) => u.folder === f.folder)}
+            isDragging={isDragging}
+            isDropTarget={dropFolder === f.folder}
+          />
+        ))}
+      </div>
+      {!folders.length && (
+        <p className="mt-3 text-sm text-foreground/60">
+          No folders yet. Create one, or upload some photos to get started.
+        </p>
+      )}
+    </>
+  );
+}
+
+// A folder is just the `folder` field on its photos — there's no empty-folder
+// record to create. So "new folder" names a destination and drops the user on
+// its (empty) page, where the first upload materializes it in the listing.
+function NewFolderCard({ existing }: { existing: string[] }) {
+  const [editing, setEditing] = useState(false);
+  const [value, setValue] = useState("");
+  const inputRef = useRef<HTMLInputElement>(null);
+  const navigate = useNavigate();
+
+  useEffect(() => {
+    if (editing) inputRef.current?.focus();
+  }, [editing]);
+
+  const cancel = () => {
+    setEditing(false);
+    setValue("");
+  };
+
+  const commit = () => {
+    // A slash would fracture the folder/filename key scheme, so fold it away.
+    const name = value.trim().replace(/\/+/g, " ").replace(/\s+/g, " ").trim();
+    if (!name) {
+      cancel();
+      return;
+    }
+    // Reuse the exact casing of an existing folder so we open it rather than
+    // spawn a case-variant sibling.
+    const match = existing.find((f) => f.toLowerCase() === name.toLowerCase());
+    navigate(`/folders/${encodeURIComponent(match ?? name)}`);
+  };
+
+  if (editing) {
+    return (
+      <div className="flex flex-col justify-center rounded-lg border border-accent bg-accent/5 p-4">
+        <input
+          ref={inputRef}
+          value={value}
+          onChange={(e) => setValue(e.target.value)}
+          onKeyDown={(e) => {
+            e.stopPropagation();
+            if (e.key === "Enter") commit();
+            else if (e.key === "Escape") cancel();
+          }}
+          // Navigating into a new folder is a heavier side effect than the
+          // rename input's in-place commit, so a stray click-away just dismisses
+          // the field — only Enter takes you there.
+          onBlur={cancel}
+          placeholder="Folder name"
+          aria-label="New folder name"
+          className="min-w-0 rounded border border-border bg-transparent px-1 py-0.5 text-sm font-medium text-foreground outline-none focus:border-foreground/30"
+          data-testid="new-folder-input"
+        />
+      </div>
+    );
   }
 
   return (
-    <div className="fade-in grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-      {folders.map((f) => (
-        <FolderCard
-          key={f.folder}
-          folder={f}
-          uploads={files.filter((u) => u.folder === f.folder)}
-          isDragging={isDragging}
-          isDropTarget={dropFolder === f.folder}
-        />
-      ))}
-    </div>
+    <button
+      type="button"
+      onClick={() => setEditing(true)}
+      className="flex min-h-[64px] flex-col items-center justify-center gap-1 rounded-lg border border-dashed border-border p-4 text-sm font-medium text-foreground/60 transition-colors hover:border-foreground/35 hover:text-foreground active:scale-[0.99]"
+      data-testid="new-folder-card"
+    >
+      <span aria-hidden>+</span>
+      New folder
+    </button>
   );
 }
 
