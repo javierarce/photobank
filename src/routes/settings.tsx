@@ -64,6 +64,9 @@ export default function SettingsPage() {
   }>({ catalogBucket: null, bucketMismatch: false });
   /** Objects scanned by an in-flight rebuild's bucket listing. */
   const [rebuildScanned, setRebuildScanned] = useState<number | null>(null);
+  /** Storage config is a long, rarely-edited form — collapsed by default,
+      opened automatically on first run when nothing is configured yet. */
+  const [storageOpen, setStorageOpen] = useState(false);
 
   const applyInfo = (info: SettingsInfo) => {
     setSettings(info.settings);
@@ -76,7 +79,11 @@ export default function SettingsPage() {
 
   useEffect(() => {
     getSettings()
-      .then(applyInfo)
+      .then((info) => {
+        applyInfo(info);
+        // Nothing set up yet? Show the form; otherwise keep it tucked away.
+        if (!info.configured) setStorageOpen(true);
+      })
       .catch(() => {})
       .finally(() => setLoading(false));
     refreshPendingCount().then(setRefreshPending).catch(() => {});
@@ -335,9 +342,36 @@ export default function SettingsPage() {
           </div>
         </section>
 
-        <section className="mt-12">
-          <h2 className="text-lg font-semibold text-foreground">Storage</h2>
-          <p className="mt-1 text-sm text-foreground/50">
+        <section className="mt-12 rounded-lg border border-border">
+          <button
+            type="button"
+            onClick={() => setStorageOpen((v) => !v)}
+            aria-expanded={storageOpen}
+            className="flex w-full items-center gap-3 p-4 text-left"
+          >
+            <h2 className="text-lg font-semibold text-foreground">Storage</h2>
+            {!storageOpen && settings.bucket && (
+              <span className="min-w-0 truncate font-mono text-sm text-foreground/40">
+                {settings.bucket}
+              </span>
+            )}
+            <svg
+              className={`ml-auto h-4 w-4 shrink-0 text-foreground/40 transition-transform ${
+                storageOpen ? "rotate-180" : ""
+              }`}
+              xmlns="http://www.w3.org/2000/svg"
+              fill="none"
+              viewBox="0 0 24 24"
+              stroke="currentColor"
+              strokeWidth={2}
+              aria-hidden="true"
+            >
+              <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+            </svg>
+          </button>
+          {storageOpen && (
+          <div className="px-4 pb-4">
+          <p className="text-sm text-foreground/50">
             Photobank keeps your originals in an S3-compatible bucket and caches
             thumbnails locally. Your secret key never leaves this Mac.
           </p>
@@ -404,7 +438,6 @@ export default function SettingsPage() {
             />
           </label>
           </div>
-        </section>
 
         <div className="mt-6 flex items-center gap-3">
           <button
@@ -437,6 +470,9 @@ export default function SettingsPage() {
             </p>
           )}
         </div>
+          </div>
+          )}
+        </section>
 
         <section className="mt-12">
           <h2 className="text-lg font-semibold text-foreground">Library</h2>

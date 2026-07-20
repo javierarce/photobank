@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager};
 use tokio::sync::RwLock;
 
-use crate::error::{Error, Result};
+use crate::error::{friendly_s3_error, Error, Result};
 
 // The secret access key lives in a plain 0600 file next to settings.json,
 // NOT the macOS Keychain — the Keychain surfaces a "wants to use your
@@ -255,12 +255,7 @@ pub async fn test_connection(app: AppHandle) -> Result<String> {
         .max_keys(1)
         .send()
         .await
-        .map_err(|e| {
-            Error::msg(format!(
-                "Connection failed: {}",
-                aws_smithy_types::error::display::DisplayErrorContext(&e)
-            ))
-        })?;
+        .map_err(|e| Error::msg(format!("Connection failed: {}", friendly_s3_error(&e))))?;
     Ok(format!("Connected to bucket \u{201c}{}\u{201d}", ctx.bucket))
 }
 
