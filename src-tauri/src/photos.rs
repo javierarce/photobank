@@ -10,7 +10,7 @@ use tauri::{AppHandle, Manager};
 use tauri_plugin_dialog::DialogExt;
 
 use crate::db::{self, Db, Photo, PHOTO_COLUMNS};
-use crate::error::{Error, Result};
+use crate::error::{friendly_s3_error, Error, Result};
 use crate::keys::{base_key, sanitize_filename, sanitize_folder, variant_base, variant_suffixes};
 use crate::protocol;
 use crate::settings::{S3Ctx, S3State};
@@ -57,12 +57,7 @@ async fn s3_copy(ctx: &S3Ctx, from: &str, to: &str) -> Result<()> {
         .key(to)
         .send()
         .await
-        .map_err(|e| {
-            Error::msg(format!(
-                "copy of {from} failed: {}",
-                aws_smithy_types::error::display::DisplayErrorContext(&e)
-            ))
-        })?;
+        .map_err(|e| Error::msg(format!("copy of {from} failed: {}", friendly_s3_error(&e))))?;
     Ok(())
 }
 
@@ -109,12 +104,7 @@ async fn s3_delete_many(ctx: &S3Ctx, keys: &[String]) -> Result<()> {
         .delete(delete)
         .send()
         .await
-        .map_err(|e| {
-            Error::msg(format!(
-                "delete failed: {}",
-                aws_smithy_types::error::display::DisplayErrorContext(&e)
-            ))
-        })?;
+        .map_err(|e| Error::msg(format!("delete failed: {}", friendly_s3_error(&e))))?;
 
     let errors = output.errors();
     if !errors.is_empty() {

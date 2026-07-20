@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager};
 
 use crate::db::{self, Db, Photo, PHOTO_COLUMNS};
-use crate::error::{Error, Result};
+use crate::error::{friendly_s3_error, Error, Result};
 use crate::settings::{S3Ctx, S3State};
 
 pub const MANIFEST_KEY: &str = "photobank-manifest.json";
@@ -96,12 +96,7 @@ async fn upload(app: &AppHandle) -> Result<()> {
         .body(json.into())
         .send()
         .await
-        .map_err(|e| {
-            Error::msg(format!(
-                "manifest upload: {}",
-                aws_smithy_types::error::display::DisplayErrorContext(&e)
-            ))
-        })?;
+        .map_err(|e| Error::msg(format!("manifest upload: {}", friendly_s3_error(&e))))?;
     Ok(())
 }
 
@@ -121,10 +116,7 @@ async fn backup_previous(ctx: &S3Ctx) {
         let missing = matches!(&err, SdkError::ServiceError(context)
             if context.raw().status().as_u16() == 404);
         if !missing {
-            eprintln!(
-                "[manifest] backup copy failed: {}",
-                aws_smithy_types::error::display::DisplayErrorContext(&err)
-            );
+            eprintln!("[manifest] backup copy failed: {}", friendly_s3_error(&err));
         }
     }
 }
@@ -266,7 +258,7 @@ async fn download_manifest(app: &AppHandle) -> Result<Option<Manifest>> {
         Err(err) => {
             return Err(Error::msg(format!(
                 "manifest download failed: {}",
-                aws_smithy_types::error::display::DisplayErrorContext(&err)
+                friendly_s3_error(&err)
             )))
         }
     };
@@ -456,12 +448,10 @@ async fn list_originals(app: &AppHandle) -> Result<Vec<ListedOriginal>> {
         if let Some(token) = &continuation {
             request = request.continuation_token(token);
         }
-        let page = request.send().await.map_err(|e| {
-            Error::msg(format!(
-                "bucket listing failed: {}",
-                aws_smithy_types::error::display::DisplayErrorContext(&e)
-            ))
-        })?;
+        let page = request
+            .send()
+            .await
+            .map_err(|e| Error::msg(format!("bucket listing failed: {}", friendly_s3_error(&e))))?;
         for object in page.contents() {
             if let Some(key) = object.key() {
                 entries.push((key.to_string(), object.size()));
