@@ -12,7 +12,7 @@ export function Header() {
     >
       <div
         data-tauri-drag-region
-        className="mx-auto flex max-w-5xl items-center gap-6 py-4 pl-24 pr-6"
+        className="mx-auto flex max-w-[1600px] items-center gap-6 py-4 pl-24 pr-6"
       >
         <Link
           to="/"
