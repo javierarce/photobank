@@ -44,3 +44,7 @@ scripts, project layout).
 
 Push a `v*` tag — CI builds, signs, notarizes, and publishes `Photobank.dmg`
 and the updater feed. See [RELEASING.md](RELEASING.md).
+
+## License
+
+[GNU General Public License v3.0](LICENSE).
