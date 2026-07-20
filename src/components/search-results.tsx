@@ -3,6 +3,7 @@ import { useSearchParams } from "react-router-dom";
 import { imageUrl } from "@/lib/image-url";
 import { displayName } from "@/lib/keys";
 import { searchPhotos } from "@/lib/api";
+import { usesMetadataFilter } from "@/lib/search-query";
 import { PhotoLightbox } from "@/components/photo-lightbox";
 import { SelectionCheck } from "@/components/selection-check";
 import { SelectionToolbar } from "@/components/selection-toolbar";
@@ -138,6 +139,11 @@ export function SearchResults() {
           </p>
         )}
       </div>
+      {usesMetadataFilter(q) && (
+        <p className="-mt-2 text-xs text-foreground/40">
+          Metadata filters only match photos whose info has been loaded.
+        </p>
+      )}
       <div className="fade-in grid select-none grid-cols-2 gap-2 sm:grid-cols-3 md:grid-cols-4">
         {photos.map((photo) => (
           <button
