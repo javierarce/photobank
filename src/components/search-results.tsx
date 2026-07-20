@@ -1,11 +1,11 @@
 import { useEffect, useState } from "react";
 import { useSearchParams } from "react-router-dom";
-import { imageUrl } from "@/lib/image-url";
 import { displayName } from "@/lib/keys";
 import { searchPhotos } from "@/lib/api";
 import { PhotoLightbox } from "@/components/photo-lightbox";
 import { SelectionCheck } from "@/components/selection-check";
 import { SelectionToolbar } from "@/components/selection-toolbar";
+import { Thumbnail } from "@/components/thumbnail";
 import { usePhotoActions } from "@/hooks/use-photo-actions";
 import { useSelection, useThumbnailActivation } from "@/hooks/use-selection";
 
@@ -149,13 +149,7 @@ export function SearchResults() {
             }`}
           >
             {photo.processingStatus === "completed" ? (
-              <img
-                src={imageUrl(photo.s3Key, "640", "webp")}
-                alt={photo.filename}
-                className="h-full w-full object-cover"
-                loading="lazy"
-                draggable={false}
-              />
+              <Thumbnail photo={photo} />
             ) : (
               <div className="flex h-full items-center justify-center">
                 <span className="text-xs text-foreground/40">
