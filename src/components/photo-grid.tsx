@@ -5,6 +5,8 @@ import {
   useCallback,
   useImperativeHandle,
   forwardRef,
+  memo,
+  type MouseEvent,
 } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { imageUrl, originalUrl } from "@/lib/image-url";
@@ -17,7 +19,7 @@ import { PhotoLightbox } from "@/components/photo-lightbox";
 import { SelectionCheck } from "@/components/selection-check";
 import { usePhotoActions } from "@/hooks/use-photo-actions";
 import { useSelection, useThumbnailActivation } from "@/hooks/use-selection";
-import { usePresence } from "@/hooks/use-presence";
+import { usePresence, type PresenceState } from "@/hooks/use-presence";
 import { sortPhotos, DEFAULT_SORT_MODE, type SortMode } from "@/lib/photo-sort";
 import type { Photo } from "@/lib/types";
 import type { UploadFile } from "@/hooks/use-upload";
@@ -264,34 +266,16 @@ export const PhotoGrid = forwardRef<PhotoGridRef, Props>(function PhotoGrid(
             onCancel={onCancelUpload}
           />
         ))}
-        {tiles.map((entry) => {
-          const photo = entry.item;
-          return (
-          <button
+        {tiles.map((entry) => (
+          <PhotoTile
             key={entry.key}
-            data-presence={entry.state}
-            onClick={(e) => onClick(e, photo)}
-            onDoubleClick={() => onDoubleClick(photo)}
-            className={`photo-tile group relative aspect-square overflow-hidden rounded-md border-2 bg-foreground/0 dark:bg-foreground/5 ${
-              isSelected(photo.id) ? "border-accent" : "border-transparent"
-            }`}
-          >
-            {photo.processingStatus === "completed" ? (
-              <Thumbnail photo={photo} />
-            ) : (
-              <div className="flex h-full items-center justify-center">
-                <span className="text-xs text-foreground/40">
-                  {photo.processingStatus === "pending" && "Pending..."}
-                  {photo.processingStatus === "processing" &&
-                    "Processing..."}
-                  {photo.processingStatus === "failed" && "Failed"}
-                </span>
-              </div>
-            )}
-            {isSelected(photo.id) && <SelectionCheck />}
-          </button>
-          );
-        })}
+            photo={entry.item}
+            presenceState={entry.state}
+            selected={isSelected(entry.item.id)}
+            onClick={onClick}
+            onDoubleClick={onDoubleClick}
+          />
+        ))}
       </div>
 
       {active &&
@@ -316,6 +300,48 @@ export const PhotoGrid = forwardRef<PhotoGridRef, Props>(function PhotoGrid(
           );
         })()}
     </>
+  );
+});
+
+/** A single selectable grid tile. Memoized so a selection change only
+ * re-renders the tiles whose `selected` flag actually flipped, not the whole
+ * grid — with the click handlers kept stable (see selection-provider's
+ * snapshot), toggling one photo reconciles one tile instead of N. */
+const PhotoTile = memo(function PhotoTile({
+  photo,
+  presenceState,
+  selected,
+  onClick,
+  onDoubleClick,
+}: {
+  photo: Photo;
+  presenceState: PresenceState;
+  selected: boolean;
+  onClick: (e: MouseEvent, photo: Photo) => void;
+  onDoubleClick: (photo: Photo) => void;
+}) {
+  return (
+    <button
+      data-presence={presenceState}
+      onClick={(e) => onClick(e, photo)}
+      onDoubleClick={() => onDoubleClick(photo)}
+      className={`photo-tile group relative aspect-square overflow-hidden rounded-md border-2 bg-foreground/0 dark:bg-foreground/5 ${
+        selected ? "border-accent" : "border-transparent"
+      }`}
+    >
+      {photo.processingStatus === "completed" ? (
+        <Thumbnail photo={photo} />
+      ) : (
+        <div className="flex h-full items-center justify-center">
+          <span className="text-xs text-foreground/40">
+            {photo.processingStatus === "pending" && "Pending..."}
+            {photo.processingStatus === "processing" && "Processing..."}
+            {photo.processingStatus === "failed" && "Failed"}
+          </span>
+        </div>
+      )}
+      {selected && <SelectionCheck />}
+    </button>
   );
 });
 
