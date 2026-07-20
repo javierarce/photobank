@@ -2,6 +2,8 @@
 
 # dependencies
 /node_modules
+# this project uses npm; a stray pnpm lockfile would make tauri-action use pnpm
+pnpm-lock.yaml
 
 # testing
 /coverage
