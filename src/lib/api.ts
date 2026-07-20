@@ -106,6 +106,11 @@ export type SettingsInfo = {
   hasSecret: boolean;
   /** Settings + secret are complete; the S3 client is usable. */
   configured: boolean;
+  /** Bucket identity the local catalog was built from, if it's bound. */
+  catalogBucket: string | null;
+  /** The catalog belongs to a different bucket than the one configured —
+   * everything on screen is the old bucket's until a rebuild. */
+  bucketMismatch: boolean;
 };
 
 export function getSettings(): Promise<SettingsInfo> {
@@ -131,7 +136,7 @@ export type RebuildReport = {
   tags: number;
   /** "manifest" (full metadata) or "listing" (bucket scan fallback). */
   source: "manifest" | "listing";
-  /** Photos without variants/metadata; a background refresh has started. */
+  /** Photos missing their thumbnail set; a background refresh has started. */
   needsRefresh: number;
 };
 
@@ -139,6 +144,14 @@ export type RebuildReport = {
 export function rebuildFromBucket(): Promise<RebuildReport> {
   return invoke("rebuild_from_bucket");
 }
+
+/** Emitted per listing page while a rebuild scans the bucket. */
+export type RebuildProgress = {
+  /** Objects (originals + variants) listed so far. */
+  scanned: number;
+};
+
+export const REBUILD_PROGRESS_EVENT = "rebuild://progress";
 
 /** Emitted once per refreshed photo, plus a final "done"/"cancelled" event. */
 export type RefreshProgress = {
@@ -160,9 +173,15 @@ export type RefreshReport = {
   cancelled: boolean;
 };
 
-/** Photos that a refresh would regenerate (no variants/metadata yet). */
+/** Photos that a refresh would check for a missing thumbnail set. */
 export function refreshPendingCount(): Promise<number> {
   return invoke("refresh_pending_count");
+}
+
+/** Progress of the refresh currently running in the background, or null when
+ * idle. Lets a freshly mounted page rejoin a run started elsewhere. */
+export function refreshStatus(): Promise<RefreshProgress | null> {
+  return invoke("refresh_status");
 }
 
 /** Regenerate variants and metadata for every photo that needs it. Progress
@@ -174,4 +193,10 @@ export function refreshLibrary(): Promise<RefreshReport> {
 /** Ask the running refresh to stop at the next photo boundary. */
 export function cancelRefresh(): Promise<void> {
   return invoke("cancel_refresh");
+}
+
+/** Download one photo's original and fill in its EXIF and dimensions.
+ * Resolves with the updated catalog row. */
+export function loadPhotoMetadata(photoId: string): Promise<Photo> {
+  return invoke("load_photo_metadata", { photoId });
 }

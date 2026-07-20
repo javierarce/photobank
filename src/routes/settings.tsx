@@ -4,13 +4,17 @@ import {
   cancelRefresh,
   getSettings,
   rebuildFromBucket,
+  REBUILD_PROGRESS_EVENT,
   refreshLibrary,
   refreshPendingCount,
+  refreshStatus as fetchRefreshStatus,
   REFRESH_PROGRESS_EVENT,
   saveSettings,
   testConnection,
+  type RebuildProgress,
   type RefreshProgress,
   type S3Settings,
+  type SettingsInfo,
 } from "@/lib/api";
 import { useTheme, type Theme } from "@/lib/theme-context";
 import { useUpdate } from "@/lib/update-context";
@@ -51,16 +55,47 @@ export default function SettingsPage() {
   const [refreshFailures, setRefreshFailures] = useState<
     { filename: string; error: string }[]
   >([]);
+  /** Failure list disclosure inside the progress card. */
+  const [showFailures, setShowFailures] = useState(false);
+  /** Which bucket the on-disk catalog belongs to, vs. the configured one. */
+  const [catalog, setCatalog] = useState<{
+    catalogBucket: string | null;
+    bucketMismatch: boolean;
+  }>({ catalogBucket: null, bucketMismatch: false });
+  /** Objects scanned by an in-flight rebuild's bucket listing. */
+  const [rebuildScanned, setRebuildScanned] = useState<number | null>(null);
+
+  const applyInfo = (info: SettingsInfo) => {
+    setSettings(info.settings);
+    setHasSecret(info.hasSecret);
+    setCatalog({
+      catalogBucket: info.catalogBucket,
+      bucketMismatch: info.bucketMismatch,
+    });
+  };
 
   useEffect(() => {
     getSettings()
-      .then((info) => {
-        setSettings(info.settings);
-        setHasSecret(info.hasSecret);
-      })
+      .then(applyInfo)
       .catch(() => {})
       .finally(() => setLoading(false));
     refreshPendingCount().then(setRefreshPending).catch(() => {});
+    // A refresh started elsewhere (or before navigating away) keeps running
+    // in the backend; pick up its progress instead of looking idle.
+    fetchRefreshStatus()
+      .then((progress) => {
+        if (progress) setRefreshProgress(progress);
+      })
+      .catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    const unlisten = listen<RebuildProgress>(REBUILD_PROGRESS_EVENT, (event) => {
+      setRebuildScanned(event.payload.scanned);
+    });
+    return () => {
+      unlisten.then((fn) => fn());
+    };
   }, []);
 
   // Show the running app version next to the update control (desktop only).
@@ -86,19 +121,31 @@ export default function SettingsPage() {
         // the start of a run — reset the failure list from the previous one.
         if (p.done + p.failed === 1) {
           setRefreshFailures(failure ? [failure] : []);
+          setShowFailures(false);
         } else if (failure) {
-          setRefreshFailures((prev) => [...prev, failure]);
+          // Idempotent append: duplicate event delivery (StrictMode double
+          // subscriptions in dev) must not list the same failure twice.
+          setRefreshFailures((prev) =>
+            prev.some(
+              (f) =>
+                f.filename === failure.filename && f.error === failure.error
+            )
+              ? prev
+              : [...prev, failure]
+          );
         }
         return;
       }
       setRefreshProgress(null);
+      // Short summaries: the failure count lives in the card's toggle and the
+      // Retry button already says what to do about it.
       setRefreshStatus({
         kind: p.failed > 0 || p.status === "cancelled" ? "error" : "ok",
         message:
           p.status === "cancelled"
-            ? `Refresh cancelled — ${p.done} of ${p.total} photos done.`
+            ? `Cancelled — ${p.done} of ${p.total} done.`
             : p.failed > 0
-              ? `Refreshed ${p.done} of ${p.total} photos; ${p.failed} failed — refresh again to retry them.`
+              ? `Last run: ${p.done} of ${p.total} done.`
               : `Refreshed ${p.done} photo${p.done === 1 ? "" : "s"}.`,
       });
       refreshPendingCount().then(setRefreshPending).catch(() => {});
@@ -115,7 +162,7 @@ export default function SettingsPage() {
     setStatus({ kind: "busy", message: "Saving…" });
     try {
       const info = await saveSettings(settings, secret.trim() || null);
-      setHasSecret(info.hasSecret);
+      applyInfo(info);
       setSecret("");
       setStatus({
         kind: "ok",
@@ -145,24 +192,26 @@ export default function SettingsPage() {
     ) {
       return;
     }
+    setRebuildScanned(null);
     setRebuildStatus({ kind: "busy", message: "Rebuilding from bucket…" });
     try {
       const report = await rebuildFromBucket();
-      const refreshNote =
-        report.needsRefresh > 0
-          ? ` Regenerating thumbnails and metadata for ${report.needsRefresh} photos in the background…`
-          : "";
+      // No note about the follow-up thumbnail run: its progress row appears
+      // right below the moment it starts.
       setRebuildStatus({
         kind: "ok",
         message:
-          (report.source === "manifest"
-            ? `Rebuilt from the manifest: ${report.photos} photos, ${report.tags} tags.`
-            : `Rebuilt by scanning the bucket: ${report.photos} photos (no manifest found).`) +
-          refreshNote,
+          report.source === "manifest"
+            ? `Rebuilt from the manifest — ${report.photos.toLocaleString()} photos, ${report.tags} tags.`
+            : `Rebuilt from a bucket scan — ${report.photos.toLocaleString()} photos (no manifest found).`,
       });
       refreshPendingCount().then(setRefreshPending).catch(() => {});
+      // The catalog now belongs to the configured bucket — clear the banner.
+      getSettings().then(applyInfo).catch(() => {});
     } catch (err) {
       setRebuildStatus({ kind: "error", message: String(err) });
+    } finally {
+      setRebuildScanned(null);
     }
   };
 
@@ -187,7 +236,20 @@ export default function SettingsPage() {
   };
 
   const handleRefresh = async () => {
-    setRefreshStatus({ kind: "busy", message: "Refreshing…" });
+    setRefreshStatus({ kind: "idle" });
+    setRefreshFailures([]);
+    setShowFailures(false);
+    // Show the progress card immediately at 0 of N — the first real event can
+    // be seconds away, and a button that visibly does nothing feels broken.
+    setRefreshProgress({
+      total: refreshPending ?? 0,
+      done: 0,
+      failed: 0,
+      status: "running",
+      photoId: null,
+      filename: null,
+      error: null,
+    });
     try {
       // Progress events drive the UI; the resolved report is already
       // reflected by the final event, so only failures need handling here.
@@ -197,6 +259,11 @@ export default function SettingsPage() {
       setRefreshStatus({ kind: "error", message: String(err) });
     }
   };
+
+  // Hidden while a rebuild runs: the pending count belongs to the catalog
+  // being replaced and would only mislead.
+  const showPendingCard =
+    rebuildStatus.kind !== "busy" && (refreshPending ?? 0) > 0;
 
   if (loading) {
     return (
@@ -373,28 +440,50 @@ export default function SettingsPage() {
 
         <section className="mt-12">
           <h2 className="text-lg font-semibold text-foreground">Library</h2>
-          <p className="mt-1 text-sm text-foreground/50">
-            The catalog is continuously backed up to the bucket as{" "}
-            <span className="font-mono">photobank-manifest.json</span>. On a
-            fresh install (or after losing this Mac), rebuild it from there.
-          </p>
-          <div className="mt-4 flex items-center gap-3">
-            <button
-              type="button"
-              onClick={handleRebuild}
-              disabled={rebuildStatus.kind === "busy"}
-              className="rounded-lg border border-border px-4 py-2 text-sm font-medium text-foreground/70 transition hover:border-foreground/35 hover:text-foreground active:scale-[0.97] disabled:opacity-50"
+
+          {catalog.bucketMismatch && (
+            <p
+              className="mt-3 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm text-amber-700 dark:text-amber-400"
+              data-testid="bucket-mismatch"
             >
-              Rebuild from bucket
-            </button>
-            {rebuildStatus.kind !== "idle" && (
+              You&apos;re still viewing{" "}
+              <span className="font-mono">“{catalog.catalogBucket}”</span>.
+              Rebuild from bucket to load the new one.
+            </p>
+          )}
+
+          {/* Catalog row: title + one dim caption, one action. The caption
+              doubles as the live status while a rebuild scans the bucket. */}
+          <div className="mt-4 rounded-lg border border-border p-4">
+            <div className="flex items-center justify-between gap-4">
+              <div className="min-w-0">
+                <p className="text-sm font-medium text-foreground">Catalog</p>
+                <p
+                  className="mt-0.5 text-sm text-foreground/50"
+                  role={rebuildStatus.kind === "busy" ? "status" : undefined}
+                >
+                  {rebuildStatus.kind === "busy"
+                    ? rebuildScanned !== null
+                      ? `Scanning bucket… ${rebuildScanned.toLocaleString()} objects`
+                      : "Rebuilding from bucket…"
+                    : "Backs up to your bucket automatically."}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={handleRebuild}
+                disabled={rebuildStatus.kind === "busy"}
+                className="shrink-0 rounded-lg border border-border px-4 py-2 text-sm font-medium text-foreground/70 transition hover:border-foreground/35 hover:text-foreground active:scale-[0.97] disabled:opacity-50"
+              >
+                Rebuild from bucket
+              </button>
+            </div>
+            {(rebuildStatus.kind === "ok" || rebuildStatus.kind === "error") && (
               <p
-                className={`text-sm ${
+                className={`mt-2 text-sm ${
                   rebuildStatus.kind === "error"
                     ? "text-red-600 dark:text-red-400"
-                    : rebuildStatus.kind === "ok"
-                      ? "text-accent"
-                      : "text-foreground/50"
+                    : "text-accent"
                 }`}
               >
                 {rebuildStatus.message}
@@ -402,73 +491,124 @@ export default function SettingsPage() {
             )}
           </div>
 
+          {/* Thumbnails row: only exists when there is something to do. */}
           {refreshProgress ? (
-            <div className="mt-6 flex items-center gap-3">
-              <button
-                type="button"
-                onClick={() => cancelRefresh().catch(() => {})}
-                className="rounded-lg border border-border px-4 py-2 text-sm font-medium text-foreground/70 transition hover:border-foreground/35 hover:text-foreground active:scale-[0.97]"
-              >
-                Cancel
-              </button>
-              <p className="text-sm text-foreground/50" role="status">
-                Refreshing photos… {refreshProgress.done + refreshProgress.failed}{" "}
-                of {refreshProgress.total}
-                {refreshProgress.failed > 0 &&
-                  ` (${refreshProgress.failed} failed)`}
-              </p>
-            </div>
-          ) : (
-            (refreshPending ?? 0) > 0 && (
-              <div className="mt-6">
-                <p className="text-sm text-foreground/50">
-                  {refreshPending} photo{refreshPending === 1 ? "" : "s"} in the
-                  catalog {refreshPending === 1 ? "is" : "are"} missing
-                  thumbnails or metadata (added to the bucket outside this
-                  app). Refreshing downloads each original, fills in EXIF and
-                  dimensions, and regenerates missing thumbnails.
+            <div className="mt-3 rounded-lg border border-border p-4">
+              <div className="flex items-center justify-between gap-4">
+                <p className="text-sm font-medium text-foreground">
+                  Generating thumbnails…
                 </p>
-                <div className="mt-3 flex items-center gap-3">
+                <button
+                  type="button"
+                  onClick={() => cancelRefresh().catch(() => {})}
+                  className="shrink-0 rounded-lg border border-border px-4 py-2 text-sm font-medium text-foreground/70 transition hover:border-foreground/35 hover:text-foreground active:scale-[0.97]"
+                >
+                  Cancel
+                </button>
+              </div>
+              <div className="mt-3 h-1 overflow-hidden rounded-full bg-foreground/10">
+                <div
+                  className="h-full rounded-full bg-accent transition-[width] duration-200 ease-linear"
+                  style={{
+                    width: `${Math.round(((refreshProgress.done + refreshProgress.failed) / Math.max(refreshProgress.total, 1)) * 100)}%`,
+                  }}
+                />
+              </div>
+              <div className="mt-2 flex items-baseline gap-2 text-sm text-foreground/50">
+                <p role="status">
+                  {refreshProgress.done + refreshProgress.failed} of{" "}
+                  {refreshProgress.total}
+                </p>
+                {refreshProgress.failed > 0 && (
                   <button
                     type="button"
-                    onClick={handleRefresh}
-                    disabled={refreshStatus.kind === "busy"}
-                    className="rounded-lg border border-border px-4 py-2 text-sm font-medium text-foreground/70 transition hover:border-foreground/35 hover:text-foreground active:scale-[0.97] disabled:opacity-50"
+                    onClick={() => setShowFailures((v) => !v)}
+                    aria-expanded={showFailures}
+                    data-testid="toggle-failures"
+                    className="text-red-600 transition hover:underline dark:text-red-400"
                   >
-                    Refresh thumbnails &amp; metadata
+                    {refreshProgress.failed} failed {showFailures ? "▴" : "▾"}
                   </button>
-                </div>
+                )}
               </div>
+              {showFailures && <FailureList failures={refreshFailures} />}
+            </div>
+          ) : showPendingCard ? (
+            <div className="mt-3 rounded-lg border border-border p-4">
+              <div className="flex items-center justify-between gap-4">
+                <div className="min-w-0">
+                  <p className="text-sm font-medium text-foreground">
+                    {refreshPending} photo{refreshPending === 1 ? "" : "s"}{" "}
+                    {refreshPending === 1 ? "needs" : "need"} thumbnails
+                  </p>
+                  {/* After a run, the caption becomes its summary and the
+                      failures tuck behind the same toggle as during the run. */}
+                  <div className="mt-0.5 flex items-baseline gap-2 text-sm text-foreground/50">
+                    <p>
+                      {refreshStatus.kind === "ok" ||
+                      refreshStatus.kind === "error"
+                        ? refreshStatus.message
+                        : "Only the missing ones are downloaded."}
+                    </p>
+                    {refreshFailures.length > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => setShowFailures((v) => !v)}
+                        aria-expanded={showFailures}
+                        data-testid="toggle-failures"
+                        className="text-red-600 transition hover:underline dark:text-red-400"
+                      >
+                        {refreshFailures.length} failed {showFailures ? "▴" : "▾"}
+                      </button>
+                    )}
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={handleRefresh}
+                  className="shrink-0 rounded-lg border border-border px-4 py-2 text-sm font-medium text-foreground/70 transition hover:border-foreground/35 hover:text-foreground active:scale-[0.97]"
+                >
+                  {refreshFailures.length > 0 ? "Retry" : "Generate"}
+                </button>
+              </div>
+              {showFailures && <FailureList failures={refreshFailures} />}
+            </div>
+          ) : (
+            refreshStatus.kind !== "idle" && (
+              <p
+                className={`mt-3 text-sm ${
+                  refreshStatus.kind === "error"
+                    ? "text-red-600 dark:text-red-400"
+                    : refreshStatus.kind === "ok"
+                      ? "text-accent"
+                      : "text-foreground/50"
+                }`}
+              >
+                {refreshStatus.message}
+              </p>
             )
-          )}
-          {refreshStatus.kind !== "idle" && !refreshProgress && (
-            <p
-              className={`mt-3 text-sm ${
-                refreshStatus.kind === "error"
-                  ? "text-red-600 dark:text-red-400"
-                  : refreshStatus.kind === "ok"
-                    ? "text-accent"
-                    : "text-foreground/50"
-              }`}
-            >
-              {refreshStatus.message}
-            </p>
-          )}
-          {refreshFailures.length > 0 && (
-            <ul className="mt-2 flex flex-col gap-1 text-sm text-red-600 dark:text-red-400">
-              {refreshFailures.slice(0, 5).map((failure) => (
-                <li key={failure.filename} className="truncate">
-                  <span className="font-mono">{failure.filename}</span> —{" "}
-                  {failure.error}
-                </li>
-              ))}
-              {refreshFailures.length > 5 && (
-                <li>…and {refreshFailures.length - 5} more</li>
-              )}
-            </ul>
           )}
         </section>
       </main>
     </div>
+  );
+}
+
+/** Compact list of per-photo refresh failures, capped so a long run can't
+ * flood the section. */
+function FailureList({
+  failures,
+}: {
+  failures: { filename: string; error: string }[];
+}) {
+  return (
+    <ul className="mt-2 flex flex-col gap-1 text-sm text-red-600 dark:text-red-400">
+      {failures.slice(0, 5).map((failure) => (
+        <li key={`${failure.filename}: ${failure.error}`} className="truncate">
+          <span className="font-mono">{failure.filename}</span> — {failure.error}
+        </li>
+      ))}
+      {failures.length > 5 && <li>…and {failures.length - 5} more</li>}
+    </ul>
   );
 }

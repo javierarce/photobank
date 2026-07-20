@@ -36,6 +36,13 @@ pub struct Photo {
     pub taken_at: Option<String>,
     pub gps_latitude: Option<f64>,
     pub gps_longitude: Option<f64>,
+    /// Whether the photo's derivative set exists in the bucket. Always Some
+    /// when read from the catalog (NOT NULL column); None only when
+    /// deserializing a manifest written before the field existed — restore
+    /// falls back to `width IS NOT NULL` (locally processed rows always have
+    /// their variants).
+    #[serde(default)]
+    pub variants_ok: Option<bool>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -55,7 +62,8 @@ pub struct FolderCount {
 /// Column list matching `photo_from_row`. Keep the two in sync.
 pub const PHOTO_COLUMNS: &str = "id, filename, s3_key, folder, mime_type, file_size, \
     width, height, processing_status, camera_make, camera_model, lens, focal_length, \
-    aperture, shutter_speed, iso, taken_at, gps_latitude, gps_longitude, created_at, updated_at";
+    aperture, shutter_speed, iso, taken_at, gps_latitude, gps_longitude, variants_ok, \
+    created_at, updated_at";
 
 pub fn photo_from_row(row: &Row) -> rusqlite::Result<Photo> {
     Ok(Photo {
@@ -78,8 +86,9 @@ pub fn photo_from_row(row: &Row) -> rusqlite::Result<Photo> {
         taken_at: row.get(16)?,
         gps_latitude: row.get(17)?,
         gps_longitude: row.get(18)?,
-        created_at: row.get(19)?,
-        updated_at: row.get(20)?,
+        variants_ok: row.get(19)?,
+        created_at: row.get(20)?,
+        updated_at: row.get(21)?,
     })
 }
 
@@ -133,6 +142,20 @@ CREATE TABLE meta (
     value TEXT NOT NULL
 );
 PRAGMA user_version = 2;
+COMMIT;
+";
+
+/// variants_ok: whether the photo's derivative set exists in the bucket.
+/// Locally imported rows always have variants (default 1); completed rows
+/// without dimensions predate this flag and came from a listing rebuild or a
+/// foreign sync, where variants are unknown — start them at 0 so the refresh
+/// checks them (a cheap HEAD each, not a download).
+const SCHEMA_V3: &str = "
+BEGIN;
+ALTER TABLE photos ADD COLUMN variants_ok INTEGER NOT NULL DEFAULT 1;
+UPDATE photos SET variants_ok = 0
+    WHERE processing_status = 'completed' AND width IS NULL;
+PRAGMA user_version = 3;
 COMMIT;
 ";
 
@@ -260,6 +283,9 @@ fn migrate(conn: &Connection) -> Result<()> {
     }
     if version < 2 {
         conn.execute_batch(SCHEMA_V2)?;
+    }
+    if version < 3 {
+        conn.execute_batch(SCHEMA_V3)?;
     }
     Ok(())
 }
@@ -392,8 +418,61 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 2);
+        assert_eq!(version, 3);
         assert_eq!(get_meta(&conn, "anything").unwrap(), None);
+    }
+
+    #[test]
+    fn migrating_to_v3_marks_dimensionless_completed_rows_as_missing_variants() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.pragma_update(None, "foreign_keys", "ON").unwrap();
+        conn.execute_batch(SCHEMA_V1).unwrap();
+        conn.execute_batch(SCHEMA_V2).unwrap();
+        // Locally processed row: dimensions known, variants exist.
+        conn.execute(
+            "INSERT INTO photos (id, filename, s3_key, folder, width, processing_status, created_at, updated_at)
+             VALUES ('local', 'a.jpg', 'inbox/a.jpg', 'inbox', 640, 'completed', ?1, ?1)",
+            params![now()],
+        )
+        .unwrap();
+        // Listing-rebuilt row: never processed here, variants unknown.
+        conn.execute(
+            "INSERT INTO photos (id, filename, s3_key, folder, processing_status, created_at, updated_at)
+             VALUES ('foreign', 'b.jpg', 'inbox/b.jpg', 'inbox', 'completed', ?1, ?1)",
+            params![now()],
+        )
+        .unwrap();
+
+        migrate(&conn).unwrap();
+
+        let flag = |id: &str| -> bool {
+            conn.query_row("SELECT variants_ok FROM photos WHERE id = ?1", [id], |r| r.get(0))
+                .unwrap()
+        };
+        assert!(flag("local"));
+        assert!(!flag("foreign"));
+    }
+
+    #[test]
+    fn manifest_photos_without_the_variants_flag_deserialize_to_none() {
+        // A manifest written before variants_ok existed must still restore.
+        let json = r#"{
+            "id": "p1", "filename": "a.jpg", "s3Key": "inbox/a.jpg", "folder": "inbox",
+            "mimeType": null, "fileSize": null, "width": 100, "height": 50,
+            "processingStatus": "completed", "cameraMake": null, "cameraModel": null,
+            "lens": null, "focalLength": null, "aperture": null, "shutterSpeed": null,
+            "iso": null, "takenAt": null, "gpsLatitude": null, "gpsLongitude": null,
+            "createdAt": "2026-01-01T00:00:00Z", "updatedAt": "2026-01-01T00:00:00Z"
+        }"#;
+        let photo: Photo = serde_json::from_str(json).unwrap();
+        assert_eq!(photo.variants_ok, None);
+
+        let with_flag = json.replace(
+            "\"createdAt\"",
+            "\"variantsOk\": false, \"createdAt\"",
+        );
+        let photo: Photo = serde_json::from_str(&with_flag).unwrap();
+        assert_eq!(photo.variants_ok, Some(false));
     }
 
     #[test]
@@ -448,5 +527,7 @@ mod tests {
         assert_eq!(photo.s3_key, "inbox/photo.jpg");
         assert_eq!(photo.processing_status, "pending");
         assert_eq!(photo.width, None);
+        // Fresh rows take the column default: imports always write variants.
+        assert_eq!(photo.variants_ok, Some(true));
     }
 }

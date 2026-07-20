@@ -684,7 +684,14 @@ pub(crate) async fn fetch_bytes(app: &AppHandle, key: &str) -> Result<Vec<u8>> {
         .body
         .collect()
         .await
-        .map_err(|e| Error::msg(e.to_string()))?
+        // A bare `e.to_string()` here reads "streaming error" with no clue
+        // which file or why — name the object and keep the cause chain.
+        .map_err(|e| {
+            Error::msg(format!(
+                "download of {key} was interrupted: {}",
+                aws_smithy_types::error::display::DisplayErrorContext(&e)
+            ))
+        })?
         .into_bytes()
         .to_vec();
     drop(guard);

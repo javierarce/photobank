@@ -12,6 +12,8 @@ type Props = {
   onDelete?: (photo: Photo) => void;
   onMove?: (photo: Photo) => void;
   onRename?: (photo: Photo, newFilename: string) => Promise<void>;
+  /** Fetch EXIF/dimensions for this photo from the bucket on demand. */
+  onLoadInfo?: (photo: Photo) => Promise<void>;
   // Provided when there is a neighbouring photo to move to; omitted at the
   // ends of the list so the arrows and arrow keys become no-ops.
   onPrev?: () => void;
@@ -30,6 +32,7 @@ export function PhotoLightbox({
   onDelete,
   onMove,
   onRename,
+  onLoadInfo,
   onPrev,
   onNext,
 }: Props) {
@@ -39,6 +42,8 @@ export function PhotoLightbox({
   const [fallback, setFallback] = useState(false);
   const [editing, setEditing] = useState(false);
   const [renaming, setRenaming] = useState(false);
+  const [loadingInfo, setLoadingInfo] = useState(false);
+  const [infoError, setInfoError] = useState<string | null>(null);
   // Show and edit the user-facing name (legacy "_original" marker stripped),
   // never the raw stored filename.
   const [name, ext] = splitFilename(displayName(photo.filename));
@@ -53,6 +58,8 @@ export function PhotoLightbox({
     setPrevPhotoId(photo.id);
     setLoaded(false);
     setFallback(false);
+    setLoadingInfo(false);
+    setInfoError(null);
   }
 
   const [prevFilename, setPrevFilename] = useState(photo.filename);
@@ -68,6 +75,22 @@ export function PhotoLightbox({
       inputRef.current.select();
     }
   }, [editing]);
+
+  const handleLoadInfo = async () => {
+    if (!onLoadInfo || loadingInfo) return;
+    setInfoError(null);
+    setLoadingInfo(true);
+    try {
+      await onLoadInfo(photo);
+      // Success replaces the photo prop with a row that has dimensions, so
+      // the button unmounts; no local success state needed.
+    } catch (err) {
+      // Tauri commands reject with a plain message string (see src/lib/api.ts)
+      setInfoError(typeof err === "string" ? err : "Failed to load photo info");
+    } finally {
+      setLoadingInfo(false);
+    }
+  };
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -314,6 +337,31 @@ export function PhotoLightbox({
                     {photo.gpsLatitude.toFixed(4)}, {photo.gpsLongitude.toFixed(4)}
                   </a>
                 </div>
+              )}
+            </div>
+          )}
+
+          {onLoadInfo && !photo.width && (
+            <div>
+              <button
+                type="button"
+                onClick={handleLoadInfo}
+                disabled={loadingInfo || renaming}
+                data-testid="load-info"
+                className="w-full rounded-md border border-border px-3 py-1.5 text-sm transition hover:bg-foreground/5 active:scale-[0.97] disabled:opacity-50 disabled:pointer-events-none"
+              >
+                {loadingInfo ? "Loading info…" : "Load info"}
+              </button>
+              <p className="mt-1.5 text-xs text-foreground/40">
+                Reads dimensions and EXIF from the original in your bucket.
+              </p>
+              {infoError && (
+                <p
+                  className="mt-1 text-xs text-red-600 dark:text-red-400"
+                  data-testid="load-info-error"
+                >
+                  {infoError}
+                </p>
               )}
             </div>
           )}
