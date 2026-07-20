@@ -1,12 +1,12 @@
 import { useEffect, useState } from "react";
 import { useSearchParams } from "react-router-dom";
-import { imageUrl } from "@/lib/image-url";
 import { displayName } from "@/lib/keys";
 import { searchPhotos } from "@/lib/api";
 import { usesMetadataFilter } from "@/lib/search-query";
 import { PhotoLightbox } from "@/components/photo-lightbox";
 import { SelectionCheck } from "@/components/selection-check";
 import { SelectionToolbar } from "@/components/selection-toolbar";
+import { Thumbnail } from "@/components/thumbnail";
 import { usePhotoActions } from "@/hooks/use-photo-actions";
 import { useSelection, useThumbnailActivation } from "@/hooks/use-selection";
 
@@ -144,7 +144,7 @@ export function SearchResults() {
           Metadata filters only match photos whose info has been loaded.
         </p>
       )}
-      <div className="fade-in grid select-none grid-cols-2 gap-2 sm:grid-cols-3 md:grid-cols-4">
+      <div className="fade-in grid select-none gap-2 grid-cols-[repeat(auto-fill,minmax(min(200px,100%),1fr))]">
         {photos.map((photo) => (
           <button
             key={photo.id}
@@ -155,13 +155,7 @@ export function SearchResults() {
             }`}
           >
             {photo.processingStatus === "completed" ? (
-              <img
-                src={imageUrl(photo.s3Key, "640", "webp")}
-                alt={photo.filename}
-                className="h-full w-full object-cover"
-                loading="lazy"
-                draggable={false}
-              />
+              <Thumbnail photo={photo} />
             ) : (
               <div className="flex h-full items-center justify-center">
                 <span className="text-xs text-foreground/40">
