@@ -1,6 +1,6 @@
 import { useCallback, useState } from "react";
 import { ask, message } from "@tauri-apps/plugin-dialog";
-import { deletePhoto, updatePhoto } from "@/lib/api";
+import { deletePhoto, loadPhotoMetadata, updatePhoto } from "@/lib/api";
 import { displayName } from "@/lib/keys";
 import type { Photo } from "@/lib/types";
 
@@ -173,6 +173,15 @@ export function usePhotoActions() {
     }
   };
 
+  // Fetch one photo's EXIF/dimensions from its original in the bucket (the
+  // lightbox's "Load info" button). Rejections propagate so the button can
+  // show the error inline.
+  const handleLoadInfo = useCallback(async (photo: Photo) => {
+    const updated = await loadPhotoMetadata(photo.id);
+    setPhotos((prev) => prev.map((p) => (p.id === photo.id ? updated : p)));
+    setActive((prev) => (prev?.id === photo.id ? updated : prev));
+  }, []);
+
   return {
     photos,
     setPhotos,
@@ -183,5 +192,6 @@ export function usePhotoActions() {
     handleBulkDelete,
     handleBulkMove,
     handleRename,
+    handleLoadInfo,
   };
 }
