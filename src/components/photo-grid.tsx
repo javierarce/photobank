@@ -1,5 +1,6 @@
 import {
   useEffect,
+  useMemo,
   useState,
   useCallback,
   useImperativeHandle,
@@ -17,6 +18,7 @@ import { SelectionCheck } from "@/components/selection-check";
 import { usePhotoActions } from "@/hooks/use-photo-actions";
 import { useSelection, useThumbnailActivation } from "@/hooks/use-selection";
 import { usePresence } from "@/hooks/use-presence";
+import { sortPhotos, DEFAULT_SORT_MODE, type SortMode } from "@/lib/photo-sort";
 import type { Photo } from "@/lib/types";
 import type { UploadFile } from "@/hooks/use-upload";
 
@@ -28,8 +30,15 @@ export type PhotoGridRef = {
 // keys off it).
 const photoKey = (p: Photo) => p.id;
 
+// A shared empty default so an omitted `uploads` prop keeps a stable identity
+// across renders — a fresh `[]` each render would break the memo chain that
+// keeps visiblePhotos stable and re-introduce the setPool render loop.
+const NO_UPLOADS: UploadFile[] = [];
+
 type Props = {
   folder: string;
+  /** How to order the tiles; defaults to newest-first by filename date. */
+  sortMode?: SortMode;
   /** In-flight uploads, rendered as tiles with an inline progress bar. */
   uploads?: UploadFile[];
   onDismissUpload?: (key: string) => void;
@@ -37,7 +46,13 @@ type Props = {
 };
 
 export const PhotoGrid = forwardRef<PhotoGridRef, Props>(function PhotoGrid(
-  { folder, uploads = [], onDismissUpload, onCancelUpload },
+  {
+    folder,
+    sortMode = DEFAULT_SORT_MODE,
+    uploads = NO_UPLOADS,
+    onDismissUpload,
+    onCancelUpload,
+  },
   ref
 ) {
   const {
@@ -59,6 +74,46 @@ export const PhotoGrid = forwardRef<PhotoGridRef, Props>(function PhotoGrid(
     useSelection();
   const { onClick, onDoubleClick } = useThumbnailActivation(setActive);
 
+  // Keep showing the local preview while the photo is pending/processing —
+  // the real tile has nothing to render until the worker finishes. Hand off
+  // only once the 640px variant has actually loaded (preloaded below), so the
+  // preview is never replaced by a blank tile.
+  const photoById = useMemo(
+    () => new Map(photos.map((p) => [p.id, p])),
+    [photos]
+  );
+  const activeUploads = useMemo(
+    () =>
+      uploads.filter(
+        (u) => !u.id || photoById.get(u.id)?.processingStatus !== "failed"
+      ),
+    [uploads, photoById]
+  );
+  const activeUploadIds = useMemo(
+    () => new Set(activeUploads.map((u) => u.id)),
+    [activeUploads]
+  );
+  // Order the tiles per the chosen sort; this also drives the selection pool,
+  // Cmd+A, and lightbox prev/next below, so everything follows what's on
+  // screen rather than the raw fetch order.
+  const sortedPhotos = useMemo(
+    () => sortPhotos(photos, sortMode),
+    [photos, sortMode]
+  );
+  // visiblePhotos must keep a STABLE identity when nothing meaningful changed:
+  // the pool effect below feeds setPool, which re-renders this component, and
+  // `uploads` arrives as a fresh array each parent render — so a reference that
+  // churned every render would re-fire the effect and loop. Depend on
+  // sortedPhotos BY REFERENCE (it only changes when photos or the sort change,
+  // carrying content updates like updated_at through) plus a value-key for the
+  // active upload ids (whose Set identity churns with the uploads prop).
+  const activeUploadKey = [...activeUploadIds].join(",");
+  const visiblePhotos = useMemo(
+    () => sortedPhotos.filter((p) => !activeUploadIds.has(p.id)),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [sortedPhotos, activeUploadKey]
+  );
+
   // Expose bulk actions to the toolbar while this grid is on screen; clear the
   // selection when they run so stale tiles don't linger.
   useEffect(() => {
@@ -73,11 +128,12 @@ export const PhotoGrid = forwardRef<PhotoGridRef, Props>(function PhotoGrid(
     return () => setActions(null);
   }, [setActions, handleBulkDelete, handleBulkMove, clear]);
 
-  // Publish the selectable pool so the toolbar's "Select all" knows the set.
+  // Publish the selectable pool in displayed order so "Select all" and
+  // shift-click range selection span the tiles the user actually sees.
   useEffect(() => {
-    setPool(photos);
+    setPool(visiblePhotos);
     return () => setPool([]);
-  }, [photos, setPool]);
+  }, [visiblePhotos, setPool]);
 
   // Selection belongs to the current folder; drop it when the folder changes
   // or when leaving the grid entirely.
@@ -103,14 +159,14 @@ export const PhotoGrid = forwardRef<PhotoGridRef, Props>(function PhotoGrid(
         ) {
           return;
         }
-        if (!photos.length) return;
+        if (!visiblePhotos.length) return;
         e.preventDefault();
-        selectAll(photos);
+        selectAll(visiblePhotos);
       }
     };
     document.addEventListener("keydown", handleKeyDown);
     return () => document.removeEventListener("keydown", handleKeyDown);
-  }, [selected.length, active, clear, selectAll, photos]);
+  }, [selected.length, active, clear, selectAll, visiblePhotos]);
 
   const loadPhotos = useCallback(() => {
     return listPhotos(folder)
@@ -151,16 +207,6 @@ export const PhotoGrid = forwardRef<PhotoGridRef, Props>(function PhotoGrid(
     };
   }, [loadPhotos]);
 
-  // Keep showing the local preview while the photo is pending/processing —
-  // the real tile has nothing to render until the worker finishes. Hand off
-  // only once the 640px variant has actually loaded (preloaded below), so the
-  // preview is never replaced by a blank tile.
-  const photoById = new Map(photos.map((p) => [p.id, p]));
-  const activeUploads = uploads.filter(
-    (u) => !u.id || photoById.get(u.id)?.processingStatus !== "failed"
-  );
-  const activeUploadIds = new Set(activeUploads.map((u) => u.id));
-  const visiblePhotos = photos.filter((p) => !activeUploadIds.has(p.id));
   const uploadsAwaitingThumbnail = activeUploads.filter(
     (u) => u.id && photoById.get(u.id)?.processingStatus === "completed"
   );
