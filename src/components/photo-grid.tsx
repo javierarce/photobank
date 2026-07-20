@@ -255,7 +255,7 @@ export const PhotoGrid = forwardRef<PhotoGridRef, Props>(function PhotoGrid(
             onError={() => onDismissUpload(upload.key)}
           />
         ))}
-      <div className="fade-in grid select-none grid-cols-2 gap-2 sm:grid-cols-3 md:grid-cols-4">
+      <div className="fade-in grid select-none gap-2 grid-cols-[repeat(auto-fill,minmax(min(200px,100%),1fr))]">
         {activeUploads.map((upload) => (
           <UploadTile
             key={upload.key}
