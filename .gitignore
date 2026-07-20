@@ -2,6 +2,8 @@
 
 # dependencies
 /node_modules
+# this project uses npm; a stray pnpm lockfile would make tauri-action use pnpm
+pnpm-lock.yaml
 
 # this repo uses npm (package-lock.json); a stray pnpm lockfile makes
 # tauri-action pick pnpm and breaks releases — keep it out (see #22)
