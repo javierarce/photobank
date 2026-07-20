@@ -1,5 +1,6 @@
 import {
   useCallback,
+  useEffect,
   useMemo,
   useRef,
   useState,
@@ -69,6 +70,25 @@ export function SelectionProvider({ children }: { children: ReactNode }) {
     [pool]
   );
 
+  // Capture the current selection + anchor; the returned fn restores both.
+  // Read `selected` through a ref so snapshot keeps a STABLE identity across
+  // selection changes — that stability lets the memoized grid tiles skip
+  // re-rendering when only their neighbours' selected state changed.
+  // Kept current via an effect (not written during render) so snapshot, called
+  // only from click handlers after commit, always sees the latest selection.
+  const selectedRef = useRef(selected);
+  useEffect(() => {
+    selectedRef.current = selected;
+  }, [selected]);
+  const snapshot = useCallback(() => {
+    const prevSelected = selectedRef.current;
+    const prevAnchor = anchorRef.current;
+    return () => {
+      setSelected(prevSelected);
+      anchorRef.current = prevAnchor;
+    };
+  }, []);
+
   const selectAll = useCallback((photos: Photo[]) => setSelected(photos), []);
 
   const clear = useCallback(() => {
@@ -82,6 +102,7 @@ export function SelectionProvider({ children }: { children: ReactNode }) {
       isSelected,
       toggle,
       selectRange,
+      snapshot,
       selectAll,
       clear,
       pool,
@@ -89,7 +110,17 @@ export function SelectionProvider({ children }: { children: ReactNode }) {
       actions,
       setActions,
     }),
-    [selected, isSelected, toggle, selectRange, selectAll, clear, pool, actions]
+    [
+      selected,
+      isSelected,
+      toggle,
+      selectRange,
+      snapshot,
+      selectAll,
+      clear,
+      pool,
+      actions,
+    ]
   );
 
   return (

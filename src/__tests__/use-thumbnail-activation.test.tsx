@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { renderHook, act } from "@testing-library/react";
 import type { MouseEvent } from "react";
 import { SelectionProvider } from "@/hooks/selection-provider";
@@ -19,29 +19,18 @@ function clickEvent(overrides: Partial<MouseEvent> = {}): MouseEvent {
   return { detail: 1, shiftKey: false, ...overrides } as MouseEvent;
 }
 
-beforeEach(() => {
-  vi.useFakeTimers();
-});
-
-afterEach(() => {
-  vi.useRealTimers();
-});
-
 describe("useThumbnailActivation", () => {
-  it("selects on a single click once the double-click window passes", () => {
+  it("selects immediately on a single click", () => {
     const { result } = renderHook(() => useHarness(vi.fn()), {
       wrapper: SelectionProvider,
     });
 
     act(() => result.current.onClick(clickEvent(), photo));
-    // Nothing selected yet — the select is deferred.
-    expect(result.current.selection.selected).toHaveLength(0);
-
-    act(() => vi.advanceTimersByTime(250));
+    // No deferral — the select lands right away.
     expect(result.current.selection.isSelected("1")).toBe(true);
   });
 
-  it("opens without selecting when a double click cancels the pending select", () => {
+  it("opens without leaving a selection when a double click reverts the lead click", () => {
     const onOpen = vi.fn();
     const { result } = renderHook(() => useHarness(onOpen), {
       wrapper: SelectionProvider,
@@ -49,25 +38,36 @@ describe("useThumbnailActivation", () => {
 
     act(() => result.current.onClick(clickEvent(), photo));
     act(() => result.current.onDoubleClick(photo));
-    act(() => vi.advanceTimersByTime(250));
 
     expect(onOpen).toHaveBeenCalledWith(photo);
     expect(result.current.selection.selected).toHaveLength(0);
   });
 
-  it("commits a pending select when a different thumbnail is clicked", () => {
+  it("preserves an existing selection when a double click reverts its lead click", () => {
     const photoB = makePhoto({ id: "2", filename: "sunset.jpg" });
     const { result } = renderHook(() => useHarness(vi.fn()), {
       wrapper: SelectionProvider,
     });
 
-    // Click A, then click B within the double-click window. A's deferred select
-    // must still land — clicking B should not swallow it.
+    // Select A, then double click B to open it. The revert must restore the
+    // state as it was before B's lead click — A still selected, B not.
     act(() => result.current.onClick(clickEvent(), photo));
     act(() => result.current.onClick(clickEvent(), photoB));
-    expect(result.current.selection.isSelected("1")).toBe(true);
+    act(() => result.current.onDoubleClick(photoB));
 
-    act(() => vi.advanceTimersByTime(250));
+    expect(result.current.selection.isSelected("1")).toBe(true);
+    expect(result.current.selection.isSelected("2")).toBe(false);
+  });
+
+  it("keeps selections from clicks on different thumbnails", () => {
+    const photoB = makePhoto({ id: "2", filename: "sunset.jpg" });
+    const { result } = renderHook(() => useHarness(vi.fn()), {
+      wrapper: SelectionProvider,
+    });
+
+    act(() => result.current.onClick(clickEvent(), photo));
+    act(() => result.current.onClick(clickEvent(), photoB));
+
     expect(result.current.selection.isSelected("1")).toBe(true);
     expect(result.current.selection.isSelected("2")).toBe(true);
   });
@@ -78,7 +78,6 @@ describe("useThumbnailActivation", () => {
     });
 
     act(() => result.current.onClick(clickEvent({ detail: 2 }), photo));
-    act(() => vi.advanceTimersByTime(250));
 
     expect(result.current.selection.selected).toHaveLength(0);
   });
