@@ -50,6 +50,7 @@ export const PhotoGrid = forwardRef<PhotoGridRef, Props>(function PhotoGrid(
     handleBulkDelete,
     handleBulkMove,
     handleRename,
+    handleLoadInfo,
   } = usePhotoActions();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -138,9 +139,9 @@ export const PhotoGrid = forwardRef<PhotoGridRef, Props>(function PhotoGrid(
 
   useImperativeHandle(ref, () => ({ refresh: loadPhotos }));
 
-  // A library refresh (Settings, or auto-started after a rebuild) fills in
-  // metadata and regenerates variants; reload once it settles so tiles swap
-  // from their original-image fallback to the real thumbnails.
+  // A library refresh (Settings, or auto-started after a rebuild) regenerates
+  // missing variants; reload once it settles so tiles swap from their
+  // original-image fallback to the real thumbnails.
   useEffect(() => {
     const unlisten = listen<RefreshProgress>(REFRESH_PROGRESS_EVENT, (event) => {
       if (event.payload.status !== "running") loadPhotos();
@@ -262,6 +263,7 @@ export const PhotoGrid = forwardRef<PhotoGridRef, Props>(function PhotoGrid(
               onDelete={handleDelete}
               onMove={handleMove}
               onRename={handleRename}
+              onLoadInfo={handleLoadInfo}
               onPrev={canNavigate ? () => setActive(prev) : undefined}
               onNext={canNavigate ? () => setActive(next) : undefined}
             />

@@ -147,15 +147,21 @@ async fn build_ctx(settings: &S3Settings, secret: &str) -> S3Ctx {
         builder = builder.force_path_style(true);
     }
 
-    let bucket = settings.bucket.trim().to_string();
-    let identity = match settings.custom_endpoint() {
-        Some(endpoint) => format!("{bucket} @ {endpoint}"),
-        None => bucket.clone(),
-    };
     S3Ctx {
         client: aws_sdk_s3::Client::from_conf(builder.build()),
-        bucket,
-        identity,
+        bucket: settings.bucket.trim().to_string(),
+        identity: bucket_identity(settings),
+    }
+}
+
+/// The identity a catalog binds to (db::META_CATALOG_BUCKET): the bucket
+/// name, qualified by the endpoint for S3-compatible services so two "photos"
+/// buckets on different providers never look interchangeable.
+pub fn bucket_identity(settings: &S3Settings) -> String {
+    let bucket = settings.bucket.trim();
+    match settings.custom_endpoint() {
+        Some(endpoint) => format!("{bucket} @ {endpoint}"),
+        None => bucket.to_string(),
     }
 }
 
@@ -185,16 +191,34 @@ pub struct SettingsInfo {
     pub settings: S3Settings,
     pub has_secret: bool,
     pub configured: bool,
+    /// Bucket identity the local catalog was built from, if it's bound.
+    pub catalog_bucket: Option<String>,
+    /// The catalog belongs to a different bucket than the one configured —
+    /// everything on screen is the old bucket's until a rebuild.
+    pub bucket_mismatch: bool,
 }
 
 fn settings_info(app: &AppHandle) -> SettingsInfo {
     let settings = load_settings(app);
     let has_secret = load_secret(app).map(|s| !s.is_empty()).unwrap_or(false);
     let configured = settings.is_complete() && has_secret;
+    let catalog_bucket = {
+        let db = app.state::<crate::db::Db>();
+        let conn = db.0.lock().unwrap();
+        crate::db::get_meta(&conn, crate::db::META_CATALOG_BUCKET)
+            .ok()
+            .flatten()
+    };
+    let bucket_mismatch = configured
+        && catalog_bucket
+            .as_deref()
+            .is_some_and(|bound| bound != bucket_identity(&settings));
     SettingsInfo {
         settings,
         has_secret,
         configured,
+        catalog_bucket,
+        bucket_mismatch,
     }
 }
 
@@ -238,4 +262,28 @@ pub async fn test_connection(app: AppHandle) -> Result<String> {
             ))
         })?;
     Ok(format!("Connected to bucket \u{201c}{}\u{201d}", ctx.bucket))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn settings(bucket: &str, endpoint: Option<&str>) -> S3Settings {
+        S3Settings {
+            endpoint: endpoint.map(str::to_string),
+            region: "auto".into(),
+            bucket: bucket.into(),
+            access_key_id: "k".into(),
+        }
+    }
+
+    #[test]
+    fn bucket_identity_qualifies_custom_endpoints() {
+        assert_eq!(bucket_identity(&settings("photos", None)), "photos");
+        assert_eq!(bucket_identity(&settings(" photos ", Some(""))), "photos");
+        assert_eq!(
+            bucket_identity(&settings("photos", Some("https://r2.example.com"))),
+            "photos @ https://r2.example.com"
+        );
+    }
 }
