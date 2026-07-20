@@ -3,6 +3,8 @@ import { useParams } from "react-router-dom";
 import { FolderTitle } from "@/components/folder-title";
 import { PhotoGrid, PhotoGridRef } from "@/components/photo-grid";
 import { SelectionToolbar } from "@/components/selection-toolbar";
+import { SortDropdown } from "@/components/sort-dropdown";
+import { loadSortMode, saveSortMode, type SortMode } from "@/lib/photo-sort";
 import { useUpload } from "@/hooks/use-upload";
 import { useBackgroundDeselect, useSelection } from "@/hooks/use-selection";
 
@@ -14,6 +16,8 @@ export default function FolderPage() {
   // the folder are locked out (Upload, Rename, drag-and-drop): a photo added
   // mid-rename would be left behind under the old name.
   const [renamingFolder, setRenamingFolder] = useState(false);
+  // Sort order is a global preference, persisted across folders and launches.
+  const [sortMode, setSortMode] = useState<SortMode>(loadSortMode);
   const photoGridRef = useRef<PhotoGridRef>(null);
   const { selected } = useSelection();
   const handleBackgroundClick = useBackgroundDeselect();
@@ -48,6 +52,11 @@ export default function FolderPage() {
       u.status === "cancelling"
   );
 
+  const handleSortChange = (mode: SortMode) => {
+    setSortMode(mode);
+    saveSortMode(mode);
+  };
+
   return (
     <div
       className="relative min-h-screen font-sans"
@@ -69,6 +78,7 @@ export default function FolderPage() {
                 onRenamingChange={setRenamingFolder}
               />
               <div className="flex shrink-0 items-center gap-2">
+                <SortDropdown value={sortMode} onChange={handleSortChange} />
                 {cancellable.length > 0 && (
                   <button
                     type="button"
@@ -115,6 +125,7 @@ export default function FolderPage() {
             key={folder}
             folder={folder}
             ref={photoGridRef}
+            sortMode={sortMode}
             uploads={folderUploads}
             onDismissUpload={removeUpload}
             onCancelUpload={cancelUpload}
