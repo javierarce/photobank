@@ -2,7 +2,6 @@ import {
   createContext,
   useCallback,
   useContext,
-  useEffect,
   useRef,
   type MouseEvent,
 } from "react";
@@ -21,6 +20,9 @@ export type SelectionContextValue = {
   toggle: (photo: Photo) => void;
   /** Extend the selection from the anchor to this photo (Shift-click range). */
   selectRange: (photo: Photo) => void;
+  /** Snapshot the current selection + anchor, returning a restore fn. Used to
+   * undo the leading click of a double click so opening never alters state. */
+  snapshot: () => () => void;
   /** Replace the selection with exactly these photos (used by Cmd+A). */
   selectAll: (photos: Photo[]) => void;
   clear: () => void;
@@ -44,72 +46,42 @@ export function useSelection() {
   return ctx;
 }
 
-/** How long to wait for a second click before treating a click as a select.
- * Matches a typical OS double-click threshold. */
-const DOUBLE_CLICK_MS = 250;
-
 /**
- * Thumbnail interaction: a single click selects (toggles), a double click
- * opens. The select is deferred by one double-click window so a double click
- * can cancel it — otherwise the first click of a double click would flash the
- * thumb selected before the photo opens, and leave the anchor moved.
+ * Thumbnail interaction: a single click selects (toggles) immediately, a double
+ * click opens. The select commits on the first click for an instant, weightless
+ * feel; if that click turns out to be the lead of a double click, the dblclick
+ * handler reverts it so opening never alters the selection or anchor. The brief
+ * flash before the revert is hidden behind the opening lightbox.
  */
 export function useThumbnailActivation(onOpen: (photo: Photo) => void) {
-  const { toggle, selectRange } = useSelection();
-  // A single pending select, holding the timer plus the select to run so it can
-  // be committed early. One hook instance is shared by every thumbnail, so the
-  // pending select may belong to a different photo than the one now clicked.
-  const pending = useRef<{
-    timer: ReturnType<typeof setTimeout>;
-    run: () => void;
-  } | null>(null);
-
-  const cancelPending = useCallback(() => {
-    if (pending.current !== null) {
-      clearTimeout(pending.current.timer);
-      pending.current = null;
-    }
-  }, []);
-
-  const flushPending = useCallback(() => {
-    const p = pending.current;
-    if (p !== null) {
-      clearTimeout(p.timer);
-      pending.current = null;
-      p.run();
-    }
-  }, []);
+  const { toggle, selectRange, snapshot } = useSelection();
+  // How to undo the most recent click's select, kept so a double click that
+  // lands right after can roll it back. One hook instance is shared by every
+  // thumbnail; only a dblclick on the same tile consumes this.
+  const undo = useRef<(() => void) | null>(null);
 
   const onClick = useCallback(
     (e: MouseEvent, photo: Photo) => {
       // Ignore the trailing click of a double click; the dblclick handler owns
-      // it. Reading shiftKey up front keeps it available inside the timer.
+      // it and the leading click already ran.
       if (e.detail > 1) return;
-      const range = e.shiftKey;
-      // A fresh click means any pending select was a genuine single click (a
-      // double click lands on the same photo and fires dblclick, not a second
-      // onClick). Commit it now so rapid clicks across thumbnails all register.
-      flushPending();
-      const run = () => (range ? selectRange(photo) : toggle(photo));
-      const timer = setTimeout(() => {
-        pending.current = null;
-        run();
-      }, DOUBLE_CLICK_MS);
-      pending.current = { timer, run };
+      const restore = snapshot();
+      if (e.shiftKey) selectRange(photo);
+      else toggle(photo);
+      undo.current = restore;
     },
-    [toggle, selectRange, flushPending]
+    [toggle, selectRange, snapshot]
   );
 
   const onDoubleClick = useCallback(
     (photo: Photo) => {
-      // Drop the pending select so opening never touches the selection.
-      cancelPending();
+      // Roll back the leading click's select so opening never touches state.
+      undo.current?.();
+      undo.current = null;
       onOpen(photo);
     },
-    [onOpen, cancelPending]
+    [onOpen]
   );
-
-  useEffect(() => cancelPending, [cancelPending]);
 
   return { onClick, onDoubleClick };
 }
