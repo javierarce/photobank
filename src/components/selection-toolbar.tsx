@@ -49,6 +49,14 @@ export function SelectionToolbar() {
         <ExportButton onExport={handleDownload} />
         <button
           type="button"
+          onClick={() => actions?.onTag(selected)}
+          disabled={!actions}
+          className={action}
+        >
+          Tag
+        </button>
+        <button
+          type="button"
           onClick={() => actions?.onMove(selected)}
           disabled={!actions}
           className={action}

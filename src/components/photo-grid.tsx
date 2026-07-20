@@ -16,6 +16,7 @@ import {
   type RefreshProgress,
 } from "@/lib/api";
 import { PhotoLightbox } from "@/components/photo-lightbox";
+import { BulkTagDialog } from "@/components/bulk-tag-dialog";
 import { SelectionCheck } from "@/components/selection-check";
 import { Thumbnail } from "@/components/thumbnail";
 import { usePhotoActions } from "@/hooks/use-photo-actions";
@@ -72,6 +73,9 @@ export const PhotoGrid = forwardRef<PhotoGridRef, Props>(function PhotoGrid(
   } = usePhotoActions();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  // Photos being bulk-tagged, captured when the editor opens so it keeps
+  // working on that set even if the selection later changes.
+  const [tagTargets, setTagTargets] = useState<Photo[] | null>(null);
 
   const { selected, isSelected, clear, selectAll, setPool, setActions } =
     useSelection();
@@ -127,6 +131,7 @@ export const PhotoGrid = forwardRef<PhotoGridRef, Props>(function PhotoGrid(
       onMove: async (targets) => {
         if (await handleBulkMove(targets)) clear();
       },
+      onTag: (targets) => setTagTargets(targets),
     });
     return () => setActions(null);
   }, [setActions, handleBulkDelete, handleBulkMove, clear]);
@@ -148,28 +153,39 @@ export const PhotoGrid = forwardRef<PhotoGridRef, Props>(function PhotoGrid(
   // the lightbox and to text fields.
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (active) return;
+      // The lightbox and the bulk-tag editor own the keyboard while open.
+      if (active || tagTargets) return;
       if (e.key === "Escape" && selected.length) {
         clear();
         return;
       }
+      const target = e.target as HTMLElement;
+      const inField =
+        target.tagName === "INPUT" ||
+        target.tagName === "TEXTAREA" ||
+        target.isContentEditable;
       if ((e.metaKey || e.ctrlKey) && (e.key === "a" || e.key === "A")) {
-        const target = e.target as HTMLElement;
-        if (
-          target.tagName === "INPUT" ||
-          target.tagName === "TEXTAREA" ||
-          target.isContentEditable
-        ) {
-          return;
-        }
+        if (inField) return;
         if (!visiblePhotos.length) return;
         e.preventDefault();
         selectAll(visiblePhotos);
       }
+      // T opens the bulk tag editor for the current selection.
+      if (
+        (e.key === "t" || e.key === "T") &&
+        !e.metaKey &&
+        !e.ctrlKey &&
+        !e.altKey &&
+        selected.length
+      ) {
+        if (inField) return;
+        e.preventDefault();
+        setTagTargets(selected);
+      }
     };
     document.addEventListener("keydown", handleKeyDown);
     return () => document.removeEventListener("keydown", handleKeyDown);
-  }, [selected.length, active, clear, selectAll, visiblePhotos]);
+  }, [selected, active, tagTargets, clear, selectAll, visiblePhotos]);
 
   const loadPhotos = useCallback(() => {
     return listPhotos(folder)
@@ -300,6 +316,16 @@ export const PhotoGrid = forwardRef<PhotoGridRef, Props>(function PhotoGrid(
             />
           );
         })()}
+
+      {tagTargets && (
+        <BulkTagDialog
+          photos={tagTargets}
+          onClose={() => setTagTargets(null)}
+          // Keep the selection after applying so the same photos can be tagged
+          // again without re-selecting.
+          onApplied={() => setTagTargets(null)}
+        />
+      )}
     </>
   );
 });

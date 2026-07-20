@@ -7,26 +7,42 @@ afterEach(() => {
   cleanup();
 });
 
-function renderHeader() {
+function renderHeader(initialPath = "/") {
   return render(
-    <MemoryRouter>
+    <MemoryRouter initialEntries={[initialPath]}>
       <Header />
     </MemoryRouter>
   );
 }
 
 describe("Header", () => {
-  it("renders the Photobank link", () => {
+  it("renders Folders, Tags, and Settings nav links", () => {
     renderHeader();
 
-    const link = screen.getByText("Photobank");
-    expect(link).toBeInTheDocument();
-    expect(link.closest("a")?.getAttribute("href")).toBe("/");
+    const folders = screen.getByText("Folders");
+    const tags = screen.getByText("Tags");
+    const settings = screen.getByText("Settings");
+    expect(folders.closest("a")?.getAttribute("href")).toBe("/");
+    expect(tags.closest("a")?.getAttribute("href")).toBe("/tags");
+    expect(settings.closest("a")?.getAttribute("href")).toBe("/settings");
   });
 
-  it("renders the search bar", () => {
+  it("no longer shows the app title or a search field", () => {
     renderHeader();
 
-    expect(screen.getByPlaceholderText(/search/i)).toBeInTheDocument();
+    expect(screen.queryByText("Photobank")).not.toBeInTheDocument();
+    expect(screen.queryByPlaceholderText(/search/i)).not.toBeInTheDocument();
+  });
+
+  it("marks the active route", () => {
+    renderHeader("/tags");
+    // NavLink sets aria-current="page" on the active link.
+    expect(screen.getByText("Tags").closest("a")).toHaveAttribute(
+      "aria-current",
+      "page"
+    );
+    expect(screen.getByText("Folders").closest("a")).not.toHaveAttribute(
+      "aria-current"
+    );
   });
 });

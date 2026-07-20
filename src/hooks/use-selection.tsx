@@ -11,6 +11,7 @@ import type { Photo } from "@/lib/types";
 export type SelectionActions = {
   onDelete: (photos: Photo[]) => void | Promise<void>;
   onMove: (photos: Photo[]) => void | Promise<void>;
+  onTag: (photos: Photo[]) => void | Promise<void>;
 };
 
 export type SelectionContextValue = {

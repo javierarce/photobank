@@ -1,11 +1,12 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
-import { listFolders } from "@/lib/api";
+import { listFolders, listTagCounts } from "@/lib/api";
+import { tagQuery } from "@/lib/search-query";
 import { useTheme } from "@/lib/theme-context";
 import { useUpdate } from "@/lib/update-context";
 import { checkForUpdate, isTauri } from "@/lib/updater";
 import { UpdateIcon } from "@/components/update-icon";
-import type { FolderCount } from "@/lib/types";
+import type { FolderCount, TagCount } from "@/lib/types";
 
 // A lightweight command palette, in the spirit of ankitron's. Cmd/Ctrl+K opens
 // it; type to filter actions and folders, arrow/Tab to move, Enter to go, Esc
@@ -77,6 +78,22 @@ const FolderIcon: IconComponent = ({ className }) => (
   </svg>
 );
 
+const TagIcon: IconComponent = ({ className }) => (
+  <svg
+    viewBox="0 0 16 16"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth={1.5}
+    strokeLinecap="round"
+    strokeLinejoin="round"
+    className={className}
+    aria-hidden
+  >
+    <path d="M2.5 2.5h4.2a1 1 0 0 1 .7.3l6 6a1 1 0 0 1 0 1.4l-3.5 3.5a1 1 0 0 1-1.4 0l-6-6a1 1 0 0 1-.3-.7V2.5Z" />
+    <circle cx="5" cy="5" r="0.9" fill="currentColor" stroke="none" />
+  </svg>
+);
+
 const SunIcon: IconComponent = ({ className }) => (
   <svg
     viewBox="0 0 16 16"
@@ -144,6 +161,7 @@ const EnterIcon: IconComponent = ({ className }) => (
 
 type ActionId =
   | "home"
+  | "tags"
   | "search"
   | "settings"
   | "theme-toggle"
@@ -164,7 +182,8 @@ type ActionDef = {
 
 type Item =
   | { kind: "action"; id: ActionId; label: string; icon: IconComponent; hint: string }
-  | { kind: "folder"; label: string; folder: string; count: number };
+  | { kind: "folder"; label: string; folder: string; count: number }
+  | { kind: "tag"; label: string; tag: string; count: number };
 
 /** Lowercase + strip diacritics so "cafe" matches "Café". */
 function foldText(s: string) {
@@ -178,6 +197,7 @@ export function CommandPalette() {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [folders, setFolders] = useState<FolderCount[]>([]);
+  const [tags, setTags] = useState<TagCount[]>([]);
   const [selected, setSelected] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
@@ -203,8 +223,8 @@ export function CommandPalette() {
     return () => window.removeEventListener("keydown", handleKey);
   }, [open, close]);
 
-  // Refresh the folder list each time the palette opens so newly-created
-  // folders show up without reloading the app.
+  // Refresh folders and tags each time the palette opens so newly-created ones
+  // show up without reloading the app.
   useEffect(() => {
     if (!open) return;
     let cancelled = false;
@@ -214,6 +234,13 @@ export function CommandPalette() {
       })
       .catch(() => {
         if (!cancelled) setFolders([]);
+      });
+    listTagCounts()
+      .then((t) => {
+        if (!cancelled) setTags(t);
+      })
+      .catch(() => {
+        if (!cancelled) setTags([]);
       });
     return () => {
       cancelled = true;
@@ -241,6 +268,13 @@ export function CommandPalette() {
       keywords: "home upload folders start",
       icon: HomeIcon,
       hint: "go",
+    },
+    {
+      id: "tags",
+      label: "Tags",
+      keywords: "tags manage rename labels keywords",
+      icon: TagIcon,
+      hint: "open",
     },
     {
       id: "search",
@@ -298,6 +332,10 @@ export function CommandPalette() {
     ? folders.filter((f) => foldText(f.folder).includes(q))
     : folders;
 
+  const filteredTags = q
+    ? tags.filter((t) => foldText(t.name).includes(q))
+    : tags;
+
   const items: Item[] = [
     ...filteredActions.map((a) => ({
       kind: "action" as const,
@@ -311,6 +349,12 @@ export function CommandPalette() {
       label: f.folder,
       folder: f.folder,
       count: f.count,
+    })),
+    ...filteredTags.map((t) => ({
+      kind: "tag" as const,
+      label: t.name,
+      tag: t.name,
+      count: t.count,
     })),
   ];
 
@@ -339,6 +383,7 @@ export function CommandPalette() {
     if (!item) return;
     if (item.kind === "action") {
       if (item.id === "home") navigate("/");
+      else if (item.id === "tags") navigate("/tags");
       else if (item.id === "settings") navigate("/settings");
       else if (item.id === "theme-toggle") setTheme(isDark ? "light" : "dark");
       else if (item.id === "theme-system") setTheme("system");
@@ -353,7 +398,11 @@ export function CommandPalette() {
       close();
       return;
     }
-    navigate(`/folders/${encodeURIComponent(item.folder)}`);
+    if (item.kind === "tag") {
+      navigate(`/search?q=${encodeURIComponent(tagQuery(item.tag))}`);
+    } else {
+      navigate(`/folders/${encodeURIComponent(item.folder)}`);
+    }
     close();
   }
 
@@ -415,13 +464,20 @@ export function CommandPalette() {
           ) : (
             items.map((item, i) => {
               const isSelected = i === selected;
-              const RowIcon = item.kind === "action" ? item.icon : FolderIcon;
+              const RowIcon =
+                item.kind === "action"
+                  ? item.icon
+                  : item.kind === "folder"
+                    ? FolderIcon
+                    : TagIcon;
               return (
                 <button
                   key={
                     item.kind === "action"
                       ? `action:${item.id}`
-                      : `folder:${item.folder}`
+                      : item.kind === "folder"
+                        ? `folder:${item.folder}`
+                        : `tag:${item.tag}`
                   }
                   type="button"
                   // Keep focus on the input so arrow keys always drive the
@@ -441,11 +497,11 @@ export function CommandPalette() {
                         {item.label}
                       </span>
                     ) : (
-                      <FolderRow name={item.folder} query={q} />
+                      <MatchedText name={item.label} query={q} />
                     )}
                   </span>
                   <span className="flex shrink-0 items-center gap-3 pl-3">
-                    {item.kind === "folder" && (
+                    {(item.kind === "folder" || item.kind === "tag") && (
                       <span className="text-xs tabular-nums text-foreground/40">
                         {item.count}
                       </span>
@@ -477,8 +533,8 @@ export function CommandPalette() {
   );
 }
 
-/** A folder row with the matching substring emphasized. */
-function FolderRow({ name, query }: { name: string; query: string }) {
+/** A folder- or tag-name label with the matching substring emphasized. */
+function MatchedText({ name, query }: { name: string; query: string }) {
   if (!query) return <span className="truncate text-foreground">{name}</span>;
 
   const folded = foldText(name);
