@@ -9,7 +9,7 @@ import {
   type MouseEvent,
 } from "react";
 import { listen } from "@tauri-apps/api/event";
-import { imageUrl, originalUrl } from "@/lib/image-url";
+import { imageUrl } from "@/lib/image-url";
 import {
   listPhotos,
   REFRESH_PROGRESS_EVENT,
@@ -17,6 +17,7 @@ import {
 } from "@/lib/api";
 import { PhotoLightbox } from "@/components/photo-lightbox";
 import { SelectionCheck } from "@/components/selection-check";
+import { Thumbnail } from "@/components/thumbnail";
 import { usePhotoActions } from "@/hooks/use-photo-actions";
 import { useSelection, useThumbnailActivation } from "@/hooks/use-selection";
 import { usePresence, type PresenceState } from "@/hooks/use-presence";
@@ -344,34 +345,6 @@ const PhotoTile = memo(function PhotoTile({
     </button>
   );
 });
-
-/** Grid thumbnail that never shows a broken image: if the 640px variant is
- * missing from the bucket (original synced in externally, refresh not done
- * yet), fall back to the original object. */
-function Thumbnail({ photo }: { photo: Photo }) {
-  const [fallback, setFallback] = useState(false);
-  // Retry the variant when the key changes (rename/move) or the row is
-  // touched at all — a refresh regenerates variants under the same key and
-  // bumps updated_at, and the tile instance survives the reload (keyed by id).
-  const marker = `${photo.s3Key}@${photo.updatedAt}`;
-  const [prevMarker, setPrevMarker] = useState(marker);
-  if (prevMarker !== marker) {
-    setPrevMarker(marker);
-    setFallback(false);
-  }
-  return (
-    <img
-      src={
-        fallback ? originalUrl(photo.s3Key) : imageUrl(photo.s3Key, "640", "webp")
-      }
-      alt={photo.filename}
-      className="h-full w-full object-cover"
-      loading="lazy"
-      draggable={false}
-      onError={() => setFallback(true)}
-    />
-  );
-}
 
 /** A grid tile for an in-flight import: filename + inline progress. The
  * pixels arrive when the finished photo replaces this tile, so the preview
