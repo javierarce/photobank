@@ -1,6 +1,10 @@
-import { Link } from "react-router-dom";
-import { SearchBar } from "@/components/search-bar";
+import { NavLink } from "react-router-dom";
 import { UpdateBadge } from "@/components/update-badge";
+
+const linkClass = ({ isActive }: { isActive: boolean }) =>
+  `text-sm font-medium transition-colors ${
+    isActive ? "text-foreground" : "text-foreground/50 hover:text-foreground"
+  }`;
 
 export function Header() {
   return (
@@ -14,23 +18,20 @@ export function Header() {
         data-tauri-drag-region
         className="mx-auto flex max-w-[1600px] items-center gap-6 py-4 pl-24 pr-6"
       >
-        <Link
-          to="/"
-          className="text-lg font-semibold tracking-tight text-foreground"
-        >
-          Photobank
-        </Link>
-        <div className="flex-1">
-          <SearchBar />
-        </div>
+        <nav className="flex items-center gap-5">
+          {/* `end` so Folders only lights up on "/", not on nested routes. */}
+          <NavLink to="/" end className={linkClass}>
+            Folders
+          </NavLink>
+          <NavLink to="/tags" className={linkClass}>
+            Tags
+          </NavLink>
+        </nav>
+        <div className="flex-1" />
         <UpdateBadge />
-        <Link
-          to="/settings"
-          aria-label="Settings"
-          className="text-sm font-medium text-foreground/50 transition-colors hover:text-foreground"
-        >
+        <NavLink to="/settings" aria-label="Settings" className={linkClass}>
           Settings
-        </Link>
+        </NavLink>
       </div>
     </header>
   );

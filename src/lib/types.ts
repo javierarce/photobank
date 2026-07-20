@@ -36,6 +36,13 @@ export type Tag = {
   name: string;
 };
 
+/** A tag plus how many photos carry it — drives the Tags management page. */
+export type TagCount = {
+  id: string;
+  name: string;
+  count: number;
+};
+
 export type FolderCount = {
   folder: string;
   count: number;

@@ -12,6 +12,7 @@ import HomePage from "@/routes/home";
 import FolderPage from "@/routes/folder";
 import SearchPage from "@/routes/search";
 import SettingsPage from "@/routes/settings";
+import TagsPage from "@/routes/tags";
 
 export default function App() {
   const navigate = useNavigate();
@@ -43,6 +44,7 @@ export default function App() {
           <Routes>
             <Route path="/" element={<HomePage />} />
             <Route path="/folders/:folder" element={<FolderPage />} />
+            <Route path="/tags" element={<TagsPage />} />
             <Route path="/search" element={<SearchPage />} />
             <Route path="/settings" element={<SettingsPage />} />
           </Routes>

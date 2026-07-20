@@ -1,4 +1,5 @@
 import { FolderList } from "@/components/folder-list";
+import { SearchBar } from "@/components/search-bar";
 
 export default function HomePage() {
   return (
@@ -8,6 +9,9 @@ export default function HomePage() {
           <h2 className="mb-4 text-lg font-semibold text-foreground">
             Folders
           </h2>
+          <div className="mb-6">
+            <SearchBar />
+          </div>
           <FolderList />
         </section>
       </main>

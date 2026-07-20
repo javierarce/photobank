@@ -9,7 +9,7 @@ import {
 import { MemoryRouter } from "react-router-dom";
 import { CommandPalette } from "@/components/command-palette";
 import { ThemeProvider } from "@/lib/theme";
-import { listFolders } from "@/lib/api";
+import { listFolders, listTagCounts } from "@/lib/api";
 
 const mockNavigate = vi.fn();
 
@@ -20,9 +20,11 @@ vi.mock("react-router-dom", async (importOriginal) => {
 
 vi.mock("@/lib/api", () => ({
   listFolders: vi.fn(),
+  listTagCounts: vi.fn(),
 }));
 
 const mockListFolders = vi.mocked(listFolders);
+const mockListTagCounts = vi.mocked(listTagCounts);
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -31,6 +33,10 @@ beforeEach(() => {
   mockListFolders.mockResolvedValue([
     { folder: "vacation", count: 12 },
     { folder: "barcelona", count: 1 },
+  ]);
+  mockListTagCounts.mockResolvedValue([
+    { id: "t1", name: "portrait", count: 5 },
+    { id: "t2", name: "landscape", count: 2 },
   ]);
 });
 
@@ -97,6 +103,22 @@ describe("CommandPalette", () => {
     expect(screen.queryByText("vacation")).not.toBeInTheDocument();
   });
 
+  it("lists tags and navigates to a tag's photos on Enter", async () => {
+    renderPalette();
+    pressCmdK();
+    await waitFor(() =>
+      expect(screen.getByText("portrait")).toBeInTheDocument()
+    );
+
+    // Narrow to the tag, then step past the always-on Search action to it.
+    fireEvent.change(getInput(), { target: { value: "portrait" } });
+    fireEvent.keyDown(getInput(), { key: "ArrowDown" });
+    fireEvent.keyDown(getInput(), { key: "Enter" });
+
+    // Goes to the search page with a typed tag query the user can refine.
+    expect(mockNavigate).toHaveBeenCalledWith("/search?q=tag%3Aportrait");
+  });
+
   it("navigates to a folder on Enter", async () => {
     renderPalette();
     pressCmdK();
@@ -104,10 +126,21 @@ describe("CommandPalette", () => {
 
     // Move past the actions to the first folder, then activate.
     const input = getInput();
-    for (let i = 0; i < 5; i++) fireEvent.keyDown(input, { key: "ArrowDown" });
+    for (let i = 0; i < 6; i++) fireEvent.keyDown(input, { key: "ArrowDown" });
     fireEvent.keyDown(input, { key: "Enter" });
 
     expect(mockNavigate).toHaveBeenCalledWith("/folders/vacation");
+  });
+
+  it("opens the Tags page from the Tags action", async () => {
+    renderPalette();
+    pressCmdK();
+
+    // "tags" selects the Tags action (it sorts ahead of the always-on Search).
+    fireEvent.change(getInput(), { target: { value: "tags" } });
+    fireEvent.keyDown(getInput(), { key: "Enter" });
+
+    expect(mockNavigate).toHaveBeenCalledWith("/tags");
   });
 
   it("runs a search for the typed text via the Search action", async () => {

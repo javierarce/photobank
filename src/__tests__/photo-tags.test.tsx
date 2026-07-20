@@ -66,7 +66,7 @@ describe("PhotoTags", () => {
       expect(screen.getByText("Landscape")).toBeInTheDocument();
     });
 
-    const input = screen.getByPlaceholderText("Add tag...");
+    const input = screen.getByRole("textbox");
     fireEvent.change(input, { target: { value: "NewTag" } });
     fireEvent.keyDown(input, { key: "Enter" });
 
@@ -99,7 +99,7 @@ describe("PhotoTags", () => {
       expect(screen.getByText("Landscape")).toBeInTheDocument();
     });
 
-    const input = screen.getByPlaceholderText("Add tag...");
+    const input = screen.getByRole("textbox");
     fireEvent.focus(input);
     fireEvent.change(input, { target: { value: "Por" } });
 
@@ -118,7 +118,7 @@ describe("PhotoTags", () => {
       expect(screen.getByText("Landscape")).toBeInTheDocument();
     });
 
-    const input = screen.getByPlaceholderText("Add tag...") as HTMLInputElement;
+    const input = screen.getByRole("textbox") as HTMLInputElement;
     fireEvent.change(input, { target: { value: "NewTag" } });
     fireEvent.keyDown(input, { key: "Enter" });
 

@@ -54,6 +54,14 @@ pub struct Tag {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub struct TagCount {
+    pub id: String,
+    pub name: String,
+    /// How many photos carry this tag.
+    pub count: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct FolderCount {
     pub folder: String,
     pub count: i64,

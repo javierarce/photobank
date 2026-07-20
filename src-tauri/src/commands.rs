@@ -1,9 +1,12 @@
+use std::collections::HashMap;
+
 use rusqlite::params;
 use rusqlite::types::Value;
+use rusqlite::{Connection, OptionalExtension};
 use tauri::State;
 use uuid::Uuid;
 
-use crate::db::{self, Db, FolderCount, Photo, SearchFacets, Tag, PHOTO_COLUMNS};
+use crate::db::{self, Db, FolderCount, Photo, SearchFacets, Tag, TagCount, PHOTO_COLUMNS};
 use crate::error::{Error, Result};
 
 #[tauri::command]
@@ -512,6 +515,251 @@ pub fn remove_photo_tag(
     Ok(())
 }
 
+// --- Bulk (multi-photo) tagging ---------------------------------------------
+//
+// The Ankitron-style bulk tag editor works on many photos at once: it needs
+// each selected photo's current tags to build the "X of N" usage checklist,
+// then applies a mix of add/remove operations across the whole selection.
+
+/// The current tags of each of `photo_ids`, keyed by photo id. Photos with no
+/// tags are still present with an empty list, so the caller can rely on every
+/// requested id being a key.
+fn tags_for_photos(
+    conn: &Connection,
+    photo_ids: &[String],
+) -> rusqlite::Result<HashMap<String, Vec<Tag>>> {
+    let mut stmt = conn.prepare(
+        "SELECT tags.id, tags.name FROM photo_tags \
+         INNER JOIN tags ON tags.id = photo_tags.tag_id \
+         WHERE photo_tags.photo_id = ?1 ORDER BY tags.name",
+    )?;
+    let mut map = HashMap::with_capacity(photo_ids.len());
+    for id in photo_ids {
+        let tags = stmt
+            .query_map(params![id], |row| {
+                Ok(Tag {
+                    id: row.get(0)?,
+                    name: row.get(1)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        map.insert(id.clone(), tags);
+    }
+    Ok(map)
+}
+
+/// Add each named tag (creating it if new) to every listed photo. Blank names
+/// are skipped; an INSERT OR IGNORE makes re-tagging a photo that already has
+/// the tag a no-op, so callers don't need to pre-filter.
+fn add_tags(conn: &Connection, photo_ids: &[String], names: &[String]) -> rusqlite::Result<()> {
+    for name in names {
+        let name = name.trim();
+        if name.is_empty() {
+            continue;
+        }
+        conn.execute(
+            "INSERT OR IGNORE INTO tags (id, name, created_at) VALUES (?1, ?2, ?3)",
+            params![Uuid::new_v4().to_string(), name, db::now()],
+        )?;
+        let tag_id: String =
+            conn.query_row("SELECT id FROM tags WHERE name = ?1", params![name], |row| {
+                row.get(0)
+            })?;
+        for photo_id in photo_ids {
+            conn.execute(
+                "INSERT OR IGNORE INTO photo_tags (photo_id, tag_id) VALUES (?1, ?2)",
+                params![photo_id, tag_id],
+            )?;
+        }
+    }
+    Ok(())
+}
+
+/// Strip each named tag from every listed photo. A name that isn't a known tag,
+/// or a photo that doesn't carry it, is silently skipped. The tag row itself is
+/// left in place even if it ends up on no photos (matching single-photo remove).
+fn remove_tags(conn: &Connection, photo_ids: &[String], names: &[String]) -> rusqlite::Result<()> {
+    for name in names {
+        let name = name.trim();
+        if name.is_empty() {
+            continue;
+        }
+        let tag_id: Option<String> = conn
+            .query_row("SELECT id FROM tags WHERE name = ?1", params![name], |row| {
+                row.get(0)
+            })
+            .optional()?;
+        let Some(tag_id) = tag_id else { continue };
+        for photo_id in photo_ids {
+            conn.execute(
+                "DELETE FROM photo_tags WHERE photo_id = ?1 AND tag_id = ?2",
+                params![photo_id, tag_id],
+            )?;
+        }
+    }
+    Ok(())
+}
+
+/// The tags currently on each of the given photos — the source for the bulk
+/// editor's usage checklist. Keyed by photo id.
+#[tauri::command]
+pub fn get_tags_for_photos(
+    db: State<Db>,
+    photo_ids: Vec<String>,
+) -> Result<HashMap<String, Vec<Tag>>> {
+    let conn = db.0.lock().unwrap();
+    Ok(tags_for_photos(&conn, &photo_ids)?)
+}
+
+/// Add every named tag to every listed photo in one shot (creating tags as
+/// needed). No-op when either list is empty.
+#[tauri::command]
+pub fn add_tags_to_photos(
+    app: tauri::AppHandle,
+    db: State<Db>,
+    photo_ids: Vec<String>,
+    names: Vec<String>,
+) -> Result<()> {
+    if photo_ids.is_empty() || names.is_empty() {
+        return Ok(());
+    }
+    {
+        let conn = db.0.lock().unwrap();
+        add_tags(&conn, &photo_ids, &names)?;
+    }
+    crate::manifest::schedule_upload(&app);
+    Ok(())
+}
+
+/// Remove every named tag from every listed photo in one shot. No-op when
+/// either list is empty.
+#[tauri::command]
+pub fn remove_tags_from_photos(
+    app: tauri::AppHandle,
+    db: State<Db>,
+    photo_ids: Vec<String>,
+    names: Vec<String>,
+) -> Result<()> {
+    if photo_ids.is_empty() || names.is_empty() {
+        return Ok(());
+    }
+    {
+        let conn = db.0.lock().unwrap();
+        remove_tags(&conn, &photo_ids, &names)?;
+    }
+    crate::manifest::schedule_upload(&app);
+    Ok(())
+}
+
+// --- Tag management (the Tags page) -----------------------------------------
+
+/// Every tag with a count of the photos that carry it, name-sorted. Tags with
+/// no photos are included (count 0), so a tag left empty by an edit still shows.
+fn tag_counts(conn: &Connection) -> rusqlite::Result<Vec<TagCount>> {
+    let mut stmt = conn.prepare(
+        "SELECT tags.id, tags.name, COUNT(photo_tags.photo_id) \
+         FROM tags LEFT JOIN photo_tags ON photo_tags.tag_id = tags.id \
+         GROUP BY tags.id, tags.name ORDER BY tags.name",
+    )?;
+    let counts = stmt
+        .query_map([], |row| {
+            Ok(TagCount {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                count: row.get(2)?,
+            })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(counts)
+}
+
+/// Rename a tag. If another tag already has the target name, the two are merged:
+/// this tag's photo links move onto that one (deduped) and this tag row is
+/// deleted, so names stay unique. Returns the surviving tag.
+fn rename_tag_inner(conn: &Connection, id: &str, name: &str) -> rusqlite::Result<Tag> {
+    let existing: Option<String> = conn
+        .query_row("SELECT id FROM tags WHERE name = ?1", params![name], |row| {
+            row.get(0)
+        })
+        .optional()?;
+    match existing {
+        // A different tag owns the name: merge this one into it.
+        Some(target) if target != id => {
+            conn.execute(
+                "INSERT OR IGNORE INTO photo_tags (photo_id, tag_id) \
+                 SELECT photo_id, ?1 FROM photo_tags WHERE tag_id = ?2",
+                params![target, id],
+            )?;
+            conn.execute("DELETE FROM tags WHERE id = ?1", params![id])?;
+            conn.query_row(
+                "SELECT id, name FROM tags WHERE id = ?1",
+                params![target],
+                |row| {
+                    Ok(Tag {
+                        id: row.get(0)?,
+                        name: row.get(1)?,
+                    })
+                },
+            )
+        }
+        // Name is free (or already this tag's): a plain rename.
+        _ => {
+            conn.execute(
+                "UPDATE tags SET name = ?1 WHERE id = ?2",
+                params![name, id],
+            )?;
+            conn.query_row("SELECT id, name FROM tags WHERE id = ?1", params![id], |row| {
+                Ok(Tag {
+                    id: row.get(0)?,
+                    name: row.get(1)?,
+                })
+            })
+        }
+    }
+}
+
+/// Every tag with its photo count — the source for the Tags page.
+#[tauri::command]
+pub fn list_tag_counts(db: State<Db>) -> Result<Vec<TagCount>> {
+    let conn = db.0.lock().unwrap();
+    Ok(tag_counts(&conn)?)
+}
+
+/// Rename a tag, merging into an existing tag of the same name if there is one.
+/// Resolves with the surviving tag.
+#[tauri::command]
+pub fn rename_tag(
+    app: tauri::AppHandle,
+    db: State<Db>,
+    id: String,
+    name: String,
+) -> Result<Tag> {
+    let name = name.trim().to_string();
+    if name.is_empty() {
+        return Err(Error::msg("name is required"));
+    }
+    let tag = {
+        let conn = db.0.lock().unwrap();
+        rename_tag_inner(&conn, &id, &name).map_err(|e| match e {
+            rusqlite::Error::QueryReturnedNoRows => Error::msg("Tag not found"),
+            other => Error::from(other),
+        })?
+    };
+    crate::manifest::schedule_upload(&app);
+    Ok(tag)
+}
+
+/// Delete a tag everywhere. Its photo links cascade away; the photos stay.
+#[tauri::command]
+pub fn delete_tag(app: tauri::AppHandle, db: State<Db>, id: String) -> Result<()> {
+    {
+        let conn = db.0.lock().unwrap();
+        conn.execute("DELETE FROM tags WHERE id = ?1", params![id])?;
+    }
+    crate::manifest::schedule_upload(&app);
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn update_photo(
     app: tauri::AppHandle,
@@ -570,8 +818,11 @@ pub async fn export_photos(
 
 #[cfg(test)]
 mod tests {
-    use super::{build_query, like_pattern, split_terms};
-    use crate::db::{open_in_memory, now, PHOTO_COLUMNS};
+    use super::{
+        add_tags, build_query, like_pattern, remove_tags, rename_tag_inner, split_terms,
+        tag_counts, tags_for_photos,
+    };
+    use crate::db::{self, now, open_in_memory, PHOTO_COLUMNS};
     use rusqlite::{params, Connection};
 
     #[test]
@@ -581,6 +832,8 @@ mod tests {
         assert_eq!(like_pattern("back\\slash"), "%back\\\\slash%");
         assert_eq!(like_pattern("plain"), "%plain%");
     }
+
+    // --- Type-based search (build_query / facets) ---
 
     #[test]
     fn split_terms_honors_quotes_and_negation() {
@@ -774,5 +1027,193 @@ mod tests {
         assert_eq!(search(&conn, r#"make:"leica m""#), vec!["a"]);
         // Unknown qualifier degrades to a free-text match on the whole term.
         assert!(search(&conn, "bogus:xyz").is_empty());
+    }
+
+    // --- Bulk tagging + tag management (Ankitron tag system) ---
+
+    fn insert_photo(conn: &Connection, id: &str) {
+        conn.execute(
+            "INSERT INTO photos (id, filename, s3_key, folder, created_at, updated_at)
+             VALUES (?1, ?2, ?3, 'inbox', ?4, ?4)",
+            params![id, format!("{id}.jpg"), format!("inbox/{id}.jpg"), db::now()],
+        )
+        .unwrap();
+    }
+
+    fn tag_names(conn: &Connection, photo_id: &str) -> Vec<String> {
+        tags_for_photos(conn, &[photo_id.to_string()])
+            .unwrap()
+            .remove(photo_id)
+            .unwrap()
+            .into_iter()
+            .map(|t| t.name)
+            .collect()
+    }
+
+    #[test]
+    fn add_tags_creates_tags_and_applies_to_every_photo() {
+        let conn = open_in_memory();
+        insert_photo(&conn, "p1");
+        insert_photo(&conn, "p2");
+
+        add_tags(
+            &conn,
+            &["p1".into(), "p2".into()],
+            &["sunset".into(), "beach".into()],
+        )
+        .unwrap();
+
+        assert_eq!(tag_names(&conn, "p1"), vec!["beach", "sunset"]);
+        assert_eq!(tag_names(&conn, "p2"), vec!["beach", "sunset"]);
+        // The tag is created once and shared, not duplicated per photo.
+        let tag_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM tags", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(tag_count, 2);
+    }
+
+    #[test]
+    fn add_tags_is_idempotent_and_skips_blank_names() {
+        let conn = open_in_memory();
+        insert_photo(&conn, "p1");
+
+        add_tags(&conn, &["p1".into()], &["sunset".into()]).unwrap();
+        // Re-adding the same tag, plus a blank name, changes nothing.
+        add_tags(&conn, &["p1".into()], &["sunset".into(), "  ".into()]).unwrap();
+
+        assert_eq!(tag_names(&conn, "p1"), vec!["sunset"]);
+        let links: i64 = conn
+            .query_row("SELECT COUNT(*) FROM photo_tags", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(links, 1);
+    }
+
+    #[test]
+    fn remove_tags_strips_only_the_named_tags_from_the_listed_photos() {
+        let conn = open_in_memory();
+        insert_photo(&conn, "p1");
+        insert_photo(&conn, "p2");
+        add_tags(
+            &conn,
+            &["p1".into(), "p2".into()],
+            &["sunset".into(), "beach".into()],
+        )
+        .unwrap();
+
+        // Remove "sunset" from p1 only; p2 and the "beach" tag stay put.
+        remove_tags(&conn, &["p1".into()], &["sunset".into()]).unwrap();
+
+        assert_eq!(tag_names(&conn, "p1"), vec!["beach"]);
+        assert_eq!(tag_names(&conn, "p2"), vec!["beach", "sunset"]);
+    }
+
+    #[test]
+    fn remove_tags_ignores_unknown_names() {
+        let conn = open_in_memory();
+        insert_photo(&conn, "p1");
+        add_tags(&conn, &["p1".into()], &["sunset".into()]).unwrap();
+
+        // "nope" was never a tag; removing it is a no-op, not an error.
+        remove_tags(&conn, &["p1".into()], &["nope".into()]).unwrap();
+
+        assert_eq!(tag_names(&conn, "p1"), vec!["sunset"]);
+    }
+
+    #[test]
+    fn tags_for_photos_includes_untagged_photos_as_empty() {
+        let conn = open_in_memory();
+        insert_photo(&conn, "p1");
+        insert_photo(&conn, "p2");
+        add_tags(&conn, &["p1".into()], &["sunset".into()]).unwrap();
+
+        let map = tags_for_photos(&conn, &["p1".into(), "p2".into()]).unwrap();
+        assert_eq!(map.get("p1").unwrap().len(), 1);
+        assert!(map.get("p2").unwrap().is_empty());
+    }
+
+    fn tag_id(conn: &Connection, name: &str) -> String {
+        conn.query_row("SELECT id FROM tags WHERE name = ?1", params![name], |r| {
+            r.get(0)
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn tag_counts_reports_photo_counts_including_empty_tags() {
+        let conn = open_in_memory();
+        insert_photo(&conn, "p1");
+        insert_photo(&conn, "p2");
+        add_tags(&conn, &["p1".into(), "p2".into()], &["beach".into()]).unwrap();
+        add_tags(&conn, &["p1".into()], &["sunset".into()]).unwrap();
+        // Strip sunset back off so its tag row survives with no photos.
+        remove_tags(&conn, &["p1".into()], &["sunset".into()]).unwrap();
+
+        let counts = tag_counts(&conn).unwrap();
+        // Name-sorted: beach (2), sunset (0).
+        assert_eq!(counts.len(), 2);
+        assert_eq!(counts[0].name, "beach");
+        assert_eq!(counts[0].count, 2);
+        assert_eq!(counts[1].name, "sunset");
+        assert_eq!(counts[1].count, 0);
+    }
+
+    #[test]
+    fn rename_tag_changes_the_name_in_place() {
+        let conn = open_in_memory();
+        insert_photo(&conn, "p1");
+        add_tags(&conn, &["p1".into()], &["beech".into()]).unwrap();
+        let id = tag_id(&conn, "beech");
+
+        let tag = rename_tag_inner(&conn, &id, "beach").unwrap();
+        assert_eq!(tag.id, id);
+        assert_eq!(tag.name, "beach");
+        assert_eq!(tag_names(&conn, "p1"), vec!["beach"]);
+    }
+
+    #[test]
+    fn renaming_onto_an_existing_tag_merges_them() {
+        let conn = open_in_memory();
+        insert_photo(&conn, "p1");
+        insert_photo(&conn, "p2");
+        // p1 has both tags; p2 has only "shore".
+        add_tags(&conn, &["p1".into()], &["beach".into(), "shore".into()]).unwrap();
+        add_tags(&conn, &["p2".into()], &["shore".into()]).unwrap();
+        let shore = tag_id(&conn, "shore");
+        let beach = tag_id(&conn, "beach");
+
+        // Rename "shore" -> "beach": the two collapse into one tag.
+        let survivor = rename_tag_inner(&conn, &shore, "beach").unwrap();
+        assert_eq!(survivor.id, beach, "the existing tag survives the merge");
+
+        // "shore" is gone; p1 keeps a single "beach" link (deduped); p2 now
+        // carries "beach".
+        let tags: i64 = conn
+            .query_row("SELECT COUNT(*) FROM tags", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(tags, 1);
+        assert_eq!(tag_names(&conn, "p1"), vec!["beach"]);
+        assert_eq!(tag_names(&conn, "p2"), vec!["beach"]);
+    }
+
+    #[test]
+    fn deleting_a_tag_unlinks_it_from_photos() {
+        let conn = open_in_memory();
+        insert_photo(&conn, "p1");
+        add_tags(&conn, &["p1".into()], &["beach".into(), "sunset".into()]).unwrap();
+        let beach = tag_id(&conn, "beach");
+
+        conn.execute("DELETE FROM tags WHERE id = ?1", params![beach])
+            .unwrap();
+
+        // The photo remains, minus the deleted tag; the link cascaded away.
+        assert_eq!(tag_names(&conn, "p1"), vec!["sunset"]);
+        let links: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM photo_tags WHERE tag_id = ?1",
+                params![beach],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(links, 0);
     }
 }
