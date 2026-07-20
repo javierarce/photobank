@@ -59,6 +59,17 @@ pub struct FolderCount {
     pub count: i64,
 }
 
+/// Distinct EXIF values for search autocomplete. Tags and folders already have
+/// their own list commands; these are the camera/lens facets. Only reflects
+/// photos whose metadata has been loaded (see the lazy-metadata note).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchFacets {
+    pub makes: Vec<String>,
+    pub models: Vec<String>,
+    pub lenses: Vec<String>,
+}
+
 /// Column list matching `photo_from_row`. Keep the two in sync.
 pub const PHOTO_COLUMNS: &str = "id, filename, s3_key, folder, mime_type, file_size, \
     width, height, processing_status, camera_make, camera_model, lens, focal_length, \

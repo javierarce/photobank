@@ -74,6 +74,7 @@ fn main() {
             commands::list_photos,
             commands::search_photos,
             commands::list_tags,
+            commands::list_search_facets,
             commands::get_photo_tags,
             commands::add_photo_tag,
             commands::remove_photo_tag,

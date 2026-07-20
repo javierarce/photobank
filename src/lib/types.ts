@@ -40,3 +40,10 @@ export type FolderCount = {
   folder: string;
   count: number;
 };
+
+/** Distinct EXIF values for search autocomplete (mirrors Rust `SearchFacets`). */
+export type SearchFacets = {
+  makes: string[];
+  models: string[];
+  lenses: string[];
+};
