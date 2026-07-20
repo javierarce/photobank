@@ -49,12 +49,17 @@ export function variantBase(s3Key: string) {
 
 /**
  * The filename to show a user. Legacy web-pipeline originals are stored as
- * "<base>_original.<ext>"; the marker is an internal detail of the old variant
- * scheme, so hide it from anything the user reads. The extension is preserved.
- * Mirrors the suffix `variantBase` strips for key derivation.
+ * "<base>_original.<ext>", and photos whose original was lost are cataloged
+ * under their largest variant, "<base>_<width>.<ext>". Both markers are
+ * internal details of the old variant scheme, so hide them from anything the
+ * user reads. The extension is preserved.
+ *
+ * Display-label only — key derivation (`variantBase`) must NOT strip widths.
+ * A real camera file named DSC_1280.jpg will read as "DSC.jpg" here; that's
+ * an accepted cosmetic trade-off, its stored key stays untouched.
  */
 export function displayName(filename: string) {
-  return filename.replace(/_original(\.[^.]+)?$/, "$1");
+  return filename.replace(/_(?:original|128|640|1280|2880)(\.[^.]+)?$/, "$1");
 }
 
 /** "folder/photo.jpg" -> "folder/photo_640.webp" */
