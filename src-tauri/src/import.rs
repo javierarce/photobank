@@ -13,7 +13,7 @@ use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::Semaphore;
 
 use crate::db::{self, Db, Photo, PHOTO_COLUMNS};
-use crate::error::{Error, Result};
+use crate::error::{friendly_s3_error, Error, Result};
 use crate::keys::{sanitize_filename, sanitize_folder};
 use crate::pipeline::{self, ProcessedImage};
 use crate::settings::S3State;
@@ -444,12 +444,10 @@ pub(crate) async fn put_object(
     if immutable {
         request = request.cache_control("public, max-age=31536000");
     }
-    request.send().await.map_err(|e| {
-        Error::msg(format!(
-            "upload of {key} failed: {}",
-            aws_smithy_types::error::display::DisplayErrorContext(&e)
-        ))
-    })?;
+    request
+        .send()
+        .await
+        .map_err(|e| Error::msg(format!("upload of {key} failed: {}", friendly_s3_error(&e))))?;
     Ok(())
 }
 
