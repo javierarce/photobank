@@ -1,9 +1,20 @@
 import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
-import { render, screen, cleanup, waitFor } from "@testing-library/react";
+import {
+  render,
+  screen,
+  cleanup,
+  waitFor,
+  fireEvent,
+} from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { SelectionProvider } from "@/hooks/selection-provider";
 import { SearchResults } from "@/components/search-results";
-import { searchPhotos } from "@/lib/api";
+import {
+  searchPhotos,
+  getTagsForPhotos,
+  listTags,
+  removeTagsFromPhotos,
+} from "@/lib/api";
 import type { Photo } from "@/lib/types";
 import { makePhoto } from "./fixtures";
 
@@ -12,6 +23,10 @@ vi.mock("@/lib/api", () => ({
   exportPhotos: vi.fn(),
   deletePhoto: vi.fn(),
   updatePhoto: vi.fn(),
+  getTagsForPhotos: vi.fn(),
+  listTags: vi.fn(),
+  addTagsToPhotos: vi.fn(),
+  removeTagsFromPhotos: vi.fn(),
 }));
 
 vi.mock("@/components/photo-lightbox", () => ({
@@ -151,5 +166,34 @@ describe("SearchResults", () => {
     expect(
       screen.queryByText(/metadata filters only match photos/i)
     ).not.toBeInTheDocument();
+  });
+
+  it("re-runs the search after a bulk tag edit so unmatching photos drop out", async () => {
+    vi.mocked(listTags).mockResolvedValue([{ id: "t1", name: "sunset" }]);
+    vi.mocked(getTagsForPhotos).mockResolvedValue({
+      "1": [{ id: "t1", name: "sunset" }],
+      "2": [{ id: "t1", name: "sunset" }],
+    });
+    vi.mocked(removeTagsFromPhotos).mockResolvedValue(undefined);
+    // First load matches both; after removing the tag the query matches none.
+    mockSearchPhotos
+      .mockResolvedValueOnce(mockPhotos)
+      .mockResolvedValueOnce([]);
+
+    renderSearch({ q: "tag:sunset" });
+    await screen.findByText("beach.jpg");
+
+    // Select everything, then open the bulk tag editor (Cmd+A, then T).
+    fireEvent.keyDown(document.body, { key: "a", metaKey: true });
+    fireEvent.keyDown(document.body, { key: "t" });
+
+    // Uncheck the fully-applied "sunset" to remove it, then Apply.
+    fireEvent.click(await screen.findByRole("checkbox"));
+    fireEvent.click(screen.getByRole("button", { name: "Apply" }));
+
+    await waitFor(() => expect(removeTagsFromPhotos).toHaveBeenCalled());
+    // The search re-runs and the now-unmatching photos are gone.
+    await waitFor(() => expect(mockSearchPhotos).toHaveBeenCalledTimes(2));
+    expect(await screen.findByText("No results found.")).toBeInTheDocument();
   });
 });

@@ -1,5 +1,11 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { FolderCount, Photo, SearchFacets, Tag } from "@/lib/types";
+import type {
+  FolderCount,
+  Photo,
+  SearchFacets,
+  Tag,
+  TagCount,
+} from "@/lib/types";
 
 /**
  * Thin typed layer over the Tauri commands implemented in
@@ -45,6 +51,46 @@ export function addPhotoTag(photoId: string, name: string): Promise<Tag> {
 
 export function removePhotoTag(photoId: string, tagId: string): Promise<void> {
   return invoke("remove_photo_tag", { photoId, tagId });
+}
+
+/** Each photo's current tags, keyed by photo id — the source for the bulk tag
+ * editor's usage checklist. Every requested id is present, empty if untagged. */
+export function getTagsForPhotos(
+  photoIds: string[]
+): Promise<Record<string, Tag[]>> {
+  return invoke("get_tags_for_photos", { photoIds });
+}
+
+/** Add every named tag (creating any that are new) to every listed photo. */
+export function addTagsToPhotos(
+  photoIds: string[],
+  names: string[]
+): Promise<void> {
+  return invoke("add_tags_to_photos", { photoIds, names });
+}
+
+/** Remove every named tag from every listed photo. */
+export function removeTagsFromPhotos(
+  photoIds: string[],
+  names: string[]
+): Promise<void> {
+  return invoke("remove_tags_from_photos", { photoIds, names });
+}
+
+/** Every tag with its photo count, name-sorted — the Tags page source. */
+export function listTagCounts(): Promise<TagCount[]> {
+  return invoke("list_tag_counts");
+}
+
+/** Rename a tag. If the new name is already taken, the two tags merge into one.
+ * Resolves with the surviving tag. */
+export function renameTag(id: string, name: string): Promise<Tag> {
+  return invoke("rename_tag", { id, name });
+}
+
+/** Delete a tag everywhere; the photos it was on keep all their other tags. */
+export function deleteTag(id: string): Promise<void> {
+  return invoke("delete_tag", { id });
 }
 
 /** Move (new folder) and/or rename (new filename) a photo. */

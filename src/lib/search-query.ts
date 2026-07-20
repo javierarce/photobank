@@ -247,6 +247,13 @@ function quoteIfNeeded(value: string): string {
   return /\s/.test(value) ? `"${value}"` : value;
 }
 
+/** A `tag:<name>` query token for navigating to a tag's photos, quoting names
+ * with whitespace so the parser keeps them as a single value. Lets the search
+ * bar show the typed form (`tag:sunset`) the user can then refine. */
+export function tagQuery(name: string): string {
+  return `tag:${quoteIfNeeded(name)}`;
+}
+
 export type Suggestion = {
   /** What replaces the active span when chosen. */
   insert: string;
