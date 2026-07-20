@@ -163,6 +163,75 @@ describe("PhotoGrid", () => {
     expect(img).toHaveAttribute("src", "photo://localhost/vacation/beach.jpg");
   });
 
+  it("keeps the image hidden until it loads so no broken glyph shows", async () => {
+    mockListPhotos.mockResolvedValueOnce([mockPhotos[0]]);
+
+    render(<PhotoGrid folder="vacation" />);
+
+    const img = await screen.findByAltText("beach.jpg");
+    // Before it loads — or if it never loads — the picture is invisible and
+    // the on-brand placeholder shows in its place, so a missing/slow/broken
+    // image never surfaces the browser's broken glyph.
+    expect(img).toHaveClass("opacity-0");
+    expect(screen.getByTestId("thumbnail-fallback")).toBeInTheDocument();
+
+    // Once it actually loads, the picture fades in over the placeholder.
+    fireEvent.load(img);
+    expect(img).toHaveClass("opacity-100");
+    expect(screen.queryByTestId("thumbnail-fallback")).not.toBeInTheDocument();
+  });
+
+  it("stays on the placeholder when both the variant and original are missing", async () => {
+    mockListPhotos.mockResolvedValueOnce([mockPhotos[0]]);
+
+    render(<PhotoGrid folder="vacation" />);
+
+    const img = await screen.findByAltText("beach.jpg");
+    // Variant 404s → fall back to the original.
+    fireEvent.error(img);
+    expect(img).toHaveAttribute("src", "photo://localhost/vacation/beach.jpg");
+
+    // The original 404s too — the image never loads, so it stays hidden and
+    // the quiet placeholder remains rather than a broken-image glyph.
+    fireEvent.error(img);
+    expect(img).toHaveClass("opacity-0");
+    expect(screen.getByTestId("thumbnail-fallback")).toBeInTheDocument();
+  });
+
+  it("remounts a loaded thumbnail when a refresh bumps updated_at", async () => {
+    mockListPhotos.mockResolvedValueOnce([mockPhotos[0]]);
+
+    render(<PhotoGrid folder="vacation" />);
+    const img = await screen.findByAltText("beach.jpg");
+    // The 640px variant loaded fine — no fallback, so src never changed.
+    fireEvent.load(img);
+    expect(img).toHaveClass("opacity-100");
+
+    // A refresh regenerates variants under the same key and bumps updated_at.
+    // The src is identical, so a real browser won't re-fire onLoad on the same
+    // element; the tile must remount (new node) to reload, or the placeholder
+    // would be stranded over a perfectly good thumbnail. Assert the remount
+    // rather than firing load — jsdom re-fires onLoad on demand and so can't
+    // reproduce the stranding on its own.
+    mockListPhotos.mockResolvedValueOnce([
+      { ...mockPhotos[0], updatedAt: "2026-07-18T00:00:00Z" },
+    ]);
+    await act(async () => {
+      hoisted.refreshListener?.({
+        payload: { total: 1, done: 1, failed: 0, status: "done" },
+      });
+    });
+
+    // A fresh img element (keyed on the marker) replaces the old one and starts
+    // hidden until it reloads — proving it can re-fire onLoad on the same src.
+    const refreshed = await screen.findByAltText("beach.jpg");
+    expect(refreshed).not.toBe(img);
+    expect(refreshed).toHaveClass("opacity-0");
+    fireEvent.load(refreshed);
+    expect(refreshed).toHaveClass("opacity-100");
+    expect(screen.queryByTestId("thumbnail-fallback")).not.toBeInTheDocument();
+  });
+
   it("retries the variant after a refresh touches a fallen-back photo", async () => {
     mockListPhotos.mockResolvedValueOnce([mockPhotos[0]]);
 
