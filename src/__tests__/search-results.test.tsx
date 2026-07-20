@@ -127,4 +127,29 @@ describe("SearchResults", () => {
       });
     });
   });
+
+  it("warns that metadata filters need loaded info", async () => {
+    mockSearchPhotos.mockResolvedValueOnce([mockPhotos[1]]);
+
+    renderSearch({ q: "iso:>=800" });
+
+    await waitFor(() => {
+      expect(
+        screen.getByText(/metadata filters only match photos/i)
+      ).toBeInTheDocument();
+    });
+  });
+
+  it("omits the metadata caveat for non-EXIF queries", async () => {
+    mockSearchPhotos.mockResolvedValueOnce([mockPhotos[0]]);
+
+    renderSearch({ q: "beach" });
+
+    await waitFor(() => {
+      expect(screen.getByText("beach.jpg")).toBeInTheDocument();
+    });
+    expect(
+      screen.queryByText(/metadata filters only match photos/i)
+    ).not.toBeInTheDocument();
+  });
 });

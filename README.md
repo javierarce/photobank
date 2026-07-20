@@ -27,6 +27,39 @@ your bucket directly.
   is stored in an owner-only (0600) file alongside the catalog. Works with AWS
   S3, Cloudflare R2, MinIO, and anything else S3-compatible.
 
+## Search
+
+The search box takes typed filters in the form `field:value`, alongside plain
+free text. Multiple terms are ANDed together, so `folder:trips camera:fuji`
+matches Fuji photos in the `trips` folder. Free text (e.g. `barcelona`) matches
+filenames, folders, camera, lens, and tags at once.
+
+| Filter | Matches | Example |
+| --- | --- | --- |
+| `tag:` | Has a tag (`tag:none` = untagged) | `tag:sunset` |
+| `folder:` | In a folder | `folder:trips` |
+| `filename:` / `name:` | Filename contains | `filename:beach` |
+| `camera:` | Camera make or model | `camera:fuji` |
+| `make:` | Camera manufacturer | `make:canon` |
+| `model:` | Camera model | `model:x100v` |
+| `lens:` | Lens | `lens:35mm` |
+| `iso:` | ISO — exact, range, or `>=`/`<=` | `iso:>=800`, `iso:100-400` |
+| `f:` / `aperture:` | Aperture | `f:1.8` |
+| `shutter:` / `speed:` | Shutter speed | `shutter:1/250` |
+| `focal:` | Focal length | `focal:50` |
+| `date:` / `year:` | Date taken — year/month/day, or `A..B` range | `date:2024`, `date:2023..2024` |
+
+- **Exclude** a term with a leading `-`, e.g. `-tag:draft`.
+- **Quote** values that contain spaces: `make:"leica m"`.
+- **Ranges** (`iso:100-400`, `date:2023..2024`) and comparisons (`iso:>=800`,
+  `date:>=2024`) work for ISO and dates.
+- Press **↓** in an empty search box to browse all available filters, and the
+  box autocompletes tags, folders, and cameras as you type.
+
+EXIF is loaded on demand, so metadata filters (camera, ISO, aperture, date, …)
+only match photos whose info has been loaded — the results view flags this when
+such a filter is active.
+
 ## Development
 
 ```bash

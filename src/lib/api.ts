@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { FolderCount, Photo, Tag } from "@/lib/types";
+import type { FolderCount, Photo, SearchFacets, Tag } from "@/lib/types";
 
 /**
  * Thin typed layer over the Tauri commands implemented in
@@ -29,6 +29,10 @@ export function searchPhotos(params: {
 
 export function listTags(): Promise<Tag[]> {
   return invoke("list_tags");
+}
+
+export function listSearchFacets(): Promise<SearchFacets> {
+  return invoke("list_search_facets");
 }
 
 export function getPhotoTags(photoId: string): Promise<Tag[]> {
