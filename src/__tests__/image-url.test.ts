@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { imageUrl, originalUrl } from "@/lib/image-url";
+import { imageUrl, originalUrl, previewUrl } from "@/lib/image-url";
 
 describe("image-url", () => {
   it("builds a photo:// URL for the default variant", () => {
@@ -52,6 +52,14 @@ describe("image-url", () => {
   it("returns the original object URL untouched by variant naming", () => {
     expect(originalUrl("inbox/photo.jpg")).toBe(
       "photo://localhost/inbox/photo.jpg"
+    );
+  });
+
+  it("builds a preview:// URL from an absolute local path, slashes encoded", () => {
+    // The whole path (its own slashes included) is one encoded URL segment,
+    // so the Rust handler can decode it back to the original absolute path.
+    expect(previewUrl("/Users/jav/my photos/café #1.jpg")).toBe(
+      "preview://localhost/%2FUsers%2Fjav%2Fmy%20photos%2Fcaf%C3%A9%20%231.jpg"
     );
   });
 });

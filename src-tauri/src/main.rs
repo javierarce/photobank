@@ -31,6 +31,11 @@ fn main() {
                 responder.respond(protocol::handle(app, request).await);
             });
         })
+        .register_asynchronous_uri_scheme_protocol("preview", |_ctx, request, responder| {
+            tauri::async_runtime::spawn(async move {
+                responder.respond(protocol::handle_preview(request).await);
+            });
+        })
         .setup(|app| {
             let conn = db::init(app.handle())?;
             app.manage(db::Db(Mutex::new(conn)));

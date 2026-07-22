@@ -118,6 +118,7 @@ export function UploadProvider({ children }: { children: ReactNode }) {
           key,
           folder,
           filename,
+          path,
           status: "pending",
           progress: 0,
         };
