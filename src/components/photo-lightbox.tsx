@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { imageUrl, originalUrl } from "@/lib/image-url";
 import { displayName } from "@/lib/keys";
 import { exportPhotos } from "@/lib/api";
@@ -50,6 +51,7 @@ export function PhotoLightbox({
   const [editValue, setEditValue] = useState(name);
   const [error, setError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const navigate = useNavigate();
 
   // Reset transient state when a different photo (or filename) comes in.
   // Adjusting state during render avoids an extra effect-driven render pass.
@@ -257,7 +259,19 @@ export function PhotoLightbox({
                 {error}
               </p>
             )}
-            <p className="mt-1 text-xs text-foreground/60">{photo.folder}/</p>
+            <button
+              type="button"
+              // Close first so the parent clears `active`; otherwise the
+              // lightbox would stay mounted over the destination folder.
+              onClick={() => {
+                onClose();
+                navigate(`/folders/${encodeURIComponent(photo.folder)}`);
+              }}
+              className="mt-1 -ml-1 rounded px-1 py-0.5 text-left text-xs text-foreground/60 transition hover:bg-foreground/5 hover:text-foreground"
+              data-testid="folder-link"
+            >
+              {photo.folder}
+            </button>
           </div>
 
           {(photo.cameraModel || photo.width || photo.takenAt) && (
