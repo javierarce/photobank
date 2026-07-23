@@ -1,8 +1,28 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { render, screen, fireEvent, cleanup, act, waitFor } from "@testing-library/react";
+import {
+  render as rtlRender,
+  screen,
+  fireEvent,
+  cleanup,
+  act,
+  waitFor,
+} from "@testing-library/react";
+import { MemoryRouter, Routes, Route } from "react-router-dom";
 import { PhotoLightbox } from "@/components/photo-lightbox";
 import type { Photo } from "@/lib/types";
 import { makePhoto } from "./fixtures";
+
+// The lightbox calls useNavigate (the folder name links to the folder view),
+// so every render needs a router context.
+function render(ui: Parameters<typeof rtlRender>[0]) {
+  const utils = rtlRender(<MemoryRouter>{ui}</MemoryRouter>);
+  return {
+    ...utils,
+    // Keep the router wrapper across rerenders so useNavigate stays available.
+    rerender: (next: Parameters<typeof rtlRender>[0]) =>
+      utils.rerender(<MemoryRouter>{next}</MemoryRouter>),
+  };
+}
 
 vi.mock("@/components/photo-tags", () => ({
   PhotoTags: ({ photoId }: { photoId: string }) => (
@@ -40,11 +60,40 @@ describe("PhotoLightbox", () => {
     render(<PhotoLightbox photo={photo} onClose={vi.fn()} />);
 
     expect(screen.getByText("test.jpg")).toBeInTheDocument();
-    expect(screen.getByText("inbox/")).toBeInTheDocument();
+    expect(screen.getByText("inbox")).toBeInTheDocument();
     expect(screen.getByText("Ricoh GR III")).toBeInTheDocument();
     expect(screen.getByText("GR Lens 18.3mm f/2.8")).toBeInTheDocument();
     expect(screen.getByText("18.3mm · f/2.8 · 1/250s · ISO 200")).toBeInTheDocument();
     expect(screen.getByText(/1920/)).toBeInTheDocument();
+  });
+
+  it("closes and navigates to the folder when the folder name is clicked", () => {
+    const onClose = vi.fn();
+    const withFolder = makePhoto({
+      id: "1",
+      filename: "test.jpg",
+      s3Key: "my trip/test.jpg",
+      folder: "my trip",
+    });
+    rtlRender(
+      <MemoryRouter initialEntries={["/"]}>
+        <Routes>
+          <Route
+            path="/"
+            element={<PhotoLightbox photo={withFolder} onClose={onClose} />}
+          />
+          <Route path="/folders/:folder" element={<div>folder view</div>} />
+        </Routes>
+      </MemoryRouter>
+    );
+
+    fireEvent.click(screen.getByTestId("folder-link"));
+
+    // The parent clears `active` on close, so the lightbox must close first;
+    // otherwise it would stay mounted over the destination.
+    expect(onClose).toHaveBeenCalled();
+    // Spaces in the folder name are URL-encoded and decoded by the route.
+    expect(screen.getByText("folder view")).toBeInTheDocument();
   });
 
   it("falls back to the original image when the 2880px variant is missing", () => {
