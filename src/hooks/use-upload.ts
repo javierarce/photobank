@@ -6,6 +6,8 @@ export type UploadFile = {
   /** Destination folder this import is bound for. */
   folder: string;
   filename: string;
+  /** Absolute source path on disk, for previewing the pixels pre-import. */
+  path?: string;
   /** The catalog id, once the importer has created the row. */
   id?: string;
   status: "pending" | "uploading" | "cancelling" | "done" | "error";

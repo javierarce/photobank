@@ -9,7 +9,7 @@ import {
   type MouseEvent,
 } from "react";
 import { listen } from "@tauri-apps/api/event";
-import { imageUrl } from "@/lib/image-url";
+import { imageUrl, previewUrl } from "@/lib/image-url";
 import {
   listPhotos,
   REFRESH_PROGRESS_EVENT,
@@ -372,9 +372,10 @@ const PhotoTile = memo(function PhotoTile({
   );
 });
 
-/** A grid tile for an in-flight import: filename + inline progress. The
- * pixels arrive when the finished photo replaces this tile, so the preview
- * is a quiet placeholder rather than a local file read. */
+/** A grid tile for an in-flight import: a preview of the source image (read
+ * from its local path via the `preview://` scheme) with inline progress on
+ * top. The filename sits behind the preview and shows through until the pixels
+ * load — or stays put if there's no path or the file can't be decoded. */
 function UploadTile({
   upload,
   onDismiss,
@@ -385,14 +386,36 @@ function UploadTile({
   onCancel?: (key: string) => void;
 }) {
   const failed = upload.status === "error";
+  const [previewLoaded, setPreviewLoaded] = useState(false);
+  // A same-name re-drop replaces this entry in place (the tile is keyed by
+  // upload.key), so re-gate on the source path: if the new file's preview
+  // fails to load, previewLoaded must fall back to false rather than stay
+  // stuck at true from the prior image and expose the broken-image glyph.
+  const [prevPath, setPrevPath] = useState(upload.path);
+  if (prevPath !== upload.path) {
+    setPrevPath(upload.path);
+    setPreviewLoaded(false);
+  }
 
   return (
     <div className="fade-in relative aspect-square overflow-hidden rounded-md bg-foreground/5">
-      <div className="flex h-full items-center justify-center p-3">
+      <div className="absolute inset-0 flex items-center justify-center p-3">
         <span className="max-w-full truncate font-mono text-xs text-foreground/50">
           {upload.filename}
         </span>
       </div>
+      {upload.path && (
+        <img
+          src={previewUrl(upload.path)}
+          alt={upload.filename}
+          className={`absolute inset-0 h-full w-full object-cover transition-opacity duration-150 ease-out ${
+            previewLoaded ? "opacity-100" : "opacity-0"
+          }`}
+          draggable={false}
+          decoding="async"
+          onLoad={() => setPreviewLoaded(true)}
+        />
+      )}
 
       {failed ? (
         <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-red-950/50">
