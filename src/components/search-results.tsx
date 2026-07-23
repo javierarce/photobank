@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { displayName } from "@/lib/keys";
 import { searchPhotos } from "@/lib/api";
@@ -11,6 +11,7 @@ import { Thumbnail } from "@/components/thumbnail";
 import type { Photo } from "@/lib/types";
 import { usePhotoActions } from "@/hooks/use-photo-actions";
 import { useSelection, useThumbnailActivation } from "@/hooks/use-selection";
+import { useGridNavigation } from "@/hooks/use-grid-navigation";
 
 export function SearchResults() {
   const [searchParams] = useSearchParams();
@@ -45,9 +46,47 @@ export function SearchResults() {
   // match a tag-based query (e.g. removing the tag being viewed) drop out.
   const [reloadNonce, setReloadNonce] = useState(0);
 
-  const { selected, isSelected, clear, selectAll, setPool, setActions } =
-    useSelection();
+  const {
+    selected,
+    isSelected,
+    toggle,
+    extendTo,
+    clear,
+    selectAll,
+    setPool,
+    setActions,
+  } = useSelection();
   const { onClick, onDoubleClick } = useThumbnailActivation(setActive);
+  const gridRef = useRef<HTMLDivElement>(null);
+
+  // Keyboard cursor over the results, mirroring the folder photo grid: arrows/
+  // hjkl move DOM focus between tiles (highlight = their :focus-visible style,
+  // shared with Tab), Enter opens, `x` toggles selection, Shift+move sweeps.
+  const photosRef = useRef(photos);
+  useEffect(() => {
+    photosRef.current = photos;
+  }, [photos]);
+  const navGetId = useCallback((i: number) => photosRef.current[i]?.id, []);
+  useGridNavigation({
+    count: photos.length,
+    getId: navGetId,
+    containerRef: gridRef,
+    enabled: !active && !tagTargets,
+    onOpen: (i) => {
+      const photo = photos[i];
+      if (photo) setActive(photo);
+    },
+    onSelect: (i) => {
+      const photo = photos[i];
+      if (photo) toggle(photo);
+    },
+    onMove: (next, { shift, prevIndex }) => {
+      if (!shift) return;
+      const target = photos[next];
+      if (!target) return;
+      extendTo(target, photos[prevIndex] ?? target);
+    },
+  });
 
   // Expose bulk actions + the selectable pool to the toolbar while results
   // are on screen.
@@ -164,10 +203,16 @@ export function SearchResults() {
           Metadata filters only match photos whose info has been loaded.
         </p>
       )}
-      <div className="fade-in grid select-none gap-2 grid-cols-[repeat(auto-fill,minmax(min(200px,100%),1fr))]">
+      <div
+        ref={gridRef}
+        className="fade-in grid select-none gap-2 grid-cols-[repeat(auto-fill,minmax(min(200px,100%),1fr))]"
+      >
         {photos.map((photo) => (
           <button
             key={photo.id}
+            // Keyboard cursor is this button's focus; highlight in globals.css
+            // under [data-nav-id]:focus-visible.
+            data-nav-id={photo.id}
             onClick={(e) => onClick(e, photo)}
             onDoubleClick={() => onDoubleClick(photo)}
             className={`group relative aspect-square overflow-hidden rounded-md border-2 bg-foreground/0 dark:bg-foreground/5 ${

@@ -1,6 +1,7 @@
 import {
   useEffect,
   useMemo,
+  useRef,
   useState,
   useCallback,
   useImperativeHandle,
@@ -21,6 +22,7 @@ import { SelectionCheck } from "@/components/selection-check";
 import { Thumbnail } from "@/components/thumbnail";
 import { usePhotoActions } from "@/hooks/use-photo-actions";
 import { useSelection, useThumbnailActivation } from "@/hooks/use-selection";
+import { useGridNavigation } from "@/hooks/use-grid-navigation";
 import { usePresence, type PresenceState } from "@/hooks/use-presence";
 import { sortPhotos, DEFAULT_SORT_MODE, type SortMode } from "@/lib/photo-sort";
 import type { Photo } from "@/lib/types";
@@ -77,9 +79,18 @@ export const PhotoGrid = forwardRef<PhotoGridRef, Props>(function PhotoGrid(
   // working on that set even if the selection later changes.
   const [tagTargets, setTagTargets] = useState<Photo[] | null>(null);
 
-  const { selected, isSelected, clear, selectAll, setPool, setActions } =
-    useSelection();
+  const {
+    selected,
+    isSelected,
+    toggle,
+    extendTo,
+    clear,
+    selectAll,
+    setPool,
+    setActions,
+  } = useSelection();
   const { onClick, onDoubleClick } = useThumbnailActivation(setActive);
+  const gridRef = useRef<HTMLDivElement>(null);
 
   // Keep showing the local preview while the photo is pending/processing —
   // the real tile has nothing to render until the worker finishes. Hand off
@@ -120,6 +131,37 @@ export const PhotoGrid = forwardRef<PhotoGridRef, Props>(function PhotoGrid(
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [sortedPhotos, activeUploadKey]
   );
+
+  // Keyboard cursor over the tiles: arrows/hjkl move DOM focus between tiles
+  // (so the highlight is their own :focus-visible style, shared with Tab),
+  // Enter opens the lightbox, `x` toggles selection, and Shift+move sweeps a
+  // range. Read visiblePhotos through a ref so the id lookup stays stable. The
+  // cursor yields while the lightbox or the bulk-tag editor owns the keyboard.
+  const visibleRef = useRef(visiblePhotos);
+  useEffect(() => {
+    visibleRef.current = visiblePhotos;
+  }, [visiblePhotos]);
+  const navGetId = useCallback((i: number) => visibleRef.current[i]?.id, []);
+  useGridNavigation({
+    count: visiblePhotos.length,
+    getId: navGetId,
+    containerRef: gridRef,
+    enabled: !active && !tagTargets,
+    onOpen: (i) => {
+      const photo = visiblePhotos[i];
+      if (photo) setActive(photo);
+    },
+    onSelect: (i) => {
+      const photo = visiblePhotos[i];
+      if (photo) toggle(photo);
+    },
+    onMove: (next, { shift, prevIndex }) => {
+      if (!shift) return;
+      const target = visiblePhotos[next];
+      if (!target) return;
+      extendTo(target, visiblePhotos[prevIndex] ?? target);
+    },
+  });
 
   // Expose bulk actions to the toolbar while this grid is on screen; clear the
   // selection when they run so stale tiles don't linger.
@@ -274,7 +316,10 @@ export const PhotoGrid = forwardRef<PhotoGridRef, Props>(function PhotoGrid(
             onError={() => onDismissUpload(upload.key)}
           />
         ))}
-      <div className="fade-in grid select-none gap-2 grid-cols-[repeat(auto-fill,minmax(min(200px,100%),1fr))]">
+      <div
+        ref={gridRef}
+        className="fade-in grid select-none gap-2 grid-cols-[repeat(auto-fill,minmax(min(200px,100%),1fr))]"
+      >
         {activeUploads.map((upload) => (
           <UploadTile
             key={upload.key}
@@ -349,6 +394,9 @@ const PhotoTile = memo(function PhotoTile({
 }) {
   return (
     <button
+      // The keyboard cursor is this button's own focus; its highlight lives in
+      // globals.css under [data-nav-id]:focus-visible.
+      data-nav-id={photo.id}
       data-presence={presenceState}
       onClick={(e) => onClick(e, photo)}
       onDoubleClick={() => onDoubleClick(photo)}

@@ -70,6 +70,31 @@ summary {
   cursor: pointer;
 }
 
+/* The keyboard cursor for the folder and thumbnail grids IS the tile's own
+   focus, so Tab and the arrow/hjkl keys share one highlight: a blue border plus
+   a soft blue outline halo, shown only for keyboard focus (:focus-visible), not
+   mouse clicks. Defined after the Tailwind import so it wins over the tiles'
+   border utilities.
+
+   The outline COLOUR is kept constant (always blue) and only outline-STYLE is
+   toggled on focus. This matters because the folder card carries Tailwind's
+   `transition-colors`, which in v4 animates outline-color: if we flipped the
+   colour on focus it would fade in from the default `currentColor` (black in
+   light, white in dark) over the transition. outline-style isn't animatable, so
+   toggling it shows the ring instantly with no colour fade. Literal colours (no
+   custom property) also avoid a failed var lookup falling back to currentColor. */
+[data-nav-id] {
+  outline: 3px solid rgba(0, 0, 255, 0.1);
+  outline-style: none;
+}
+:root.dark [data-nav-id] {
+  outline-color: rgba(96, 165, 250, 0.45);
+}
+[data-nav-id]:focus-visible {
+  border-color: var(--accent);
+  outline-style: solid;
+}
+
 /* A plain opacity fade for content that loads in a beat after its
    surroundings instead of popping in. Runs once on mount. */
 @keyframes fade-in {
