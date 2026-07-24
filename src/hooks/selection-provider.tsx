@@ -89,6 +89,32 @@ export function SelectionProvider({ children }: { children: ReactNode }) {
     };
   }, []);
 
+  // Shift+arrow keyboard range. Unlike selectRange (which unions and moves the
+  // anchor to the target), this replaces the selection with the whole
+  // anchor→target span and leaves the anchor put, so repeated Shift+moves grow
+  // AND shrink one contiguous block. The first step seeds the anchor at the
+  // cursor's origin so that tile is included too.
+  const extendTo = useCallback(
+    (target: Photo, origin: Photo) => {
+      let anchorId = anchorRef.current;
+      if (anchorId == null || !pool.some((p) => p.id === anchorId)) {
+        anchorId = origin.id;
+        anchorRef.current = origin.id;
+      }
+      const anchorIdx = pool.findIndex((p) => p.id === anchorId);
+      const targetIdx = pool.findIndex((p) => p.id === target.id);
+      if (anchorIdx === -1 || targetIdx === -1) return;
+      const [start, end] =
+        anchorIdx < targetIdx
+          ? [anchorIdx, targetIdx]
+          : [targetIdx, anchorIdx];
+      setSelected(pool.slice(start, end + 1));
+      // Anchor intentionally left at anchorId so the next step extends from the
+      // same origin.
+    },
+    [pool]
+  );
+
   const selectAll = useCallback((photos: Photo[]) => setSelected(photos), []);
 
   const clear = useCallback(() => {
@@ -102,6 +128,7 @@ export function SelectionProvider({ children }: { children: ReactNode }) {
       isSelected,
       toggle,
       selectRange,
+      extendTo,
       snapshot,
       selectAll,
       clear,
@@ -115,6 +142,7 @@ export function SelectionProvider({ children }: { children: ReactNode }) {
       isSelected,
       toggle,
       selectRange,
+      extendTo,
       snapshot,
       selectAll,
       clear,

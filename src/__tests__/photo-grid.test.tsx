@@ -349,6 +349,101 @@ describe("PhotoGrid", () => {
     );
   });
 
+  describe("keyboard navigation", () => {
+    // Three completed tiles, sorted by name so the on-screen order is a, b, c.
+    const navPhotos: Photo[] = ["a", "b", "c"].map((n) =>
+      makePhoto({
+        id: n,
+        filename: `${n}.jpg`,
+        s3Key: `vacation/${n}.jpg`,
+        folder: "vacation",
+      })
+    );
+    const tile = (id: string) =>
+      document.querySelector<HTMLElement>(`[data-nav-id="${id}"]`);
+    // The keyboard cursor is the tile's own DOM focus (highlighted via
+    // :focus-visible in globals.css).
+    const isFocused = (id: string) => document.activeElement === tile(id);
+
+    async function renderNavGrid() {
+      mockListPhotos.mockResolvedValueOnce(navPhotos);
+      const view = render(<PhotoGrid folder="vacation" sortMode="name-asc" />);
+      await screen.findByAltText("a.jpg");
+      return view;
+    }
+
+    it("moves the focus cursor with the arrow keys and opens with Enter", async () => {
+      await renderNavGrid();
+
+      // First arrow press seats the cursor on the first tile.
+      fireEvent.keyDown(document.body, { key: "ArrowRight" });
+      expect(isFocused("a")).toBe(true);
+
+      fireEvent.keyDown(document.body, { key: "ArrowRight" });
+      expect(isFocused("a")).toBe(false);
+      expect(isFocused("b")).toBe(true);
+
+      fireEvent.keyDown(document.body, { key: "ArrowLeft" });
+      expect(isFocused("a")).toBe(true);
+
+      // Enter opens the focused tile in the lightbox.
+      fireEvent.keyDown(document.body, { key: "Enter" });
+      expect(screen.getByTestId("lightbox-filename")).toHaveTextContent("a.jpg");
+    });
+
+    it("navigates with vim hjkl", async () => {
+      await renderNavGrid();
+
+      fireEvent.keyDown(document.body, { key: "l" });
+      expect(isFocused("a")).toBe(true);
+      fireEvent.keyDown(document.body, { key: "l" });
+      expect(isFocused("b")).toBe(true);
+      fireEvent.keyDown(document.body, { key: "h" });
+      expect(isFocused("a")).toBe(true);
+    });
+
+    it("toggles selection of the focused tile with x", async () => {
+      await renderNavGrid();
+
+      fireEvent.keyDown(document.body, { key: "ArrowRight" }); // focus a
+      fireEvent.keyDown(document.body, { key: "x" });
+      expect(tile("a")).toHaveClass("border-accent");
+
+      fireEvent.keyDown(document.body, { key: "x" });
+      expect(tile("a")).not.toHaveClass("border-accent");
+    });
+
+    it("extends a range selection with Shift+arrow, growing and shrinking", async () => {
+      await renderNavGrid();
+
+      fireEvent.keyDown(document.body, { key: "ArrowRight" }); // focus a
+      fireEvent.keyDown(document.body, { key: "ArrowRight", shiftKey: true }); // a..b
+      expect(tile("a")).toHaveClass("border-accent");
+      expect(tile("b")).toHaveClass("border-accent");
+      expect(tile("c")).not.toHaveClass("border-accent");
+
+      fireEvent.keyDown(document.body, { key: "ArrowRight", shiftKey: true }); // a..c
+      expect(tile("c")).toHaveClass("border-accent");
+
+      // Shrinking back keeps the anchor fixed at a, so c drops out.
+      fireEvent.keyDown(document.body, { key: "ArrowLeft", shiftKey: true }); // a..b
+      expect(tile("a")).toHaveClass("border-accent");
+      expect(tile("b")).toHaveClass("border-accent");
+      expect(tile("c")).not.toHaveClass("border-accent");
+    });
+
+    it("ignores grid keys while the lightbox is open", async () => {
+      await renderNavGrid();
+
+      fireEvent.dblClick(screen.getByAltText("a.jpg"));
+      expect(screen.getByTestId("lightbox")).toBeInTheDocument();
+
+      // The lightbox owns the keyboard now — x must not reach the grid.
+      fireEvent.keyDown(document.body, { key: "x" });
+      expect(tile("a")).not.toHaveClass("border-accent");
+    });
+  });
+
   it("shows processing status for non-completed photos", async () => {
     mockListPhotos.mockResolvedValueOnce(mockPhotos);
 

@@ -21,6 +21,10 @@ export type SelectionContextValue = {
   toggle: (photo: Photo) => void;
   /** Extend the selection from the anchor to this photo (Shift-click range). */
   selectRange: (photo: Photo) => void;
+  /** Keyboard Shift+move range: replace the selection with the contiguous span
+   * from the anchor to `target`, seeding the anchor at `origin` on the first
+   * step and keeping it fixed after, so the span can grow and shrink. */
+  extendTo: (target: Photo, origin: Photo) => void;
   /** Snapshot the current selection + anchor, returning a restore fn. Used to
    * undo the leading click of a double click so opening never alters state. */
   snapshot: () => () => void;
