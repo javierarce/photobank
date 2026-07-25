@@ -281,7 +281,7 @@ pub async fn update_photo(
     // The old keys are gone from the bucket, but the CDN would keep serving
     // them until their TTL expires. Only the old location needs dropping — the
     // new one was never cached.
-    crate::cdn::invalidate_photo(&app, &photo.s3_key).await;
+    crate::cdn::invalidate_photo(&app, &photo.s3_key);
 
     crate::manifest::schedule_upload(&app);
     Ok(updated)
@@ -488,7 +488,7 @@ pub async fn rename_folder(app: AppHandle, old_name: String, new_name: String) -
     // A folder holds up to nine objects per photo, so listing them all would
     // burn through CloudFront's free invalidation allowance in one rename. The
     // whole prefix moved, so one wildcard says the same thing for one path.
-    crate::cdn::invalidate_folder(&app, &old_name).await;
+    crate::cdn::invalidate_folder(&app, &old_name);
 
     crate::manifest::schedule_upload(&app);
     Ok(moved)
@@ -529,7 +529,7 @@ pub async fn delete_photo(app: AppHandle, id: String) -> Result<()> {
 
     // Without this the CDN happily serves a deleted photo for the rest of its
     // TTL — worse than a stale image, since the bucket no longer has it.
-    crate::cdn::invalidate_photo(&app, &photo.s3_key).await;
+    crate::cdn::invalidate_photo(&app, &photo.s3_key);
 
     crate::manifest::schedule_upload(&app);
     Ok(())

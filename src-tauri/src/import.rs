@@ -566,7 +566,7 @@ async fn replace_one(
 
     // The keys didn't move but their bytes did, so the CDN is now the only
     // place still holding the old picture.
-    crate::cdn::invalidate_photo(app, &s3_key).await;
+    crate::cdn::invalidate_photo(app, &s3_key);
 
     crate::manifest::schedule_upload(app);
     Ok(Replaced::Done(load_photo(app, &photo.id)?))

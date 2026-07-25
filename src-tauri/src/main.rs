@@ -44,6 +44,7 @@ fn main() {
             app.manage(manifest::ManifestState::default());
             app.manage(import::CancelRegistry::default());
             app.manage(refresh::RefreshState::default());
+            app.manage(cdn::InvalidationState::default());
 
             // Native menu: start from the default macOS menu and slip a
             // "Settings…" item (Cmd+,) into the app submenu, right after About.
