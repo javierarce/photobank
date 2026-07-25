@@ -1,6 +1,7 @@
 // Prevents an extra console window on Windows in release builds.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod cdn;
 mod commands;
 mod db;
 mod error;
@@ -43,6 +44,7 @@ fn main() {
             app.manage(manifest::ManifestState::default());
             app.manage(import::CancelRegistry::default());
             app.manage(refresh::RefreshState::default());
+            app.manage(cdn::InvalidationState::default());
 
             // Native menu: start from the default macOS menu and slip a
             // "Settings…" item (Cmd+,) into the app submenu, right after About.
@@ -93,6 +95,9 @@ fn main() {
             commands::rename_folder,
             commands::delete_photo,
             commands::import_photos,
+            commands::replace_photo,
+            commands::replace_photos,
+            commands::check_import_collisions,
             commands::cancel_import,
             commands::export_photos,
             settings::get_settings,
@@ -105,6 +110,14 @@ fn main() {
             refresh::cancel_refresh,
             refresh::load_photo_metadata,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while running tauri application")
+        .run(|app, event| {
+            // The CDN invalidation queue is debounced and memory-only, so a
+            // quit inside that window would silently drop it — see
+            // cdn::flush_on_exit.
+            if let tauri::RunEvent::ExitRequested { .. } = event {
+                cdn::flush_on_exit(app);
+            }
+        });
 }

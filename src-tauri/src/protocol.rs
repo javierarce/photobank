@@ -5,16 +5,16 @@ use percent_encoding::percent_decode_str;
 use tauri::http::{header, Request, Response, StatusCode};
 use tauri::{AppHandle, Manager};
 
-use crate::settings::S3State;
-
 /// Disk budget for everything except the pinned 640px thumbnails. Oldest
 /// files are evicted first (by mtime — most large variants are viewed once,
 /// so plain age is a good-enough LRU stand-in).
 const LARGE_CACHE_CAP_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 
-/// Serve `photo://localhost/<s3-key>` from the disk cache, fetching from S3
-/// on a miss. Grid thumbnails and lightbox images all go through here, which
-/// makes S3 fetch-through and offline reads transparent to the frontend.
+/// Serve `photo://localhost/<s3-key>` from the disk cache, fetching from the
+/// CDN (or S3) on a miss. Grid thumbnails and lightbox images all go through
+/// here, which makes fetch-through and offline reads transparent to the
+/// frontend. A `?v=` query is ignored — see `resolveUrl` in
+/// src/lib/image-url.ts for why callers add one.
 pub async fn handle(app: AppHandle, request: Request<Vec<u8>>) -> Response<Vec<u8>> {
     match respond(&app, request.uri().path()).await {
         Ok(response) => response,
@@ -117,28 +117,10 @@ async fn fetch_and_cache(
     key: &str,
     cache_path: &Path,
 ) -> std::result::Result<Vec<u8>, (StatusCode, String)> {
-    let state = app.state::<S3State>();
-    let guard = state.0.read().await;
-    let ctx = guard
-        .as_ref()
-        .ok_or((StatusCode::SERVICE_UNAVAILABLE, "S3 is not configured".to_string()))?;
-
-    let object = ctx
-        .client
-        .get_object()
-        .bucket(&ctx.bucket)
-        .key(key)
-        .send()
+    // Goes through the CDN when one is configured, S3 otherwise (cdn.rs).
+    let data = crate::cdn::get_object(app, key)
         .await
         .map_err(|e| (StatusCode::NOT_FOUND, format!("fetch failed: {e}")))?;
-    let data = object
-        .body
-        .collect()
-        .await
-        .map_err(|e| (StatusCode::BAD_GATEWAY, e.to_string()))?
-        .into_bytes()
-        .to_vec();
-    drop(guard);
 
     write_cache(cache_path, &data).await;
     if !is_pinned(key) {

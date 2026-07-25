@@ -38,6 +38,8 @@ export default function SettingsPage() {
     region: "",
     bucket: "",
     accessKeyId: "",
+    cloudfrontDomain: null,
+    cloudfrontDistributionId: null,
   });
   const [secret, setSecret] = useState("");
   const [hasSecret, setHasSecret] = useState(false);
@@ -437,6 +439,54 @@ export default function SettingsPage() {
               className={inputClass}
             />
           </label>
+
+          <div className="border-t border-border pt-4">
+            <p className="text-sm font-medium text-foreground">CDN (optional)</p>
+            <p className="mt-1 text-sm text-foreground/50">
+              Serve the bucket through CloudFront. Reads go through the domain
+              instead of S3, and the distribution is invalidated whenever a
+              photo is replaced, moved, or deleted &mdash; so anything linking
+              to your bucket stops serving the old file.
+            </p>
+            <div className="mt-4 grid gap-4 sm:grid-cols-2">
+              <label className="flex flex-col gap-1.5">
+                <span className="text-sm font-medium text-foreground">Domain</span>
+                <input
+                  type="text"
+                  value={settings.cloudfrontDomain ?? ""}
+                  onChange={(e) =>
+                    set({ cloudfrontDomain: e.target.value || null })
+                  }
+                  placeholder="img.example.com"
+                  autoCorrect="off"
+                  autoCapitalize="off"
+                  spellCheck={false}
+                  className={inputClass}
+                />
+              </label>
+              <label className="flex flex-col gap-1.5">
+                <span className="text-sm font-medium text-foreground">
+                  Distribution ID
+                </span>
+                <input
+                  type="text"
+                  value={settings.cloudfrontDistributionId ?? ""}
+                  onChange={(e) =>
+                    set({ cloudfrontDistributionId: e.target.value || null })
+                  }
+                  placeholder="E1A2B3C4D5E6F7"
+                  autoCorrect="off"
+                  autoCapitalize="off"
+                  spellCheck={false}
+                  className={inputClass}
+                />
+              </label>
+            </div>
+            <p className="mt-2 text-xs text-foreground/40">
+              Invalidation needs <code>cloudfront:CreateInvalidation</code> on
+              the access key above. Either field works on its own.
+            </p>
+          </div>
           </div>
 
         <div className="mt-6 flex items-center gap-3">
