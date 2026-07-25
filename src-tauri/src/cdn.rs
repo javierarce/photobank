@@ -357,8 +357,9 @@ async fn invalidate_paths(app: &AppHandle, paths: Vec<String>) {
         }
     };
 
+    let count = paths.len();
     let Ok(items) = aws_sdk_cloudfront::types::Paths::builder()
-        .quantity(paths.len() as i32)
+        .quantity(count as i32)
         .set_items(Some(paths))
         .build()
     else {
@@ -374,13 +375,26 @@ async fn invalidate_paths(app: &AppHandle, paths: Vec<String>) {
         return;
     };
 
-    let _ = cdn
+    // Still best-effort — a failure must never fail the mutation that
+    // triggered it — but no longer silent. Without this a rejected request
+    // looks exactly like one that was never sent: no console entry, no error,
+    // and a deleted photo quietly served from the edge for a year. It's also
+    // the only way to tell a throttled batch apart from one `collapse`
+    // deliberately widened (see MAX_WILDCARD_PATHS).
+    if let Err(err) = cdn
         .client
         .create_invalidation()
         .distribution_id(&cdn.distribution_id)
         .invalidation_batch(batch)
         .send()
-        .await;
+        .await
+    {
+        eprintln!(
+            "[cdn] invalidation of {count} path(s) failed: {}",
+            crate::error::friendly_s3_error(&err),
+            count = count,
+        );
+    }
 }
 
 #[cfg(test)]
