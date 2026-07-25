@@ -110,6 +110,14 @@ fn main() {
             refresh::cancel_refresh,
             refresh::load_photo_metadata,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while running tauri application")
+        .run(|app, event| {
+            // The CDN invalidation queue is debounced and memory-only, so a
+            // quit inside that window would silently drop it — see
+            // cdn::flush_on_exit.
+            if let tauri::RunEvent::ExitRequested { .. } = event {
+                cdn::flush_on_exit(app);
+            }
+        });
 }
