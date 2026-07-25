@@ -71,6 +71,7 @@ export const PhotoGrid = forwardRef<PhotoGridRef, Props>(function PhotoGrid(
     handleBulkDelete,
     handleBulkMove,
     handleRename,
+    handleReplace,
     handleLoadInfo,
   } = usePhotoActions();
   const [loading, setLoading] = useState(true);
@@ -268,8 +269,16 @@ export const PhotoGrid = forwardRef<PhotoGridRef, Props>(function PhotoGrid(
     };
   }, [loadPhotos]);
 
+  // `status === "done"` is what says the backend has finished, and it is load
+  // bearing: a REPLACE targets a row that is already "completed", so without
+  // it the handoff fires the moment the tile learns its photo id — dismissing
+  // the tile at 0% and hiding the progress entirely. An import can't hit that
+  // (its row is "pending" until the end) which is why it went unnoticed.
   const uploadsAwaitingThumbnail = activeUploads.filter(
-    (u) => u.id && photoById.get(u.id)?.processingStatus === "completed"
+    (u) =>
+      u.status === "done" &&
+      u.id &&
+      photoById.get(u.id)?.processingStatus === "completed"
   );
 
   // Animate tiles as they come and go: new photos fade in, deleted ones fade
@@ -309,7 +318,15 @@ export const PhotoGrid = forwardRef<PhotoGridRef, Props>(function PhotoGrid(
         uploadsAwaitingThumbnail.map((upload) => (
           <img
             key={upload.key}
-            src={imageUrl(photoById.get(upload.id!)!.s3Key, "640", "webp")}
+            // Version-stamped like every other thumbnail: after a replace the
+            // key is unchanged, so without it this would hand off on the
+            // previous image's cached bytes.
+            src={imageUrl(
+              photoById.get(upload.id!)!.s3Key,
+              "640",
+              "webp",
+              photoById.get(upload.id!)!.updatedAt
+            )}
             alt=""
             className="hidden"
             onLoad={() => onDismissUpload(upload.key)}
@@ -355,6 +372,7 @@ export const PhotoGrid = forwardRef<PhotoGridRef, Props>(function PhotoGrid(
               onDelete={handleDelete}
               onMove={handleMove}
               onRename={handleRename}
+              onReplace={handleReplace}
               onLoadInfo={handleLoadInfo}
               onPrev={canNavigate ? () => setActive(prev) : undefined}
               onNext={canNavigate ? () => setActive(next) : undefined}

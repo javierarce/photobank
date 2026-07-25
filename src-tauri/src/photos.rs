@@ -278,6 +278,11 @@ pub async fn update_photo(
         rename_cached(&app, &format!("{old_base}{suffix}"), &format!("{new_base}{suffix}")).await;
     }
 
+    // The old keys are gone from the bucket, but the CDN would keep serving
+    // them until their TTL expires. Only the old location needs dropping — the
+    // new one was never cached.
+    crate::cdn::invalidate_photo(&app, &photo.s3_key).await;
+
     crate::manifest::schedule_upload(&app);
     Ok(updated)
 }
@@ -480,6 +485,11 @@ pub async fn rename_folder(app: AppHandle, old_name: String, new_name: String) -
         rename_cached(&app, from, to).await;
     }
 
+    // A folder holds up to nine objects per photo, so listing them all would
+    // burn through CloudFront's free invalidation allowance in one rename. The
+    // whole prefix moved, so one wildcard says the same thing for one path.
+    crate::cdn::invalidate_folder(&app, &old_name).await;
+
     crate::manifest::schedule_upload(&app);
     Ok(moved)
 }
@@ -516,6 +526,10 @@ pub async fn delete_photo(app: AppHandle, id: String) -> Result<()> {
     for key in &keys {
         let _ = tokio::fs::remove_file(protocol::cache_path(&app, key)).await;
     }
+
+    // Without this the CDN happily serves a deleted photo for the rest of its
+    // TTL — worse than a stale image, since the bucket no longer has it.
+    crate::cdn::invalidate_photo(&app, &photo.s3_key).await;
 
     crate::manifest::schedule_upload(&app);
     Ok(())
@@ -657,34 +671,8 @@ pub(crate) async fn fetch_bytes(app: &AppHandle, key: &str) -> Result<Vec<u8>> {
         return Ok(bytes);
     }
 
-    let state = app.state::<S3State>();
-    let guard = state.0.read().await;
-    let ctx = guard
-        .as_ref()
-        .ok_or_else(|| Error::msg("S3 is not configured — open Settings first"))?;
-    let object = ctx
-        .client
-        .get_object()
-        .bucket(&ctx.bucket)
-        .key(key)
-        .send()
-        .await
-        .map_err(|e| Error::msg(format!("download of {key} failed: {e}")))?;
-    let bytes = object
-        .body
-        .collect()
-        .await
-        // A bare `e.to_string()` here reads "streaming error" with no clue
-        // which file or why — name the object and keep the cause chain.
-        .map_err(|e| {
-            Error::msg(format!(
-                "download of {key} was interrupted: {}",
-                aws_smithy_types::error::display::DisplayErrorContext(&e)
-            ))
-        })?
-        .into_bytes()
-        .to_vec();
-    drop(guard);
+    // Goes through the CDN when one is configured, S3 otherwise (cdn.rs).
+    let bytes = crate::cdn::get_object(app, key).await?;
 
     protocol::cache_put(app, key, &bytes).await;
     Ok(bytes)

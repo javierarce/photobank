@@ -115,6 +115,13 @@ afterEach(() => {
   cleanup();
 });
 
+/** A photo:// src with its `?v=` cache-buster stripped. These tests care about
+ * which object a tile addresses, not the version token that forces WKWebView
+ * to refetch after a replace (see resolveUrl in src/lib/image-url.ts). */
+function srcPath(el: Element) {
+  return el.getAttribute("src")?.split("?")[0];
+}
+
 describe("PhotoGrid", () => {
   it("shows loading state initially", () => {
     mockListPhotos.mockReturnValueOnce(new Promise(() => {}));
@@ -151,16 +158,13 @@ describe("PhotoGrid", () => {
     render(<PhotoGrid folder="vacation" />);
 
     const img = await screen.findByAltText("beach.jpg");
-    expect(img).toHaveAttribute(
-      "src",
-      "photo://localhost/vacation/beach_640.webp"
-    );
+    expect(srcPath(img)).toBe("photo://localhost/vacation/beach_640.webp");
 
     // A photo synced into the bucket externally has no variants yet — the
     // 640px request 404s and the tile must degrade to the original object
     // instead of a broken image.
     fireEvent.error(img);
-    expect(img).toHaveAttribute("src", "photo://localhost/vacation/beach.jpg");
+    expect(srcPath(img)).toBe("photo://localhost/vacation/beach.jpg");
   });
 
   it("keeps the image hidden until it loads so no broken glyph shows", async () => {
@@ -189,7 +193,7 @@ describe("PhotoGrid", () => {
     const img = await screen.findByAltText("beach.jpg");
     // Variant 404s → fall back to the original.
     fireEvent.error(img);
-    expect(img).toHaveAttribute("src", "photo://localhost/vacation/beach.jpg");
+    expect(srcPath(img)).toBe("photo://localhost/vacation/beach.jpg");
 
     // The original 404s too — the image never loads, so it stays hidden and
     // the quiet placeholder remains rather than a broken-image glyph.
@@ -238,7 +242,7 @@ describe("PhotoGrid", () => {
     render(<PhotoGrid folder="vacation" />);
     const img = await screen.findByAltText("beach.jpg");
     fireEvent.error(img);
-    expect(img).toHaveAttribute("src", "photo://localhost/vacation/beach.jpg");
+    expect(srcPath(img)).toBe("photo://localhost/vacation/beach.jpg");
 
     // The refresh regenerated the variants under the same key and bumped
     // updated_at; the reload it triggers must swap the tile off the original.
@@ -251,8 +255,7 @@ describe("PhotoGrid", () => {
       });
     });
     await waitFor(() =>
-      expect(screen.getByAltText("beach.jpg")).toHaveAttribute(
-        "src",
+      expect(srcPath(screen.getByAltText("beach.jpg"))).toBe(
         "photo://localhost/vacation/beach_640.webp"
       )
     );
@@ -273,10 +276,7 @@ describe("PhotoGrid", () => {
     // The old web pipeline stored "<base>_original.jpg" + "<base>_640.webp";
     // the thumbnail must strip the marker to find the existing variant.
     const img = await screen.findByAltText("R0007098_original.jpg");
-    expect(img).toHaveAttribute(
-      "src",
-      "photo://localhost/calella/R0007098_640.webp"
-    );
+    expect(srcPath(img)).toBe("photo://localhost/calella/R0007098_640.webp");
   });
 
   it("reloads the folder once a library refresh settles", async () => {
@@ -507,6 +507,25 @@ describe("PhotoGrid", () => {
 
     fireEvent.load(container.querySelector("img.hidden")!);
     expect(onDismiss).toHaveBeenCalledWith("u1");
+  });
+
+  it("keeps a replace's tile on screen while it is still working", async () => {
+    // A replace targets a photo that is ALREADY "completed", unlike an import
+    // whose row is "pending" until the end. Handing off on the row's status
+    // alone would dismiss this tile the instant it learned its photo id —
+    // at 0%, before any progress could ever be seen.
+    mockListPhotos.mockResolvedValueOnce([mockPhotos[0]]);
+
+    const onDismiss = vi.fn();
+    const upload = makeUpload({ id: "1", status: "uploading", progress: 48 });
+    const { container } = render(
+      <PhotoGrid folder="vacation" uploads={[upload]} onDismissUpload={onDismiss} />
+    );
+
+    await waitFor(() => expect(screen.getByText("48%")).toBeInTheDocument());
+    // Not dismissed, and not even preloading the handoff image yet.
+    expect(onDismiss).not.toHaveBeenCalled();
+    expect(container.querySelector("img.hidden")).not.toBeInTheDocument();
   });
 
   it("dismisses the upload when processing fails so the photo tile shows the error", async () => {

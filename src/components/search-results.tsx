@@ -27,6 +27,7 @@ export function SearchResults() {
     handleBulkDelete,
     handleBulkMove,
     handleRename,
+    handleReplace,
     handleLoadInfo,
   } = usePhotoActions();
   const searchKey = q || tag ? `${q}|${tag}` : null;
@@ -252,6 +253,7 @@ export function SearchResults() {
               onDelete={handleDelete}
               onMove={handleMove}
               onRename={handleRename}
+              onReplace={handleReplace}
               onLoadInfo={handleLoadInfo}
               onPrev={canNavigate ? () => setActive(prev) : undefined}
               onNext={canNavigate ? () => setActive(next) : undefined}

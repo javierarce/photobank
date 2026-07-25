@@ -1,6 +1,11 @@
 import { useCallback, useState } from "react";
-import { ask, message } from "@tauri-apps/plugin-dialog";
-import { deletePhoto, loadPhotoMetadata, updatePhoto } from "@/lib/api";
+import { ask, message, open } from "@tauri-apps/plugin-dialog";
+import {
+  deletePhoto,
+  loadPhotoMetadata,
+  replacePhoto,
+  updatePhoto,
+} from "@/lib/api";
 import { displayName } from "@/lib/keys";
 import type { Photo } from "@/lib/types";
 
@@ -173,6 +178,29 @@ export function usePhotoActions() {
     }
   };
 
+  // Swap a photo's pixels for another file, in place. The picker is filtered
+  // to the photo's own extension: replacing keeps the object's key (that's the
+  // point — existing links stay valid), so the format can't change. The
+  // backend enforces the same rule. A cancelled picker resolves quietly;
+  // real failures propagate so the lightbox can show them inline.
+  const handleReplace = useCallback(async (photo: Photo) => {
+    const dot = photo.filename.lastIndexOf(".");
+    const ext = dot > 0 ? photo.filename.slice(dot + 1).toLowerCase() : null;
+    const selection = await open({
+      multiple: false,
+      title: `Replace ${displayName(photo.filename)}`,
+      filters: ext ? [{ name: `${ext.toUpperCase()} image`, extensions: [ext] }] : undefined,
+    });
+    if (!selection) return;
+
+    const path = Array.isArray(selection) ? selection[0] : selection;
+    const updated = await replacePhoto(photo.id, path);
+    // updatedAt changed, which is what busts the cached thumbnail and lightbox
+    // image (see resolveUrl in src/lib/image-url.ts).
+    setPhotos((prev) => prev.map((p) => (p.id === photo.id ? updated : p)));
+    setActive((prev) => (prev?.id === photo.id ? updated : prev));
+  }, []);
+
   // Fetch one photo's EXIF/dimensions from its original in the bucket (the
   // lightbox's "Load info" button). Rejections propagate so the button can
   // show the error inline.
@@ -192,6 +220,7 @@ export function usePhotoActions() {
     handleBulkDelete,
     handleBulkMove,
     handleRename,
+    handleReplace,
     handleLoadInfo,
   };
 }

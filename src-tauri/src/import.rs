@@ -3,7 +3,7 @@
 //! photo cache, and stream progress to the frontend as `import://progress`
 //! events. Replaces the old presign → browser PUT → confirm → BullMQ flow.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -373,6 +373,426 @@ async fn run_import(
     Ok(Imported::Done(photo))
 }
 
+/// Lowercased extension of a filename or path, or None when it has none.
+/// A leading dot is a hidden file, not an extension (matching
+/// `indexed_filename`), so ".hidden" has none.
+fn extension(name: &str) -> Option<String> {
+    let tail = name.rsplit(['/', '\\']).next()?;
+    match tail.rsplit_once('.') {
+        Some((stem, ext)) if !stem.is_empty() && !ext.is_empty() => {
+            Some(ext.to_ascii_lowercase())
+        }
+        _ => None,
+    }
+}
+
+/// Filenames in `folder` that an import would have to suffix rather than
+/// create, i.e. the ones a drop should ask the user about. A name is taken
+/// when a row already holds it and isn't a `failed` leftover — those are
+/// retried in place by `reserve_row_conn`, so they're not a real collision.
+///
+/// Exact names only. A variant-stem clash ("photo.png" dropped over
+/// "photo.jpg") isn't the same file, and it can't be replaced in place anyway
+/// because the key would change — so it keeps suffixing silently, as before.
+pub fn colliding_filenames(
+    conn: &rusqlite::Connection,
+    folder: &str,
+    filenames: &[String],
+) -> Result<Vec<String>> {
+    let mut stmt = conn.prepare(
+        "SELECT 1 FROM photos
+         WHERE folder = ?1 AND filename = ?2 AND processing_status != 'failed'",
+    )?;
+    let mut taken = Vec::new();
+    for filename in filenames {
+        let exists = stmt
+            .query_row(rusqlite::params![folder, filename], |_| Ok(()))
+            .optional()?
+            .is_some();
+        // A drop can list the same name twice; report it once.
+        if exists && !taken.contains(filename) {
+            taken.push(filename.clone());
+        }
+    }
+    Ok(taken)
+}
+
+/// A validated replace: the row being overwritten plus the content type its
+/// object keeps. Built before any work starts so every rejection is cheap.
+#[derive(Debug)]
+struct ReplaceTarget {
+    photo: Photo,
+    mime: Option<&'static str>,
+}
+
+/// Check that `path`'s bytes may overwrite `photo` in place.
+fn prepare_replace(photo: Photo, path: &str) -> Result<ReplaceTarget> {
+    // Its objects are being written right now, and the importer would clobber
+    // whatever we upload (or vice versa).
+    if matches!(photo.processing_status.as_str(), "pending" | "processing") {
+        return Err(Error::msg(
+            "This photo is still importing — wait for it to finish",
+        ));
+    }
+    if !pipeline::is_importable(path) {
+        return Err(Error::msg("Replacements must be a JPG, PNG, or WebP file"));
+    }
+
+    // Keeping the key is the entire point, so the format can't change: a
+    // different extension means a different key, which breaks exactly the
+    // links this feature exists to preserve.
+    let old_ext = extension(&photo.filename).ok_or_else(|| {
+        Error::msg("This photo's filename has no extension, so there's no format to match")
+    })?;
+    if extension(path).as_deref() != Some(old_ext.as_str()) {
+        return Err(Error::msg(format!(
+            "Replacement must be a .{old_ext} file so the photo keeps its address"
+        )));
+    }
+
+    // From the stored name, not the source file's: the object keeps its key,
+    // and the extension guard above already proved the two agree.
+    let mime = pipeline::mime_for_extension(&photo.filename);
+    Ok(ReplaceTarget { photo, mime })
+}
+
+/// Swap a photo's pixels while keeping its key, id, folder, name, and tags.
+///
+/// This is the counterpart to importing the same file twice: an import treats
+/// a name collision as a different photo and suffixes it ("photo (1).jpg"),
+/// which is right for two distinct images but wrong for a re-edit of one. A
+/// replace overwrites in place, so anything already linking to the photo — the
+/// blog, a shared URL — keeps resolving, and picks up the new version once the
+/// CDN paths are invalidated.
+///
+/// `reporter`/`cancel` are None for the lightbox's single replace (it shows its
+/// own inline state) and Some for a drop batch, which drives upload tiles.
+async fn replace_one(
+    app: &AppHandle,
+    target: ReplaceTarget,
+    path: &str,
+    reporter: Option<&Reporter>,
+    cancel: Option<&AtomicBool>,
+) -> Result<Replaced> {
+    let ReplaceTarget { photo, mime } = target;
+    let cancelled = || cancel.is_some_and(|c| c.load(Ordering::Relaxed));
+    let emit = |progress: u8, status: &'static str| {
+        if let Some(reporter) = reporter {
+            reporter.emit(Some(&photo.id), progress, status, None);
+        }
+    };
+
+    // Refuse a bucket the catalog wasn't built from before spending CPU on
+    // processing (same guard, same reason, as run_import).
+    {
+        let state = app.state::<S3State>();
+        let guard = state.0.read().await;
+        let ctx = guard
+            .as_ref()
+            .ok_or_else(|| Error::msg("S3 is not configured — open Settings first"))?;
+        crate::settings::ensure_catalog_matches_bucket(app, ctx)?;
+    }
+
+    if cancelled() {
+        return Ok(Replaced::Cancelled);
+    }
+
+    let bytes = tokio::fs::read(path)
+        .await
+        .map_err(|e| Error::msg(format!("could not read {path}: {e}")))?;
+    let file_size = bytes.len() as i64;
+    let s3_key = photo.s3_key.clone();
+    emit(10, "processing");
+
+    let processed: ProcessedImage = {
+        let bytes = bytes.clone();
+        let key = s3_key.clone();
+        tauri::async_runtime::spawn_blocking(move || pipeline::process(&bytes, &key))
+            .await
+            .map_err(|e| Error::msg(e.to_string()))??
+    };
+    emit(40, "uploading");
+
+    let fresh: Vec<&str> = processed.variants.iter().map(|v| v.key.as_str()).collect();
+    let stale = stale_variant_keys(&s3_key, &fresh);
+
+    // The last point a replace can back out: past the first PUT the old bytes
+    // are gone, so from here it commits rather than leave the photo half
+    // swapped. Same rule a re-import follows.
+    if cancelled() {
+        return Ok(Replaced::Cancelled);
+    }
+
+    {
+        let state = app.state::<S3State>();
+        let guard = state.0.read().await;
+        let ctx = guard
+            .as_ref()
+            .ok_or_else(|| Error::msg("S3 is not configured — open Settings first"))?;
+
+        // No rollback here, deliberately: a failure partway leaves the photo
+        // mixing old and new derivatives. Re-running Replace repairs it;
+        // restoring would need a copy of the original we don't have.
+        put_object(
+            ctx,
+            &s3_key,
+            bytes.clone(),
+            mime.unwrap_or("application/octet-stream"),
+            false,
+        )
+        .await?;
+        emit(48, "uploading");
+        for (index, variant) in processed.variants.iter().enumerate() {
+            put_object(ctx, &variant.key, variant.bytes.clone(), variant.content_type, true)
+                .await?;
+            emit(48 + (8 * (index as u8 + 1)), "uploading");
+        }
+        for key in &stale {
+            let _ = ctx.client.delete_object().bucket(&ctx.bucket).key(key).send().await;
+        }
+    }
+
+    // Same keys as before, so a stale cache entry would keep showing the old
+    // photo in the app itself — overwrite rather than wait for eviction.
+    protocol::cache_put(app, &s3_key, &bytes).await;
+    for variant in &processed.variants {
+        protocol::cache_put(app, &variant.key, &variant.bytes).await;
+    }
+    for key in &stale {
+        let _ = tokio::fs::remove_file(protocol::cache_path(app, key)).await;
+    }
+
+    store_replaced(app, &photo.id, file_size, &processed)?;
+
+    // The keys didn't move but their bytes did, so the CDN is now the only
+    // place still holding the old picture.
+    crate::cdn::invalidate_photo(app, &s3_key).await;
+
+    crate::manifest::schedule_upload(app);
+    Ok(Replaced::Done(load_photo(app, &photo.id)?))
+}
+
+/// A replace either swapped the pixels or backed out before the first PUT.
+enum Replaced {
+    Done(Photo),
+    Cancelled,
+}
+
+/// Replace one photo by id — the lightbox's Replace button.
+///
+/// Reports progress on the same `import://progress` channel a drop uses, keyed
+/// by the photo's own s3_key, so the lightbox can show a real percentage
+/// rather than an indeterminate spinner: processing plus seven uploads is
+/// several seconds, long enough to read as "nothing is happening".
+pub async fn replace_photo(app: AppHandle, id: String, path: String) -> Result<Photo> {
+    let photo = load_photo(&app, &id).map_err(|_| Error::msg("Photo not found"))?;
+    let reporter = Reporter {
+        app: app.clone(),
+        key: photo.s3_key.clone(),
+        filename: photo.filename.clone(),
+        folder: photo.folder.clone(),
+    };
+    reporter.emit(Some(&id), 0, "starting", None);
+
+    let fail = |e: Error| {
+        reporter.emit(Some(&id), 100, "error", Some(e.to_string()));
+        e
+    };
+    let target = prepare_replace(photo, &path).map_err(fail)?;
+    // No cancel flag: the lightbox has no cancel affordance, so nothing can
+    // arm one. A drop batch registers its own (see replace_photos).
+    match replace_one(&app, target, &path, Some(&reporter), None).await {
+        Ok(Replaced::Done(photo)) => {
+            reporter.emit(Some(&photo.id), 100, "done", None);
+            Ok(photo)
+        }
+        // Unreachable without a cancel flag, but the type says it's possible.
+        Ok(Replaced::Cancelled) => Err(fail(Error::msg("Replace was cancelled"))),
+        Err(e) => Err(fail(e)),
+    }
+}
+
+/// Overwrite the photos already holding these files' names in `folder` — what
+/// the drop dialog's "Replace" runs. Mirrors `import_photos`: same
+/// concurrency, same cancel registry, same `import://progress` tiles, so a
+/// replace looks and behaves like the upload it stands in for.
+pub async fn replace_photos(
+    app: AppHandle,
+    paths: Vec<String>,
+    folder: String,
+) -> Result<Vec<Photo>> {
+    let folder = sanitize_folder(&folder).ok_or_else(|| Error::msg("Invalid folder"))?;
+
+    let registry = app.state::<CancelRegistry>();
+    let semaphore = Arc::new(Semaphore::new(IMPORT_CONCURRENCY));
+    let mut handles = Vec::with_capacity(paths.len());
+    for path in paths.into_iter().filter(|p| pipeline::is_importable(p)) {
+        let Some(filename) = sanitize_filename(
+            std::path::Path::new(&path)
+                .file_name()
+                .map(|n| n.to_string_lossy())
+                .unwrap_or_default()
+                .as_ref(),
+        ) else {
+            continue;
+        };
+        // The same "folder/filename" key the frontend's tile is waiting on.
+        let s3_key = format!("{folder}/{filename}");
+        let (id, cancel) = registry.register(&s3_key);
+
+        let app = app.clone();
+        let folder = folder.clone();
+        let semaphore = semaphore.clone();
+        handles.push(tauri::async_runtime::spawn(async move {
+            let _guard = CancelGuard { app: app.clone(), key: s3_key.clone(), id };
+            let _permit = semaphore.acquire().await.expect("semaphore never closes");
+            replace_matching(&app, &path, &folder, &filename, &s3_key, &cancel).await
+        }));
+    }
+
+    let mut replaced = Vec::new();
+    for handle in handles {
+        if let Ok(Some(photo)) = handle.await.map_err(|e| Error::msg(e.to_string())) {
+            replaced.push(photo);
+        }
+    }
+    Ok(replaced)
+}
+
+/// One file of a replace batch. Like `import_one`, failures and cancellations
+/// are reported through events rather than aborting the batch.
+async fn replace_matching(
+    app: &AppHandle,
+    path: &str,
+    folder: &str,
+    filename: &str,
+    s3_key: &str,
+    cancel: &AtomicBool,
+) -> Option<Photo> {
+    let reporter = Reporter {
+        app: app.clone(),
+        key: s3_key.to_string(),
+        filename: filename.to_string(),
+        folder: folder.to_string(),
+    };
+
+    if cancel.load(Ordering::Relaxed) {
+        reporter.emit(None, 100, "cancelled", None);
+        return None;
+    }
+
+    // Resolve the target before the first event, not after: the grid hides the
+    // photo an upload tile carries the id of, so announcing "starting" without
+    // one would briefly show the tile *and* the photo it's replacing.
+    //
+    // Resolving here also beats trusting an id from the frontend — the
+    // collision check that produced this list ran before the dialog, and the
+    // photo may have been renamed, moved, or deleted since.
+    let found = find_by_name(app, folder, filename)
+        .ok_or_else(|| Error::msg(format!("No photo named {filename} in {folder} to replace")));
+    let target = found.and_then(|photo| prepare_replace(photo, path));
+
+    let photo_id = target.as_ref().ok().map(|t| t.photo.id.clone());
+    reporter.emit(photo_id.as_deref(), 0, "starting", None);
+
+    let outcome = match target {
+        Ok(target) => replace_one(app, target, path, Some(&reporter), Some(cancel)).await,
+        Err(e) => Err(e),
+    };
+
+    match outcome {
+        Ok(Replaced::Done(photo)) => {
+            reporter.emit(Some(&photo.id), 100, "done", None);
+            Some(photo)
+        }
+        // Nothing was written, so the photo is exactly as it was — just drop
+        // the tile. (Unlike a cancelled import there is no row to clean up.)
+        Ok(Replaced::Cancelled) => {
+            reporter.emit(photo_id.as_deref(), 100, "cancelled", None);
+            None
+        }
+        Err(e) => {
+            reporter.emit(photo_id.as_deref(), 100, "error", Some(e.to_string()));
+            None
+        }
+    }
+}
+
+fn find_by_name(app: &AppHandle, folder: &str, filename: &str) -> Option<Photo> {
+    let db = app.state::<Db>();
+    let conn = db.0.lock().unwrap();
+    conn.query_row(
+        &format!("SELECT {PHOTO_COLUMNS} FROM photos WHERE folder = ?1 AND filename = ?2"),
+        rusqlite::params![folder, filename],
+        db::photo_from_row,
+    )
+    .optional()
+    .ok()
+    .flatten()
+}
+
+/// Derivatives the photo owns in the bucket that the current pipeline no
+/// longer writes — in practice the legacy 128px set. A replace has to delete
+/// them: left alone they keep serving the previous image under keys the
+/// catalog still considers part of this photo.
+fn stale_variant_keys(s3_key: &str, fresh: &[&str]) -> Vec<String> {
+    let fresh: HashSet<&str> = fresh.iter().copied().collect();
+    deletion_keys(s3_key)
+        .into_iter()
+        .filter(|key| key != s3_key && !fresh.contains(key.as_str()))
+        .collect()
+}
+
+/// Point the catalog row at the new bytes: fresh dimensions, EXIF, and size,
+/// and a complete variant set. The identity columns (id, s3_key, folder,
+/// filename, created_at) and the photo's tags are deliberately untouched — a
+/// replace swaps the pixels, not the photo.
+fn store_replaced(
+    app: &AppHandle,
+    photo_id: &str,
+    file_size: i64,
+    processed: &ProcessedImage,
+) -> Result<()> {
+    let db = app.state::<Db>();
+    let conn = db.0.lock().unwrap();
+    store_replaced_conn(&conn, photo_id, file_size, processed)
+}
+
+fn store_replaced_conn(
+    conn: &rusqlite::Connection,
+    photo_id: &str,
+    file_size: i64,
+    processed: &ProcessedImage,
+) -> Result<()> {
+    let exif = &processed.exif;
+    conn.execute(
+        "UPDATE photos SET
+           width = ?1, height = ?2, file_size = ?3, processing_status = 'completed',
+           variants_ok = 1, camera_make = ?4, camera_model = ?5, lens = ?6,
+           focal_length = ?7, aperture = ?8, shutter_speed = ?9, iso = ?10,
+           taken_at = ?11, gps_latitude = ?12, gps_longitude = ?13, updated_at = ?14
+         WHERE id = ?15",
+        rusqlite::params![
+            processed.width,
+            processed.height,
+            file_size,
+            exif.camera_make,
+            exif.camera_model,
+            exif.lens,
+            exif.focal_length,
+            exif.aperture,
+            exif.shutter_speed,
+            exif.iso,
+            exif.taken_at,
+            exif.gps_latitude,
+            exif.gps_longitude,
+            db::now(),
+            photo_id,
+        ],
+    )?;
+    Ok(())
+}
+
 /// Undo a cancelled import: best-effort remove any objects that reached the
 /// bucket and any cached files, then drop the catalog row. Stays quiet — a
 /// variant may never have been uploaded, and S3 may be unconfigured.
@@ -703,6 +1123,202 @@ mod tests {
         assert!(keys.contains(&"inbox/photo_2880.jpg".to_string()));
         // Original + 4 widths × 2 formats.
         assert_eq!(keys.len(), 9);
+    }
+
+    fn names(list: &[&str]) -> Vec<String> {
+        list.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn collisions_are_names_an_import_would_have_to_suffix() {
+        let conn = crate::db::open_in_memory();
+        insert_photo(&conn, "p1", "a.jpg", "completed");
+        // An import still in flight owns its name just as firmly.
+        insert_photo(&conn, "p2", "b.jpg", "processing");
+
+        let taken = colliding_filenames(&conn, "inbox", &names(&["a.jpg", "b.jpg", "new.jpg"]))
+            .unwrap();
+        assert_eq!(taken, names(&["a.jpg", "b.jpg"]));
+    }
+
+    #[test]
+    fn a_failed_leftover_is_not_a_collision() {
+        let conn = crate::db::open_in_memory();
+        insert_photo(&conn, "p1", "a.jpg", "failed");
+
+        // reserve_row_conn reuses a failed row as a retry rather than
+        // suffixing, so there's nothing to ask the user about.
+        assert!(colliding_filenames(&conn, "inbox", &names(&["a.jpg"]))
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn collisions_are_scoped_to_the_target_folder() {
+        let conn = crate::db::open_in_memory();
+        insert_photo(&conn, "p1", "a.jpg", "completed");
+
+        assert!(colliding_filenames(&conn, "trips", &names(&["a.jpg"]))
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn a_name_dropped_twice_is_reported_once() {
+        let conn = crate::db::open_in_memory();
+        insert_photo(&conn, "p1", "a.jpg", "completed");
+
+        let taken = colliding_filenames(&conn, "inbox", &names(&["a.jpg", "a.jpg"])).unwrap();
+        assert_eq!(taken, names(&["a.jpg"]));
+    }
+
+    #[test]
+    fn a_variant_stem_clash_is_not_offered_as_a_replace() {
+        let conn = crate::db::open_in_memory();
+        insert_photo(&conn, "p1", "a.jpg", "completed");
+
+        // "a.png" would collide on the variant stem and get suffixed, but it
+        // isn't the same file and couldn't be replaced in place (the key would
+        // change), so the dialog must not offer it.
+        assert!(colliding_filenames(&conn, "inbox", &names(&["a.png"]))
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn prepare_replace_rejects_a_format_change() {
+        let conn = crate::db::open_in_memory();
+        insert_photo(&conn, "p1", "a.jpg", "completed");
+        let photo = |conn: &rusqlite::Connection| {
+            conn.query_row(
+                &format!("SELECT {PHOTO_COLUMNS} FROM photos WHERE id = 'p1'"),
+                [],
+                db::photo_from_row,
+            )
+            .unwrap()
+        };
+
+        let err = prepare_replace(photo(&conn), "/tmp/a.png").unwrap_err();
+        assert!(err.to_string().contains(".jpg"), "names the required format: {err}");
+
+        // Case doesn't matter — the object keeps its own name either way.
+        assert!(prepare_replace(photo(&conn), "/tmp/edited.JPG").is_ok());
+    }
+
+    #[test]
+    fn prepare_replace_refuses_a_photo_mid_import() {
+        let conn = crate::db::open_in_memory();
+        insert_photo(&conn, "p1", "a.jpg", "processing");
+        let photo = conn
+            .query_row(
+                &format!("SELECT {PHOTO_COLUMNS} FROM photos WHERE id = 'p1'"),
+                [],
+                db::photo_from_row,
+            )
+            .unwrap();
+
+        // The importer is writing these very objects; both would clobber.
+        let err = prepare_replace(photo, "/tmp/a.jpg").unwrap_err();
+        assert!(err.to_string().contains("still importing"));
+    }
+
+    #[test]
+    fn extension_lowercases_and_ignores_directories() {
+        assert_eq!(extension("photo.JPG").as_deref(), Some("jpg"));
+        assert_eq!(extension("/tmp/holiday/photo.jpeg").as_deref(), Some("jpeg"));
+        assert_eq!(extension("photo (1).png").as_deref(), Some("png"));
+        // A dot in a directory name isn't the file's extension.
+        assert_eq!(extension("/tmp/my.photos/noext"), None);
+        // Hidden files have no extension, matching indexed_filename.
+        assert_eq!(extension(".hidden"), None);
+        assert_eq!(extension("trailing."), None);
+    }
+
+    #[test]
+    fn replace_only_deletes_derivatives_the_pipeline_stopped_writing() {
+        // What pipeline::process produces today for "inbox/a.jpg".
+        let fresh: Vec<String> = [640, 1280, 2880]
+            .iter()
+            .flat_map(|w| [format!("inbox/a_{w}.jpg"), format!("inbox/a_{w}.webp")])
+            .collect();
+        let fresh: Vec<&str> = fresh.iter().map(String::as_str).collect();
+
+        let stale = stale_variant_keys("inbox/a.jpg", &fresh);
+
+        // Only the legacy 128px pair is left over...
+        assert_eq!(stale.len(), 2);
+        assert!(stale.contains(&"inbox/a_128.jpg".to_string()));
+        assert!(stale.contains(&"inbox/a_128.webp".to_string()));
+        // ...never a variant just uploaded, and never the original itself:
+        // deleting either would blank the photo we just replaced.
+        assert!(!stale.iter().any(|k| fresh.contains(&k.as_str())));
+        assert!(!stale.contains(&"inbox/a.jpg".to_string()));
+    }
+
+    #[test]
+    fn replace_of_a_legacy_original_targets_the_stripped_stem() {
+        // "<base>_original.jpg" keeps its variants under "<base>_<width>", so
+        // the sweep must look there rather than under "a_original_128.jpg".
+        let stale = stale_variant_keys("inbox/a_original.jpg", &[]);
+        assert!(stale.contains(&"inbox/a_640.webp".to_string()));
+        assert!(!stale.iter().any(|k| k.contains("_original_")));
+        // The original object is never a deletion target.
+        assert!(!stale.contains(&"inbox/a_original.jpg".to_string()));
+    }
+
+    #[test]
+    fn store_replaced_refreshes_pixels_and_metadata_but_not_identity() {
+        let conn = crate::db::open_in_memory();
+        insert_photo(&conn, "p1", "a.jpg", "completed");
+        // A row rebuilt from a bucket listing starts without its variant set.
+        conn.execute("UPDATE photos SET variants_ok = 0 WHERE id = 'p1'", [])
+            .unwrap();
+        let created_at: String = conn
+            .query_row("SELECT created_at FROM photos WHERE id = 'p1'", [], |r| r.get(0))
+            .unwrap();
+
+        let processed = pipeline::process(&test_jpeg(80, 40), "inbox/a.jpg").unwrap();
+        store_replaced_conn(&conn, "p1", 999, &processed).unwrap();
+
+        let (width, height, size, status, variants_ok): (u32, u32, i64, String, bool) = conn
+            .query_row(
+                "SELECT width, height, file_size, processing_status, variants_ok
+                 FROM photos WHERE id = 'p1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+            )
+            .unwrap();
+        assert_eq!((width, height), (80, 40));
+        assert_eq!(size, 999);
+        assert_eq!(status, "completed");
+        // The replacement brought a full derivative set with it.
+        assert!(variants_ok);
+
+        // Identity is untouched — the photo kept its address and its age.
+        let (filename, s3_key, folder, created): (String, String, String, String) = conn
+            .query_row(
+                "SELECT filename, s3_key, folder, created_at FROM photos WHERE id = 'p1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(filename, "a.jpg");
+        assert_eq!(s3_key, "inbox/a.jpg");
+        assert_eq!(folder, "inbox");
+        assert_eq!(created, created_at);
+    }
+
+    /// A tiny valid JPEG so `pipeline::process` has something real to chew on.
+    fn test_jpeg(width: u32, height: u32) -> Vec<u8> {
+        let img = image::RgbImage::from_fn(width, height, |x, y| {
+            image::Rgb([(x % 256) as u8, (y % 256) as u8, 128])
+        });
+        let mut out = Vec::new();
+        img.write_with_encoder(image::codecs::jpeg::JpegEncoder::new_with_quality(
+            &mut out, 90,
+        ))
+        .unwrap();
+        out
     }
 
     #[test]

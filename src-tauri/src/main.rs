@@ -1,6 +1,7 @@
 // Prevents an extra console window on Windows in release builds.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod cdn;
 mod commands;
 mod db;
 mod error;
@@ -93,6 +94,9 @@ fn main() {
             commands::rename_folder,
             commands::delete_photo,
             commands::import_photos,
+            commands::replace_photo,
+            commands::replace_photos,
+            commands::check_import_collisions,
             commands::cancel_import,
             commands::export_photos,
             settings::get_settings,
