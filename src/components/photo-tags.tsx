@@ -12,9 +12,12 @@ import type { Tag } from "@/lib/types";
 export function PhotoTags({
   photoId,
   disabled = false,
+  onTagsChange,
 }: {
   photoId: string;
   disabled?: boolean;
+  /** Fired after a tag is successfully added or removed on this photo. */
+  onTagsChange?: () => void;
 }) {
   const [tags, setTags] = useState<Tag[]>([]);
   const [allTags, setAllTags] = useState<Tag[]>([]);
@@ -37,6 +40,7 @@ export function PhotoTags({
       setAllTags((prev) =>
         prev.some((t) => t.id === tag.id) ? prev : [...prev, tag]
       );
+      onTagsChange?.();
     } catch {
       // Adding failed; leave the tag list as it was so the user can retry.
     }
@@ -46,6 +50,7 @@ export function PhotoTags({
     try {
       await removePhotoTag(photoId, tag.id);
       setTags((prev) => prev.filter((t) => t.id !== tag.id));
+      onTagsChange?.();
     } catch {
       // Keep the tag; removal failed.
     }

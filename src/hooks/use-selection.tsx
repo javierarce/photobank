@@ -27,6 +27,10 @@ export type SelectionContextValue = {
   /** Replace the selection with exactly these photos (used by Cmd+A). */
   selectAll: (photos: Photo[]) => void;
   clear: () => void;
+  /** Drop any selected photo whose id isn't in `ids` — keeps the selection
+   * confined to the tiles a filter is actually showing, so bulk actions can
+   * never reach a photo the user can't see. */
+  retain: (ids: Set<string>) => void;
   /** The selectable photos published by the visible grid (for "Select all"). */
   pool: Photo[];
   setPool: (photos: Photo[]) => void;

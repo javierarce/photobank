@@ -297,6 +297,12 @@ export type SuggestOptions = {
   showAll?: boolean;
   /** Cap on value suggestions (qualifier lists are short and never capped). */
   limit?: number;
+  /**
+   * Qualifier keywords to omit entirely (neither the keyword nor its values are
+   * suggested). The in-folder search field hides `folder` this way — the search
+   * is already confined to one folder, so picking another is pointless.
+   */
+  excludeKeywords?: string[];
 };
 
 /**
@@ -309,8 +315,9 @@ export function getSuggestions(
   query: string,
   caret: number,
   values: SearchValues,
-  { showAll = false, limit = 8 }: SuggestOptions = {}
+  { showAll = false, limit = 8, excludeKeywords = [] }: SuggestOptions = {}
 ): SuggestResult {
+  const excluded = new Set(excludeKeywords);
   const range = activeSpan(query, caret);
   const token = query.slice(range.start, range.end);
   const dash = token.startsWith("-") ? "-" : "";
@@ -321,7 +328,9 @@ export function getSuggestions(
     const field = body.slice(0, colon).toLowerCase();
     const prefix = BY_KEYWORD.get(field);
     const pool = prefix ? VALUE_POOL[prefix.keyword] : undefined;
-    if (!prefix || !pool) return { range, items: [] };
+    if (!prefix || !pool || excluded.has(prefix.keyword)) {
+      return { range, items: [] };
+    }
 
     const partial = body.slice(colon + 1).replace(/"/g, "").toLowerCase();
     const used = appliedValues(query, range, prefix.keyword);
@@ -356,6 +365,7 @@ export function getSuggestions(
   if (typed.length === 0 && !showAll) return { range, items: [] };
   const items: Suggestion[] = [];
   for (const prefix of PREFIXES) {
+    if (excluded.has(prefix.keyword)) continue;
     const keyword =
       typed.length === 0
         ? prefix.keyword

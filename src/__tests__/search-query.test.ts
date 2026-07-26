@@ -188,6 +188,23 @@ describe("getSuggestions", () => {
     expect(labels).toEqual([...new Set(labels)]); // no dupes
   });
 
+  it("omits excluded qualifiers from the keyword list", () => {
+    const opts = { showAll: true, excludeKeywords: ["folder"] };
+    const labels = getSuggestions("", 0, VALUES, opts).items.map((i) => i.label);
+    expect(labels).not.toContain("folder:");
+    expect(labels).toContain("tag:"); // others unaffected
+    // A partial that would otherwise complete it stays empty too.
+    expect(getSuggestions("fol", 3, VALUES, opts).items).toEqual([]);
+  });
+
+  it("suggests no values for an excluded qualifier", () => {
+    // Even a fully-typed `folder:` offers nothing when folder is excluded.
+    const { items } = getSuggestions("folder:", 7, VALUES, {
+      excludeKeywords: ["folder"],
+    });
+    expect(items).toEqual([]);
+  });
+
   it("still filters a partial word even with showAll", () => {
     const { items } = getSuggestions("ca", 2, VALUES, { showAll: true });
     expect(items.map((i) => i.label)).toContain("camera:");

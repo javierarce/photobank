@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
 import { FolderTitle } from "@/components/folder-title";
+import { SearchField } from "@/components/search-field";
 import { PhotoGrid, PhotoGridRef } from "@/components/photo-grid";
 import { SelectionToolbar } from "@/components/selection-toolbar";
 import { SortDropdown } from "@/components/sort-dropdown";
@@ -12,6 +13,12 @@ export default function FolderPage() {
   // react-router decodes the param, so "My%20Trip" arrives as "My Trip"
   const { folder = "" } = useParams();
   const [editingTitle, setEditingTitle] = useState(false);
+  // The in-folder search query — an Ankitron-style typed query (tag:, camera:,
+  // iso:>=800, …) the grid runs against this folder.
+  const [query, setQuery] = useState("");
+  // The grid reports whether this folder has any photos; the search field only
+  // appears once there's something to search.
+  const [hasPhotos, setHasPhotos] = useState(false);
   // While the backend rename is re-keying the folder's photos, mutations of
   // the folder are locked out (Upload, Rename, drag-and-drop): a photo added
   // mid-rename would be left behind under the old name.
@@ -29,6 +36,16 @@ export default function FolderPage() {
     cancelUpload,
     onUploadComplete,
   } = useUpload();
+
+  // The folder page stays mounted across folder navigation (only the grid is
+  // keyed), so clear the search when the folder changes. Adjusting during
+  // render — not in an effect — avoids a stale-query flash on the new folder.
+  const [searchedFolder, setSearchedFolder] = useState(folder);
+  if (searchedFolder !== folder) {
+    setSearchedFolder(folder);
+    setQuery("");
+    setHasPhotos(false);
+  }
 
   // Refresh so the grid picks up the new photo rows once an import into this
   // folder settles; the grid dismisses each upload tile itself when the
@@ -116,7 +133,22 @@ export default function FolderPage() {
           )}
         </div>
 
-        <section className="mt-8">
+        {/* Narrow the grid with the same typed-query engine as global search
+            (tag:, camera:, iso:>=800, …), scoped to this folder — only once the
+            folder actually has photos to search. */}
+        {hasPhotos && (
+          <div className="mt-4">
+            <SearchField
+              value={query}
+              onChange={setQuery}
+              folder={folder}
+              placeholder="Search — try tag:sunset, iso:>=800"
+              ariaLabel="Search this folder"
+            />
+          </div>
+        )}
+
+        <section className={hasPhotos ? "mt-6" : "mt-8"}>
           {/* Key by folder so navigating between folders remounts the grid:
               its photo state resets and the new folder loads fresh, rather than
               the previous folder's tiles lingering (and animating out) while the
@@ -126,6 +158,8 @@ export default function FolderPage() {
             folder={folder}
             ref={photoGridRef}
             sortMode={sortMode}
+            query={query}
+            onHasPhotosChange={setHasPhotos}
             uploads={folderUploads}
             onDismissUpload={removeUpload}
             onCancelUpload={cancelUpload}

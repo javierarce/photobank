@@ -14,6 +14,9 @@ type Props = {
   onRename?: (photo: Photo, newFilename: string) => Promise<void>;
   /** Fetch EXIF/dimensions for this photo from the bucket on demand. */
   onLoadInfo?: (photo: Photo) => Promise<void>;
+  /** Called after the photo's tags are added/removed, so the surrounding view
+   * can re-run a tag-based search. */
+  onTagsChange?: () => void;
   // Provided when there is a neighbouring photo to move to; omitted at the
   // ends of the list so the arrows and arrow keys become no-ops.
   onPrev?: () => void;
@@ -33,6 +36,7 @@ export function PhotoLightbox({
   onMove,
   onRename,
   onLoadInfo,
+  onTagsChange,
   onPrev,
   onNext,
 }: Props) {
@@ -370,7 +374,11 @@ export function PhotoLightbox({
             <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-foreground/40">
               Tags
             </p>
-            <PhotoTags photoId={photo.id} disabled={renaming} />
+            <PhotoTags
+              photoId={photo.id}
+              disabled={renaming}
+              onTagsChange={onTagsChange}
+            />
           </div>
 
           <div className="mt-auto flex flex-col gap-2">

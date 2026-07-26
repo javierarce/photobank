@@ -14,6 +14,7 @@ import {
   getTagsForPhotos,
   listTags,
   removeTagsFromPhotos,
+  updatePhoto,
 } from "@/lib/api";
 import type { Photo } from "@/lib/types";
 import { makePhoto } from "./fixtures";
@@ -29,8 +30,26 @@ vi.mock("@/lib/api", () => ({
   removeTagsFromPhotos: vi.fn(),
 }));
 
+// Surfaces the edit callbacks the results page wires up, so tests can trigger
+// an in-lightbox edit the way a real tag/rename would.
 vi.mock("@/components/photo-lightbox", () => ({
-  PhotoLightbox: () => <div data-testid="lightbox" />,
+  PhotoLightbox: ({
+    photo,
+    onTagsChange,
+    onRename,
+    onClose,
+  }: {
+    photo: Photo;
+    onTagsChange?: () => void;
+    onRename?: (photo: Photo, name: string) => Promise<void>;
+    onClose?: () => void;
+  }) => (
+    <div data-testid="lightbox">
+      <button onClick={onTagsChange}>change-tags</button>
+      <button onClick={() => onRename?.(photo, "renamed.jpg")}>rename</button>
+      <button onClick={onClose}>close</button>
+    </div>
+  ),
 }));
 
 const mockSearchPhotos = vi.mocked(searchPhotos);
@@ -195,5 +214,56 @@ describe("SearchResults", () => {
     // The search re-runs and the now-unmatching photos are gone.
     await waitFor(() => expect(mockSearchPhotos).toHaveBeenCalledTimes(2));
     expect(await screen.findByText("No results found.")).toBeInTheDocument();
+  });
+
+  it("re-runs the search when the open photo's tags change", async () => {
+    mockSearchPhotos
+      .mockResolvedValueOnce(mockPhotos)
+      .mockResolvedValueOnce([mockPhotos[1]]);
+
+    renderSearch({ q: "tag:sunset" });
+    fireEvent.dblClick(await screen.findByAltText("beach.jpg"));
+
+    fireEvent.click(screen.getByText("change-tags"));
+    await waitFor(() => expect(mockSearchPhotos).toHaveBeenCalledTimes(2));
+  });
+
+  it("re-runs the search after renaming the open photo", async () => {
+    vi.mocked(updatePhoto).mockResolvedValue({
+      ...mockPhotos[0],
+      filename: "renamed.jpg",
+    });
+    mockSearchPhotos
+      .mockResolvedValueOnce(mockPhotos)
+      .mockResolvedValueOnce([mockPhotos[1]]);
+
+    renderSearch({ q: "filename:beach" });
+    fireEvent.dblClick(await screen.findByAltText("beach.jpg"));
+
+    // A rename can change whether the photo still matches a filename query.
+    fireEvent.click(screen.getByText("rename"));
+    await waitFor(() => expect(mockSearchPhotos).toHaveBeenCalledTimes(2));
+  });
+
+  it("keeps the lightbox mounted when an edit inside it empties the results", async () => {
+    mockSearchPhotos.mockResolvedValueOnce(mockPhotos).mockResolvedValueOnce([]);
+
+    renderSearch({ q: "tag:sunset" });
+    fireEvent.dblClick(await screen.findByAltText("beach.jpg"));
+    expect(screen.getByTestId("lightbox")).toBeInTheDocument();
+
+    // Removing the searched tag empties the results while the lightbox is open.
+    fireEvent.click(screen.getByText("change-tags"));
+    await waitFor(() => expect(mockSearchPhotos).toHaveBeenCalledTimes(2));
+
+    // It must stay mounted rather than being torn down with `active` still set,
+    // which would strand it and pop it back open over a later search.
+    expect(screen.getByTestId("lightbox")).toBeInTheDocument();
+    expect(screen.queryByText("No results found.")).toBeNull();
+
+    // Closing it reveals the empty state.
+    fireEvent.click(screen.getByText("close"));
+    expect(await screen.findByText("No results found.")).toBeInTheDocument();
+    expect(screen.queryByTestId("lightbox")).toBeNull();
   });
 });

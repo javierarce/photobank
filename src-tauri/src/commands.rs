@@ -6,7 +6,9 @@ use rusqlite::{Connection, OptionalExtension};
 use tauri::State;
 use uuid::Uuid;
 
-use crate::db::{self, Db, FolderCount, Photo, SearchFacets, Tag, TagCount, PHOTO_COLUMNS};
+use crate::db::{
+    self, Db, FolderCount, FolderFacets, Photo, SearchFacets, Tag, TagCount, PHOTO_COLUMNS,
+};
 use crate::error::{Error, Result};
 
 #[tauri::command]
@@ -328,13 +330,18 @@ fn parse_term(term: &str) -> Option<Clause> {
     })
 }
 
-/// Turn the search inputs into a full SELECT plus its bind parameters, or None
-/// when nothing to filter on. `q` is the Ankitron-style query string; `tag` and
-/// `camera` are the legacy structured params, honored as extra AND filters.
-fn build_query(
+/// Build just the WHERE body (no SELECT, no ORDER BY, no LIMIT) plus its bind
+/// parameters, or None when there is nothing to filter on. `q` is the
+/// Ankitron-style query string; `tag` and `camera` are the legacy structured
+/// params, honored as extra AND filters. `folder`, when set, scopes the whole
+/// search to one folder (the in-folder search field) — a query with only a
+/// `folder` scope still matches nothing, so scoping never turns an empty query
+/// into a full-folder listing.
+fn build_conditions(
     q: Option<&str>,
     tag: Option<&str>,
     camera: Option<&str>,
+    folder: Option<&str>,
 ) -> Option<(String, Vec<Value>)> {
     let mut clauses: Vec<Clause> = Vec::new();
 
@@ -352,8 +359,18 @@ fn build_query(
         clauses.push(camera_clause(camera));
     }
 
+    // No actual predicate means nothing to search — a bare folder scope must not
+    // list the whole folder, so bail before adding it.
     if clauses.is_empty() {
         return None;
+    }
+
+    if let Some(folder) = folder.map(str::trim).filter(|s| !s.is_empty()) {
+        clauses.push(Clause {
+            sql: "folder = ?".to_string(),
+            params: vec![Value::Text(folder.to_string())],
+            negated: false,
+        });
     }
 
     let mut conditions: Vec<String> = Vec::new();
@@ -370,11 +387,35 @@ fn build_query(
         params_list.extend(clause.params);
     }
 
+    Some((conditions.join(" AND "), params_list))
+}
+
+/// The results-page query: full rows, newest first, capped — this backs a
+/// scrollable list of results, where showing the newest 200 is a reasonable
+/// bound. Use [`build_id_query`] for filtering an already-loaded set, where a
+/// cap would silently subtract matches.
+fn build_query(
+    q: Option<&str>,
+    tag: Option<&str>,
+    camera: Option<&str>,
+    folder: Option<&str>,
+) -> Option<(String, Vec<Value>)> {
+    let (where_sql, params) = build_conditions(q, tag, camera, folder)?;
     let sql = format!(
-        "SELECT {PHOTO_COLUMNS} FROM photos WHERE {} ORDER BY created_at DESC LIMIT 200",
-        conditions.join(" AND ")
+        "SELECT {PHOTO_COLUMNS} FROM photos WHERE {where_sql} \
+         ORDER BY created_at DESC LIMIT 200"
     );
-    Some((sql, params_list))
+    Some((sql, params))
+}
+
+/// The in-folder filter query: matching ids only, UNCAPPED. The caller already
+/// holds every row in the folder and uses these ids to hide the non-matching
+/// tiles, so a `LIMIT` here would silently hide photos that do match (and would
+/// narrow "Select all" and the bulk actions built on it). Ids are all the caller
+/// needs, so this also avoids shipping full rows over IPC per keystroke.
+fn build_id_query(q: &str, folder: &str) -> Option<(String, Vec<Value>)> {
+    let (where_sql, params) = build_conditions(Some(q), None, None, Some(folder))?;
+    Some((format!("SELECT id FROM photos WHERE {where_sql}"), params))
 }
 
 #[tauri::command]
@@ -383,10 +424,14 @@ pub fn search_photos(
     q: Option<String>,
     tag: Option<String>,
     camera: Option<String>,
+    folder: Option<String>,
 ) -> Result<Vec<Photo>> {
-    let Some((sql, params_list)) =
-        build_query(q.as_deref(), tag.as_deref(), camera.as_deref())
-    else {
+    let Some((sql, params_list)) = build_query(
+        q.as_deref(),
+        tag.as_deref(),
+        camera.as_deref(),
+        folder.as_deref(),
+    ) else {
         return Ok(Vec::new());
     };
 
@@ -396,6 +441,24 @@ pub fn search_photos(
         .query_map(rusqlite::params_from_iter(params_list), db::photo_from_row)?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(photos)
+}
+
+/// Ids of the photos in `folder` matching `q` — the in-folder search field's
+/// filter. Uncapped and ids-only; see [`build_id_query`].
+#[tauri::command]
+pub fn search_photo_ids(db: State<Db>, q: String, folder: String) -> Result<Vec<String>> {
+    let Some((sql, params_list)) = build_id_query(&q, &folder) else {
+        return Ok(Vec::new());
+    };
+
+    let conn = db.0.lock().unwrap();
+    let mut stmt = conn.prepare(&sql)?;
+    let ids = stmt
+        .query_map(rusqlite::params_from_iter(params_list), |row| {
+            row.get::<_, String>(0)
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(ids)
 }
 
 /// Gather the distinct, non-empty values of a hardcoded metadata column. The
@@ -424,6 +487,55 @@ fn search_facets(conn: &rusqlite::Connection) -> rusqlite::Result<SearchFacets> 
 pub fn list_search_facets(db: State<Db>) -> Result<SearchFacets> {
     let conn = db.0.lock().unwrap();
     Ok(search_facets(&conn)?)
+}
+
+/// Distinct, non-empty values of a metadata column within one folder. The
+/// column name is hardcoded (never user-supplied), so interpolating it is safe;
+/// the folder is bound.
+fn distinct_column_in_folder(
+    conn: &rusqlite::Connection,
+    column: &str,
+    folder: &str,
+) -> rusqlite::Result<Vec<String>> {
+    let sql = format!(
+        "SELECT DISTINCT {column} FROM photos \
+         WHERE folder = ?1 AND {column} IS NOT NULL AND {column} != '' \
+         ORDER BY {column} COLLATE NOCASE"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let values = stmt
+        .query_map(params![folder], |row| row.get::<_, String>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(values)
+}
+
+/// Distinct tag names carried by the photos in one folder.
+fn folder_tags(conn: &rusqlite::Connection, folder: &str) -> rusqlite::Result<Vec<String>> {
+    let mut stmt = conn.prepare(
+        "SELECT DISTINCT tags.name FROM tags \
+         INNER JOIN photo_tags ON photo_tags.tag_id = tags.id \
+         INNER JOIN photos ON photos.id = photo_tags.photo_id \
+         WHERE photos.folder = ?1 ORDER BY tags.name COLLATE NOCASE",
+    )?;
+    let names = stmt
+        .query_map(params![folder], |row| row.get::<_, String>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(names)
+}
+
+fn folder_facets(conn: &rusqlite::Connection, folder: &str) -> rusqlite::Result<FolderFacets> {
+    Ok(FolderFacets {
+        tags: folder_tags(conn, folder)?,
+        makes: distinct_column_in_folder(conn, "camera_make", folder)?,
+        models: distinct_column_in_folder(conn, "camera_model", folder)?,
+        lenses: distinct_column_in_folder(conn, "lens", folder)?,
+    })
+}
+
+#[tauri::command]
+pub fn list_folder_facets(db: State<Db>, folder: String) -> Result<FolderFacets> {
+    let conn = db.0.lock().unwrap();
+    Ok(folder_facets(&conn, &folder)?)
 }
 
 #[tauri::command]
@@ -894,7 +1006,13 @@ mod tests {
     /// Run the built query and return the matching ids, sorted so assertions
     /// don't depend on the (tie-broken) result order.
     fn search(conn: &Connection, q: &str) -> Vec<String> {
-        let Some((sql, bind)) = build_query(Some(q), None, None) else {
+        search_scoped(conn, q, None)
+    }
+
+    /// Like [`search`], but optionally restricted to a single folder — mirrors
+    /// the in-folder search field passing its folder as a scope.
+    fn search_scoped(conn: &Connection, q: &str, folder: Option<&str>) -> Vec<String> {
+        let Some((sql, bind)) = build_query(Some(q), None, None, folder) else {
             return Vec::new();
         };
         // Guard against columns drifting out of sync with photo_from_row.
@@ -926,8 +1044,23 @@ mod tests {
 
     #[test]
     fn empty_query_matches_nothing() {
-        assert!(build_query(Some("   "), None, None).is_none());
-        assert!(build_query(None, None, None).is_none());
+        assert!(build_query(Some("   "), None, None, None).is_none());
+        assert!(build_query(None, None, None, None).is_none());
+        // A folder scope alone is not a predicate — it must not list the folder.
+        assert!(build_query(None, None, None, Some("trips")).is_none());
+    }
+
+    #[test]
+    fn folder_scope_restricts_the_query_to_one_folder() {
+        let conn = fixture();
+        // Unscoped, "beach" matches photo 1 in "trips".
+        assert_eq!(search(&conn, "beach"), vec!["1"]);
+        // Scoped to a different folder, the same query matches nothing.
+        assert!(search_scoped(&conn, "beach", Some("inbox")).is_empty());
+        // Scoped to its own folder, it still matches.
+        assert_eq!(search_scoped(&conn, "beach", Some("trips")), vec!["1"]);
+        // A broad term that would span folders is confined to the scope.
+        assert_eq!(search_scoped(&conn, "jpg", Some("trips")), vec!["1", "2"]);
     }
 
     #[test]
@@ -1017,6 +1150,69 @@ mod tests {
         assert_eq!(facets.makes, vec!["Canon", "FUJIFILM"]);
         assert_eq!(facets.models, vec!["EOS R5", "X-T5", "X100V"]);
         assert_eq!(facets.lenses, vec!["23mm", "50mm"]);
+    }
+
+    #[test]
+    fn folder_filter_query_is_uncapped_and_scoped() {
+        use super::build_id_query;
+        let conn = open_in_memory();
+        // 250 matching photos in "big" — more than the results-page LIMIT 200 —
+        // plus one in another folder that must not leak in.
+        for i in 0..250 {
+            insert(&conn, &format!("b{i}"), &format!("shot{i}.jpg"), "big", None, None, None, None, None, None);
+        }
+        insert(&conn, "other", "shot999.jpg", "elsewhere", None, None, None, None, None, None);
+
+        let (sql, bind) = build_id_query("shot", "big").unwrap();
+        // The filter must never truncate: a cap would silently hide matching
+        // photos from a grid that already shows every row in the folder.
+        assert!(!sql.to_uppercase().contains("LIMIT"));
+        let mut stmt = conn.prepare(&sql).unwrap();
+        let ids = stmt
+            .query_map(rusqlite::params_from_iter(bind), |row| row.get::<_, String>(0))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<String>>>()
+            .unwrap();
+        assert_eq!(ids.len(), 250);
+        assert!(!ids.iter().any(|id| id == "other"));
+
+        // The capped results-page query truncates the same match set.
+        let (capped_sql, capped_bind) = build_query(Some("shot"), None, None, Some("big")).unwrap();
+        let mut stmt = conn.prepare(&capped_sql).unwrap();
+        let capped = stmt
+            .query_map(rusqlite::params_from_iter(capped_bind), |row| row.get::<_, String>(0))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<String>>>()
+            .unwrap();
+        assert_eq!(capped.len(), 200);
+    }
+
+    #[test]
+    fn folder_filter_query_matches_nothing_for_an_empty_query() {
+        use super::build_id_query;
+        // An empty query is not "everything in the folder" — the caller shows
+        // the unfiltered grid instead.
+        assert!(build_id_query("   ", "big").is_none());
+    }
+
+    #[test]
+    fn folder_facets_are_scoped_to_the_folder() {
+        use super::folder_facets;
+        let conn = fixture();
+
+        // "trips" holds the Fuji + Canon photos and their tags.
+        let trips = folder_facets(&conn, "trips").unwrap();
+        assert_eq!(trips.tags, vec!["night", "sunset"]);
+        assert_eq!(trips.makes, vec!["Canon", "FUJIFILM"]);
+        assert_eq!(trips.models, vec!["EOS R5", "X100V"]);
+        assert_eq!(trips.lenses, vec!["23mm", "50mm"]);
+
+        // "inbox" has only the metadata-less, untagged photo — every pool empty.
+        let inbox = folder_facets(&conn, "inbox").unwrap();
+        assert!(inbox.tags.is_empty());
+        assert!(inbox.makes.is_empty());
+        assert!(inbox.models.is_empty());
+        assert!(inbox.lenses.is_empty());
     }
 
     #[test]
