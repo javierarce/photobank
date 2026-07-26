@@ -46,7 +46,7 @@ type Props = {
   /** How to order the tiles; defaults to newest-first by filename date. */
   sortMode?: SortMode;
   /** Ankitron-style typed query (tag:, camera:, iso:>=800, …) run backend-side
-   * by search_photos scoped to this folder; empty shows every photo. */
+   * by search_photo_ids scoped to this folder; empty shows every photo. */
   query?: string;
   /** Notifies the parent whether this folder has any photos (drives the
    * in-folder search field, which is pointless on an empty folder). */
