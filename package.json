@@ -12,6 +12,8 @@
     "preview": "vite preview",
     "tauri": "tauri",
     "lint": "eslint",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.scripts.json",
+    "release": "node scripts/release.mjs",
     "icons": "node scripts/generate-icon.mjs && tauri icon build/icon.png -o src-tauri/icons",
     "test": "vitest run",
     "test:watch": "vitest"
