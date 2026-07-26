@@ -1,0 +1,25 @@
+{
+  // The build scripts and their tests. Kept out of the app's tsconfig, which
+  // has no node types on purpose — `process` and `node:fs` should not
+  // type-check inside src/.
+  //
+  // allowJs (without checkJs) means the .mjs scripts are not error-checked
+  // themselves, but their types are inferred from the implementation — so the
+  // tests are checked against what release-lib.mjs actually exports, with no
+  // hand-written declaration file to drift out of sync.
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "strict": true,
+    "noEmit": true,
+    "allowJs": true,
+    "skipLibCheck": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "types": ["node"]
+  },
+  "include": ["scripts"],
+  "exclude": ["node_modules"]
+}

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 
 // A minimal enter/exit presence layer for keyed lists — enough to let grid
 // tiles animate in when added and animate out *in place* when removed, without
@@ -107,8 +107,14 @@ export function usePresence<T>(
     items.map((item) => ({ key: keyOf(item), item, state: "present" as const }))
   );
   const exitTimers = useRef(new Map<string, ReturnType<typeof setTimeout>>());
+  // Kept in a ref so the reconcile effect below can read the latest keyOf
+  // without listing it as a dependency (callers pass a fresh arrow each
+  // render). Written in a layout effect, which commits before the effects
+  // underneath it — so the reconcile always sees this render's keyOf.
   const keyRef = useRef(keyOf);
-  keyRef.current = keyOf;
+  useLayoutEffect(() => {
+    keyRef.current = keyOf;
+  });
 
   // Reconcile whenever the live list changes. `items` is a fresh array each
   // render, so bail out via `sameEntries` when nothing actually moved to avoid a

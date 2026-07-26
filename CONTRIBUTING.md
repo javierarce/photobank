@@ -63,8 +63,11 @@ Real signing, notarization, and updater artifacts happen in CI when you push a
 - `npm run build:tauri` — build and bundle the native app (`.app`/`.dmg`)
 - `npm run preview` — preview the production web build
 - `npm run lint` — run ESLint
+- `npm run typecheck` — type-check the app (`tsconfig.json`) and the build
+  scripts (`tsconfig.scripts.json`), without emitting
 - `npm test` — run the Vitest unit suite (`npm run test:watch` for watch mode)
 - `npm run icons` — regenerate the app icon + dmg background from `build/*.svg`
+- `npm run release` — cut a release (see [RELEASING.md](RELEASING.md))
 - `(cd src-tauri && cargo test)` — run the Rust unit tests
 
 ## Tech stack

@@ -75,8 +75,9 @@ scripts, project layout).
 
 ## Releasing
 
-Push a `v*` tag — CI builds, signs, notarizes, and publishes `Photobank.dmg`
-and the updater feed. See [RELEASING.md](RELEASING.md).
+`npm run release` bumps the version, takes your release notes, and pushes the
+tag that makes CI build, sign, notarize, and publish `Photobank.dmg` plus the
+updater feed. See [RELEASING.md](RELEASING.md).
 
 ## License
 
