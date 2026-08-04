@@ -22,11 +22,43 @@ pub struct S3Settings {
     pub region: String,
     pub bucket: String,
     pub access_key_id: String,
+    /// CDN host serving the bucket (e.g. "img.example.com"). When set, object
+    /// reads go through it instead of S3 GetObject — CloudFront's always-free
+    /// tier covers far more transfer than S3 egress does. Optional and
+    /// independent of `cloudfront_distribution_id`.
+    pub cloudfront_domain: Option<String>,
+    /// Distribution to invalidate after a key's bytes change (replace) or the
+    /// key goes away (delete, move, folder rename). Needed even when reads
+    /// don't go through the CDN, since anything else hotlinking the bucket
+    /// through it would otherwise serve the old object until the TTL expires.
+    pub cloudfront_distribution_id: Option<String>,
+}
+
+/// Trim an optional setting down to Some(non-empty) or None.
+fn optional(value: &Option<String>) -> Option<&str> {
+    value.as_deref().map(str::trim).filter(|v| !v.is_empty())
 }
 
 impl S3Settings {
     fn custom_endpoint(&self) -> Option<&str> {
-        self.endpoint.as_deref().map(str::trim).filter(|e| !e.is_empty())
+        optional(&self.endpoint)
+    }
+
+    /// Origin to fetch objects from, e.g. "https://img.example.com". Accepts
+    /// the domain with or without a scheme (users paste both), and always
+    /// resolves to https — a CloudFront distribution always speaks it, and
+    /// plaintext would leak the whole library over the wire.
+    pub fn cdn_read_base(&self) -> Option<String> {
+        let domain = optional(&self.cloudfront_domain)?;
+        let host = domain
+            .trim_start_matches("https://")
+            .trim_start_matches("http://")
+            .trim_end_matches('/');
+        (!host.is_empty()).then(|| format!("https://{host}"))
+    }
+
+    pub fn distribution_id(&self) -> Option<&str> {
+        optional(&self.cloudfront_distribution_id)
     }
 
     pub fn is_complete(&self) -> bool {
@@ -44,6 +76,16 @@ pub struct S3Ctx {
     /// custom endpoints — recorded in the catalog so mutations can refuse a
     /// bucket the catalog wasn't built from.
     pub identity: String,
+    /// "https://cdn.example.com" when reads should go through the CDN.
+    pub cdn_read_base: Option<String>,
+    /// CloudFront client + distribution, when invalidation is configured.
+    pub cdn: Option<CdnCtx>,
+}
+
+#[derive(Clone)]
+pub struct CdnCtx {
+    pub client: aws_sdk_cloudfront::Client,
+    pub distribution_id: String,
 }
 
 /// None until complete settings + a stored secret produce a client.
@@ -134,6 +176,30 @@ async fn build_ctx(settings: &S3Settings, secret: &str) -> S3Ctx {
     }
     let sdk_config = loader.load().await;
 
+    // CloudFront is a global service reached at us-east-1, and it must never
+    // inherit a custom S3 endpoint (an R2 URL would swallow the API call), so
+    // it gets its own config rather than reusing `sdk_config`.
+    let cdn = match settings.distribution_id() {
+        Some(distribution_id) => {
+            let cdn_config = aws_config::defaults(aws_config::BehaviorVersion::latest())
+                .region(Region::new("us-east-1"))
+                .credentials_provider(Credentials::new(
+                    settings.access_key_id.trim(),
+                    secret,
+                    None,
+                    None,
+                    "photobank-settings",
+                ))
+                .load()
+                .await;
+            Some(CdnCtx {
+                client: aws_sdk_cloudfront::Client::new(&cdn_config),
+                distribution_id: distribution_id.to_string(),
+            })
+        }
+        None => None,
+    };
+
     let mut builder = aws_sdk_s3::config::Builder::from(&sdk_config)
         // R2 and other S3-compatible services reject the SDK's newer default
         // checksums (mirrors the old src/lib/s3.ts WHEN_REQUIRED settings)
@@ -151,6 +217,8 @@ async fn build_ctx(settings: &S3Settings, secret: &str) -> S3Ctx {
         client: aws_sdk_s3::Client::from_conf(builder.build()),
         bucket: settings.bucket.trim().to_string(),
         identity: bucket_identity(settings),
+        cdn_read_base: settings.cdn_read_base(),
+        cdn,
     }
 }
 
@@ -269,6 +337,14 @@ mod tests {
             region: "auto".into(),
             bucket: bucket.into(),
             access_key_id: "k".into(),
+            ..Default::default()
+        }
+    }
+
+    fn with_domain(domain: Option<&str>) -> S3Settings {
+        S3Settings {
+            cloudfront_domain: domain.map(str::to_string),
+            ..settings("photos", None)
         }
     }
 
@@ -280,5 +356,33 @@ mod tests {
             bucket_identity(&settings("photos", Some("https://r2.example.com"))),
             "photos @ https://r2.example.com"
         );
+    }
+
+    #[test]
+    fn cdn_read_base_normalizes_however_the_domain_was_pasted() {
+        let expected = Some("https://img.example.com".to_string());
+        assert_eq!(with_domain(Some("img.example.com")).cdn_read_base(), expected);
+        assert_eq!(with_domain(Some(" img.example.com/ ")).cdn_read_base(), expected);
+        assert_eq!(with_domain(Some("https://img.example.com")).cdn_read_base(), expected);
+        // Even an http:// paste is upgraded — the library shouldn't travel in
+        // the clear just because the user typed the wrong scheme.
+        assert_eq!(with_domain(Some("http://img.example.com")).cdn_read_base(), expected);
+    }
+
+    #[test]
+    fn cdn_read_base_is_none_when_unset_or_blank() {
+        assert_eq!(with_domain(None).cdn_read_base(), None);
+        assert_eq!(with_domain(Some("   ")).cdn_read_base(), None);
+        assert_eq!(with_domain(Some("https://")).cdn_read_base(), None);
+    }
+
+    #[test]
+    fn distribution_id_ignores_blanks() {
+        let mut s = settings("photos", None);
+        assert_eq!(s.distribution_id(), None);
+        s.cloudfront_distribution_id = Some("  ".into());
+        assert_eq!(s.distribution_id(), None);
+        s.cloudfront_distribution_id = Some(" E123ABC ".into());
+        assert_eq!(s.distribution_id(), Some("E123ABC"));
     }
 }

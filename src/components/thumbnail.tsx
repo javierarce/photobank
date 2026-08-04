@@ -38,8 +38,13 @@ export function Thumbnail({ photo }: { photo: Photo }) {
         // browser won't re-fire onLoad for an already-loaded, unchanged src,
         // which would otherwise strand the placeholder over a good thumbnail.
         key={marker}
+        // updatedAt also rides along as a cache-buster: a replace keeps the key
+        // but changes the bytes, and the handler serves them `immutable`, so
+        // remounting alone would still show the previous image.
         src={
-          fallback ? originalUrl(photo.s3Key) : imageUrl(photo.s3Key, "640", "webp")
+          fallback
+            ? originalUrl(photo.s3Key, photo.updatedAt)
+            : imageUrl(photo.s3Key, "640", "webp", photo.updatedAt)
         }
         alt={photo.filename}
         className={`h-full w-full object-cover transition-opacity duration-150 ease-out ${

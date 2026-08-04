@@ -175,6 +175,65 @@ describe("FolderList", () => {
     ).toBe("/folders/my%20photos");
   });
 
+  describe("keyboard navigation", () => {
+    const card = (folder: string) =>
+      document.querySelector<HTMLElement>(`[data-nav-id="${folder}"]`);
+    // The keyboard cursor is the card's own DOM focus (highlighted via
+    // :focus-visible in globals.css).
+    const isFocused = (folder: string) => document.activeElement === card(folder);
+
+    async function renderNavList() {
+      mockListFolders.mockResolvedValueOnce([
+        { folder: "vacation", count: 3 },
+        { folder: "barcelona", count: 1 },
+        { folder: "berlin", count: 8 },
+      ]);
+      renderFolderList();
+      await screen.findByText("vacation");
+    }
+
+    it("moves the focus cursor across folders with arrows and vim keys", async () => {
+      await renderNavList();
+
+      // First press seats the cursor on the first folder card (the New folder
+      // card is skipped — it isn't a nav target).
+      fireEvent.keyDown(document.body, { key: "ArrowRight" });
+      expect(isFocused("vacation")).toBe(true);
+
+      fireEvent.keyDown(document.body, { key: "l" }); // vim right
+      expect(isFocused("vacation")).toBe(false);
+      expect(isFocused("barcelona")).toBe(true);
+
+      fireEvent.keyDown(document.body, { key: "h" }); // vim left
+      expect(isFocused("vacation")).toBe(true);
+    });
+
+    it("opens the focused folder with Enter", async () => {
+      await renderNavList();
+
+      fireEvent.keyDown(document.body, { key: "ArrowRight" }); // focus vacation
+      fireEvent.keyDown(document.body, { key: "ArrowRight" }); // focus barcelona
+      fireEvent.keyDown(document.body, { key: "Enter" });
+
+      await waitFor(() => {
+        expect(screen.getByTestId("folder-param")).toHaveTextContent(
+          "barcelona"
+        );
+      });
+    });
+
+    it("does not navigate on grid keys typed into an input", async () => {
+      await renderNavList();
+
+      // Start editing a new folder name; keystrokes there must not drive the
+      // grid cursor or open a folder.
+      fireEvent.click(screen.getByTestId("new-folder-card"));
+      const input = screen.getByTestId("new-folder-input");
+      fireEvent.keyDown(input, { key: "l" });
+      expect(isFocused("vacation")).toBe(false);
+    });
+  });
+
   it("shows an error message when loading fails", async () => {
     mockListFolders.mockRejectedValueOnce("boom");
 

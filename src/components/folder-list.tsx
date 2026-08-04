@@ -2,6 +2,7 @@ import { useEffect, useState, useCallback, useRef } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { listFolders } from "@/lib/api";
 import { useUpload, type UploadFile } from "@/hooks/use-upload";
+import { useGridNavigation } from "@/hooks/use-grid-navigation";
 import type { FolderCount } from "@/lib/types";
 
 export function FolderList() {
@@ -10,6 +11,30 @@ export function FolderList() {
   const [error, setError] = useState<string | null>(null);
   const { files, isDragging, dropFolder, clearCompleted, onUploadComplete } =
     useUpload();
+  const navigate = useNavigate();
+  const gridRef = useRef<HTMLDivElement>(null);
+
+  // Keyboard cursor over the folder cards: arrows/hjkl move DOM focus between
+  // cards (highlight = their :focus-visible style, shared with Tab) and Enter
+  // opens the focused folder. Folders have no selection, so there's no `x`.
+  // Read folders through a ref to keep the id lookup stable across reloads.
+  const foldersRef = useRef(folders);
+  useEffect(() => {
+    foldersRef.current = folders;
+  }, [folders]);
+  const navGetId = useCallback(
+    (i: number) => foldersRef.current[i]?.folder,
+    []
+  );
+  useGridNavigation({
+    count: folders.length,
+    getId: navGetId,
+    containerRef: gridRef,
+    onOpen: (i) => {
+      const folder = foldersRef.current[i];
+      if (folder) navigate(`/folders/${encodeURIComponent(folder.folder)}`);
+    },
+  });
 
   const loadFolders = useCallback(() => {
     listFolders()
@@ -44,7 +69,10 @@ export function FolderList() {
 
   return (
     <>
-      <div className="fade-in grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+      <div
+        ref={gridRef}
+        className="fade-in grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4"
+      >
         <NewFolderCard existing={folders.map((f) => f.folder)} />
         {folders.map((f) => (
           <FolderCard
@@ -163,6 +191,9 @@ function FolderCard({
     <Link
       to={`/folders/${encodeURIComponent(folder.folder)}`}
       data-drop-folder={folder.folder}
+      // Keyboard cursor is this card's focus; highlight in globals.css under
+      // [data-nav-id]:focus-visible.
+      data-nav-id={folder.folder}
       className={`relative flex flex-col gap-1 overflow-hidden rounded-lg border p-4 transition-colors ${border}`}
     >
       <span className="text-sm font-medium text-foreground">

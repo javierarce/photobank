@@ -1,4 +1,6 @@
 import { useEffect, useRef, useState } from "react";
+import { useNavigate } from "react-router-dom";
+import { listen } from "@tauri-apps/api/event";
 import { imageUrl, originalUrl } from "@/lib/image-url";
 import { displayName } from "@/lib/keys";
 import { exportPhotos } from "@/lib/api";
@@ -12,6 +14,9 @@ type Props = {
   onDelete?: (photo: Photo) => void;
   onMove?: (photo: Photo) => void;
   onRename?: (photo: Photo, newFilename: string) => Promise<void>;
+  /** Swap the photo's pixels for another file, keeping its key and tags.
+   * Resolves once the new version is live; rejects with a message string. */
+  onReplace?: (photo: Photo) => Promise<void>;
   /** Fetch EXIF/dimensions for this photo from the bucket on demand. */
   onLoadInfo?: (photo: Photo) => Promise<void>;
   /** Called after the photo's tags are added/removed, so the surrounding view
@@ -35,6 +40,7 @@ export function PhotoLightbox({
   onDelete,
   onMove,
   onRename,
+  onReplace,
   onLoadInfo,
   onTagsChange,
   onPrev,
@@ -46,6 +52,10 @@ export function PhotoLightbox({
   const [fallback, setFallback] = useState(false);
   const [editing, setEditing] = useState(false);
   const [renaming, setRenaming] = useState(false);
+  const [replacing, setReplacing] = useState(false);
+  const [replaceError, setReplaceError] = useState<string | null>(null);
+  /** 0–100 from the backend while a replace runs. */
+  const [replaceProgress, setReplaceProgress] = useState(0);
   const [loadingInfo, setLoadingInfo] = useState(false);
   const [infoError, setInfoError] = useState<string | null>(null);
   // Show and edit the user-facing name (legacy "_original" marker stripped),
@@ -54,6 +64,7 @@ export function PhotoLightbox({
   const [editValue, setEditValue] = useState(name);
   const [error, setError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const navigate = useNavigate();
 
   // Reset transient state when a different photo (or filename) comes in.
   // Adjusting state during render avoids an extra effect-driven render pass.
@@ -64,6 +75,8 @@ export function PhotoLightbox({
     setFallback(false);
     setLoadingInfo(false);
     setInfoError(null);
+    setReplaceError(null);
+    setReplaceProgress(0);
   }
 
   const [prevFilename, setPrevFilename] = useState(photo.filename);
@@ -79,6 +92,45 @@ export function PhotoLightbox({
       inputRef.current.select();
     }
   }, [editing]);
+
+  // The backend reports a replace on the same channel a drop uses, keyed by
+  // the photo's s3_key. Subscribed for as long as the lightbox is open, not
+  // just while replacing: registering a listener is async, so arming it on
+  // click would race the first events.
+  useEffect(() => {
+    const unlisten = listen<{ key: string; progress: number }>(
+      "import://progress",
+      (event) => {
+        if (event.payload.key === photo.s3Key) {
+          setReplaceProgress(event.payload.progress);
+        }
+      }
+    );
+    return () => {
+      unlisten.then((fn) => fn());
+    };
+  }, [photo.s3Key]);
+
+  const handleReplace = async () => {
+    if (!onReplace || replacing) return;
+    setReplaceError(null);
+    setReplaceProgress(0);
+    setReplacing(true);
+    // The picture deliberately stays on screen: onReplace opens the file
+    // picker first, so blanking here would hide the photo before the user has
+    // even chosen a file — and leave it hidden if they back out. It's also
+    // still the truth until the new bytes land. The progress bar carries the
+    // "something is happening" signal instead.
+    try {
+      await onReplace(photo);
+    } catch (err) {
+      // Tauri commands reject with a plain message string (see src/lib/api.ts).
+      // A cancelled file picker resolves without error, so anything here is real.
+      setReplaceError(typeof err === "string" ? err : "Failed to replace photo");
+    } finally {
+      setReplacing(false);
+    }
+  };
 
   const handleLoadInfo = async () => {
     if (!onLoadInfo || loadingInfo) return;
@@ -100,12 +152,15 @@ export function PhotoLightbox({
     const handleKeyDown = (e: KeyboardEvent) => {
       if (editing) return;
       if (e.key === "Escape") onClose();
+      // Navigating mid-replace would carry the in-flight state onto whichever
+      // photo lands next, since the panel outlives the photo it started on.
+      else if (replacing) return;
       else if (e.key === "ArrowLeft") onPrev?.();
       else if (e.key === "ArrowRight") onNext?.();
     };
     document.addEventListener("keydown", handleKeyDown);
     return () => document.removeEventListener("keydown", handleKeyDown);
-  }, [onClose, onPrev, onNext, editing]);
+  }, [onClose, onPrev, onNext, editing, replacing]);
 
   return (
     <div
@@ -146,10 +201,12 @@ export function PhotoLightbox({
             </div>
           )}
           <img
+            // updatedAt doubles as a cache-buster: a replace keeps the key but
+            // changes the bytes, and the handler serves them `immutable`.
             src={
               fallback
-                ? originalUrl(photo.s3Key)
-                : imageUrl(photo.s3Key, "2880", "webp")
+                ? originalUrl(photo.s3Key, photo.updatedAt)
+                : imageUrl(photo.s3Key, "2880", "webp", photo.updatedAt)
             }
             alt={photo.filename}
             onLoad={() => setLoaded(true)}
@@ -158,12 +215,31 @@ export function PhotoLightbox({
               loaded ? "opacity-100" : "opacity-0"
             }`}
           />
+          {/* Same language as the grid's upload tiles: a percentage badge and
+              a bar along the bottom edge. */}
+          {replacing && (
+            <>
+              <span
+                className="absolute left-3 top-3 rounded bg-black/60 px-2 py-1 text-xs font-medium tabular-nums text-white"
+                data-testid="replace-progress"
+              >
+                Replacing… {replaceProgress}%
+              </span>
+              <div className="absolute inset-x-0 bottom-0 h-1 bg-white/20">
+                <div
+                  className="h-full bg-accent transition-[width] duration-200 ease-linear"
+                  style={{ width: `${replaceProgress}%` }}
+                />
+              </div>
+            </>
+          )}
           {onPrev && (
             <button
               type="button"
               aria-label="Previous photo"
               onClick={onPrev}
-              className="absolute left-2 top-1/2 -translate-y-1/2 rounded-full bg-black/40 p-2 text-white/80 transition hover:bg-black/60 hover:text-white active:scale-95"
+              disabled={replacing}
+              className="absolute left-2 top-1/2 -translate-y-1/2 rounded-full bg-black/40 p-2 text-white/80 transition hover:bg-black/60 hover:text-white active:scale-95 disabled:pointer-events-none disabled:opacity-40"
             >
               <svg
                 className="h-6 w-6"
@@ -186,7 +262,8 @@ export function PhotoLightbox({
               type="button"
               aria-label="Next photo"
               onClick={onNext}
-              className="absolute right-2 top-1/2 -translate-y-1/2 rounded-full bg-black/40 p-2 text-white/80 transition hover:bg-black/60 hover:text-white active:scale-95"
+              disabled={replacing}
+              className="absolute right-2 top-1/2 -translate-y-1/2 rounded-full bg-black/40 p-2 text-white/80 transition hover:bg-black/60 hover:text-white active:scale-95 disabled:pointer-events-none disabled:opacity-40"
             >
               <svg
                 className="h-6 w-6"
@@ -249,8 +326,8 @@ export function PhotoLightbox({
               </div>
             ) : (
               <p
-                className={`font-mono text-sm font-medium text-foreground ${onRename && !renaming ? "cursor-pointer rounded px-1 py-0.5 hover:bg-foreground/5" : ""}`}
-                onClick={() => onRename && !renaming && setEditing(true)}
+                className={`font-mono text-sm font-medium text-foreground ${onRename && !renaming && !replacing ? "cursor-pointer rounded px-1 py-0.5 hover:bg-foreground/5" : ""}`}
+                onClick={() => onRename && !renaming && !replacing && setEditing(true)}
                 data-testid="filename-display"
               >
                 {editValue}{ext}
@@ -261,7 +338,19 @@ export function PhotoLightbox({
                 {error}
               </p>
             )}
-            <p className="mt-1 text-xs text-foreground/60">{photo.folder}/</p>
+            <button
+              type="button"
+              // Close first so the parent clears `active`; otherwise the
+              // lightbox would stay mounted over the destination folder.
+              onClick={() => {
+                onClose();
+                navigate(`/folders/${encodeURIComponent(photo.folder)}`);
+              }}
+              className="mt-1 -ml-1 rounded px-1 py-0.5 text-left text-xs text-foreground/60 transition hover:bg-foreground/5 hover:text-foreground"
+              data-testid="folder-link"
+            >
+              {photo.folder}
+            </button>
           </div>
 
           {(photo.cameraModel || photo.width || photo.takenAt) && (
@@ -376,16 +465,36 @@ export function PhotoLightbox({
             </p>
             <PhotoTags
               photoId={photo.id}
-              disabled={renaming}
+              disabled={renaming || replacing}
               onTagsChange={onTagsChange}
             />
           </div>
 
           <div className="mt-auto flex flex-col gap-2">
+            {replaceError && (
+              <p
+                className="text-xs text-red-600 dark:text-red-400"
+                data-testid="replace-error"
+              >
+                {replaceError}
+              </p>
+            )}
+            {onReplace && (
+              <button
+                type="button"
+                onClick={handleReplace}
+                disabled={renaming || replacing}
+                data-testid="replace-photo"
+                title="Swap in a new version of this file, keeping its name and link"
+                className="w-full rounded-md border border-border px-3 py-1.5 text-sm transition hover:bg-foreground/5 active:scale-[0.97] disabled:opacity-50 disabled:pointer-events-none"
+              >
+                {replacing ? "Replacing…" : "Replace…"}
+              </button>
+            )}
             {onMove && (
               <button
                 onClick={() => onMove(photo)}
-                disabled={renaming}
+                disabled={renaming || replacing}
                 className="w-full rounded-md border border-border px-3 py-1.5 text-sm transition hover:bg-foreground/5 active:scale-[0.97] disabled:opacity-50 disabled:pointer-events-none"
               >
                 Move
@@ -394,7 +503,7 @@ export function PhotoLightbox({
             <ExportButton
               fullWidth
               menuPlacement="top"
-              disabled={renaming}
+              disabled={renaming || replacing}
               onExport={(resolution) =>
                 exportPhotos([photo.id], resolution).catch(() =>
                   alert("Failed to export photo")
@@ -404,7 +513,7 @@ export function PhotoLightbox({
             {onDelete && (
               <button
                 onClick={() => onDelete(photo)}
-                disabled={renaming}
+                disabled={renaming || replacing}
                 className="w-full rounded-md border border-red-500/30 px-3 py-1.5 text-sm text-red-600 transition hover:bg-red-500/10 active:scale-[0.97] disabled:opacity-50 disabled:pointer-events-none dark:text-red-400"
               >
                 Delete

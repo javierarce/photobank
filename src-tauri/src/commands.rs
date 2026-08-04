@@ -907,6 +907,36 @@ pub async fn import_photos(
     crate::import::import_photos(app, paths, folder).await
 }
 
+/// Replace one photo's bytes with a new file, in place: same key, same id,
+/// same tags. Resolves with the updated catalog row.
+#[tauri::command]
+pub async fn replace_photo(app: tauri::AppHandle, id: String, path: String) -> Result<Photo> {
+    crate::import::replace_photo(app, id, path).await
+}
+
+/// Overwrite the photos already holding these files' names in `folder`.
+/// Progress arrives via `import://progress` like an import does.
+#[tauri::command]
+pub async fn replace_photos(
+    app: tauri::AppHandle,
+    paths: Vec<String>,
+    folder: String,
+) -> Result<Vec<Photo>> {
+    crate::import::replace_photos(app, paths, folder).await
+}
+
+/// Which of `filenames` an import into `folder` would have to suffix, so a
+/// drop can offer Replace / Keep both / Skip instead of silently renaming.
+#[tauri::command]
+pub fn check_import_collisions(
+    db: State<Db>,
+    folder: String,
+    filenames: Vec<String>,
+) -> Result<Vec<String>> {
+    let conn = db.0.lock().unwrap();
+    crate::import::colliding_filenames(&conn, &folder, &filenames)
+}
+
 /// Signal an in-flight or queued import to cancel, keyed by its
 /// "folder/filename" key. A plain no-op if no matching import is currently
 /// registered (e.g. it already finished, or the cancel raced ahead of it).

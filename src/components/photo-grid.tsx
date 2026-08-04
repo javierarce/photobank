@@ -1,6 +1,7 @@
 import {
   useEffect,
   useMemo,
+  useRef,
   useState,
   useCallback,
   useImperativeHandle,
@@ -9,7 +10,7 @@ import {
   type MouseEvent,
 } from "react";
 import { listen } from "@tauri-apps/api/event";
-import { imageUrl } from "@/lib/image-url";
+import { imageUrl, previewUrl } from "@/lib/image-url";
 import {
   listPhotos,
   searchPhotoIds,
@@ -23,6 +24,7 @@ import { SelectionCheck } from "@/components/selection-check";
 import { Thumbnail } from "@/components/thumbnail";
 import { usePhotoActions } from "@/hooks/use-photo-actions";
 import { useSelection, useThumbnailActivation } from "@/hooks/use-selection";
+import { useGridNavigation } from "@/hooks/use-grid-navigation";
 import { usePresence, type PresenceState } from "@/hooks/use-presence";
 import { sortPhotos, DEFAULT_SORT_MODE, type SortMode } from "@/lib/photo-sort";
 import type { Photo } from "@/lib/types";
@@ -79,6 +81,7 @@ export const PhotoGrid = forwardRef<PhotoGridRef, Props>(function PhotoGrid(
     handleBulkDelete,
     handleBulkMove,
     handleRename,
+    handleReplace,
     handleLoadInfo,
   } = usePhotoActions();
   const [loading, setLoading] = useState(true);
@@ -87,9 +90,19 @@ export const PhotoGrid = forwardRef<PhotoGridRef, Props>(function PhotoGrid(
   // working on that set even if the selection later changes.
   const [tagTargets, setTagTargets] = useState<Photo[] | null>(null);
 
-  const { selected, isSelected, clear, retain, selectAll, setPool, setActions } =
-    useSelection();
+  const {
+    selected,
+    isSelected,
+    toggle,
+    extendTo,
+    clear,
+    retain,
+    selectAll,
+    setPool,
+    setActions,
+  } = useSelection();
   const { onClick, onDoubleClick } = useThumbnailActivation(setActive);
+  const gridRef = useRef<HTMLDivElement>(null);
 
   // Keep showing the local preview while the photo is pending/processing —
   // the real tile has nothing to render until the worker finishes. Hand off
@@ -196,6 +209,37 @@ export const PhotoGrid = forwardRef<PhotoGridRef, Props>(function PhotoGrid(
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [sortedPhotos, activeUploadKey, trimmedQuery, search]
   );
+
+  // Keyboard cursor over the tiles: arrows/hjkl move DOM focus between tiles
+  // (so the highlight is their own :focus-visible style, shared with Tab),
+  // Enter opens the lightbox, `x` toggles selection, and Shift+move sweeps a
+  // range. Read visiblePhotos through a ref so the id lookup stays stable. The
+  // cursor yields while the lightbox or the bulk-tag editor owns the keyboard.
+  const visibleRef = useRef(visiblePhotos);
+  useEffect(() => {
+    visibleRef.current = visiblePhotos;
+  }, [visiblePhotos]);
+  const navGetId = useCallback((i: number) => visibleRef.current[i]?.id, []);
+  useGridNavigation({
+    count: visiblePhotos.length,
+    getId: navGetId,
+    containerRef: gridRef,
+    enabled: !active && !tagTargets,
+    onOpen: (i) => {
+      const photo = visiblePhotos[i];
+      if (photo) setActive(photo);
+    },
+    onSelect: (i) => {
+      const photo = visiblePhotos[i];
+      if (photo) toggle(photo);
+    },
+    onMove: (next, { shift, prevIndex }) => {
+      if (!shift) return;
+      const target = visiblePhotos[next];
+      if (!target) return;
+      extendTo(target, visiblePhotos[prevIndex] ?? target);
+    },
+  });
 
   // Expose bulk actions to the toolbar while this grid is on screen; clear the
   // selection when they run so stale tiles don't linger.
@@ -318,8 +362,16 @@ export const PhotoGrid = forwardRef<PhotoGridRef, Props>(function PhotoGrid(
     };
   }, [loadPhotos]);
 
+  // `status === "done"` is what says the backend has finished, and it is load
+  // bearing: a REPLACE targets a row that is already "completed", so without
+  // it the handoff fires the moment the tile learns its photo id — dismissing
+  // the tile at 0% and hiding the progress entirely. An import can't hit that
+  // (its row is "pending" until the end) which is why it went unnoticed.
   const uploadsAwaitingThumbnail = activeUploads.filter(
-    (u) => u.id && photoById.get(u.id)?.processingStatus === "completed"
+    (u) =>
+      u.status === "done" &&
+      u.id &&
+      photoById.get(u.id)?.processingStatus === "completed"
   );
 
   // Animate tiles as they come and go: new photos fade in, deleted ones fade
@@ -396,7 +448,15 @@ export const PhotoGrid = forwardRef<PhotoGridRef, Props>(function PhotoGrid(
         uploadsAwaitingThumbnail.map((upload) => (
           <img
             key={upload.key}
-            src={imageUrl(photoById.get(upload.id!)!.s3Key, "640", "webp")}
+            // Version-stamped like every other thumbnail: after a replace the
+            // key is unchanged, so without it this would hand off on the
+            // previous image's cached bytes.
+            src={imageUrl(
+              photoById.get(upload.id!)!.s3Key,
+              "640",
+              "webp",
+              photoById.get(upload.id!)!.updatedAt
+            )}
             alt=""
             className="hidden"
             onLoad={() => onDismissUpload(upload.key)}
@@ -408,7 +468,10 @@ export const PhotoGrid = forwardRef<PhotoGridRef, Props>(function PhotoGrid(
           Metadata filters only match photos whose info has been loaded.
         </p>
       )}
-      <div className="fade-in grid select-none gap-2 grid-cols-[repeat(auto-fill,minmax(min(200px,100%),1fr))]">
+      <div
+        ref={gridRef}
+        className="fade-in grid select-none gap-2 grid-cols-[repeat(auto-fill,minmax(min(200px,100%),1fr))]"
+      >
         {activeUploads.map((upload) => (
           <UploadTile
             key={upload.key}
@@ -444,6 +507,7 @@ export const PhotoGrid = forwardRef<PhotoGridRef, Props>(function PhotoGrid(
               onDelete={handleDelete}
               onMove={handleMove}
               onRename={handleRename}
+              onReplace={handleReplace}
               onLoadInfo={handleLoadInfo}
               onTagsChange={reloadSearch}
               onPrev={canNavigate ? () => setActive(prev) : undefined}
@@ -488,6 +552,9 @@ const PhotoTile = memo(function PhotoTile({
 }) {
   return (
     <button
+      // The keyboard cursor is this button's own focus; its highlight lives in
+      // globals.css under [data-nav-id]:focus-visible.
+      data-nav-id={photo.id}
       data-presence={presenceState}
       onClick={(e) => onClick(e, photo)}
       onDoubleClick={() => onDoubleClick(photo)}
@@ -511,9 +578,10 @@ const PhotoTile = memo(function PhotoTile({
   );
 });
 
-/** A grid tile for an in-flight import: filename + inline progress. The
- * pixels arrive when the finished photo replaces this tile, so the preview
- * is a quiet placeholder rather than a local file read. */
+/** A grid tile for an in-flight import: a preview of the source image (read
+ * from its local path via the `preview://` scheme) with inline progress on
+ * top. The filename sits behind the preview and shows through until the pixels
+ * load — or stays put if there's no path or the file can't be decoded. */
 function UploadTile({
   upload,
   onDismiss,
@@ -524,14 +592,36 @@ function UploadTile({
   onCancel?: (key: string) => void;
 }) {
   const failed = upload.status === "error";
+  const [previewLoaded, setPreviewLoaded] = useState(false);
+  // A same-name re-drop replaces this entry in place (the tile is keyed by
+  // upload.key), so re-gate on the source path: if the new file's preview
+  // fails to load, previewLoaded must fall back to false rather than stay
+  // stuck at true from the prior image and expose the broken-image glyph.
+  const [prevPath, setPrevPath] = useState(upload.path);
+  if (prevPath !== upload.path) {
+    setPrevPath(upload.path);
+    setPreviewLoaded(false);
+  }
 
   return (
     <div className="fade-in relative aspect-square overflow-hidden rounded-md bg-foreground/5">
-      <div className="flex h-full items-center justify-center p-3">
+      <div className="absolute inset-0 flex items-center justify-center p-3">
         <span className="max-w-full truncate font-mono text-xs text-foreground/50">
           {upload.filename}
         </span>
       </div>
+      {upload.path && (
+        <img
+          src={previewUrl(upload.path)}
+          alt={upload.filename}
+          className={`absolute inset-0 h-full w-full object-cover transition-opacity duration-150 ease-out ${
+            previewLoaded ? "opacity-100" : "opacity-0"
+          }`}
+          draggable={false}
+          decoding="async"
+          onLoad={() => setPreviewLoaded(true)}
+        />
+      )}
 
       {failed ? (
         <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-red-950/50">

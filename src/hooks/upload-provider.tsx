@@ -8,8 +8,17 @@ import {
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open } from "@tauri-apps/plugin-dialog";
-import { cancelImport, importPhotos } from "@/lib/api";
+import {
+  cancelImport,
+  checkImportCollisions,
+  importPhotos,
+  replacePhotos,
+} from "@/lib/api";
 import { isSupportedImage, SUPPORTED_EXTENSIONS } from "@/lib/keys";
+import {
+  ImportCollisionDialog,
+  type CollisionChoice,
+} from "@/components/import-collision-dialog";
 import {
   UploadContext,
   type CompleteListener,
@@ -104,48 +113,113 @@ export function UploadProvider({ children }: { children: ReactNode }) {
     setFiles((prev) => prev.filter((f) => f.status !== "done"));
   }, []);
 
-  const handlePaths = useCallback(async (paths: string[], folder: string) => {
-    const importable = paths.filter(isImportable);
-    if (!importable.length) return;
+  // A drop whose names are already taken parks here until the user chooses.
+  // The promise resolver lets `handlePaths` await a React dialog inline rather
+  // than splitting the flow across effects.
+  const [collisionPrompt, setCollisionPrompt] = useState<{
+    folder: string;
+    collisions: string[];
+    total: number;
+  } | null>(null);
+  const collisionChoice = useRef<
+    ((choice: CollisionChoice | null) => void) | null
+  >(null);
 
-    setFiles((prev) => {
-      const next = [...prev];
-      for (const path of importable) {
-        const filename = basename(path);
-        const key = `${folder}/${filename}`;
-        const existing = next.findIndex((f) => f.key === key);
-        const entry: UploadFile = {
-          key,
-          folder,
-          filename,
-          status: "pending",
-          progress: 0,
-        };
-        if (existing >= 0) next[existing] = entry;
-        else next.push(entry);
-      }
-      return next;
-    });
+  const askAboutCollisions = useCallback(
+    (folder: string, collisions: string[], total: number) =>
+      new Promise<CollisionChoice | null>((resolve) => {
+        collisionChoice.current = resolve;
+        setCollisionPrompt({ folder, collisions, total });
+      }),
+    []
+  );
 
-    try {
-      await importPhotos(importable, folder);
-    } catch (err) {
-      // Batch-level failure (e.g. invalid folder); per-file failures arrive
-      // as error events instead. Scope to this folder so a concurrent import
-      // elsewhere is left untouched.
-      const message = String(err);
-      setFiles((prev) =>
-        prev.map((f) =>
-          f.folder === folder &&
-          (f.status === "pending" || f.status === "uploading")
-            ? { ...f, status: "error", error: message }
-            : f
-        )
-      );
-      return;
-    }
-    for (const fn of listeners.current) fn(folder);
+  const settleCollision = useCallback((choice: CollisionChoice | null) => {
+    setCollisionPrompt(null);
+    collisionChoice.current?.(choice);
+    collisionChoice.current = null;
   }, []);
+
+  const handlePaths = useCallback(
+    async (paths: string[], folder: string) => {
+      const importable = paths.filter(isImportable);
+      if (!importable.length) return;
+
+      // Ask before silently suffixing a name that's already taken. A failure
+      // here (or an unreachable catalog) falls through to the old behaviour
+      // rather than blocking the drop.
+      const collisions = await checkImportCollisions(
+        folder,
+        importable.map(basename)
+      ).catch(() => [] as string[]);
+
+      let choice: CollisionChoice = "keep-both";
+      if (collisions.length) {
+        const picked = await askAboutCollisions(
+          folder,
+          collisions,
+          importable.length
+        );
+        if (picked === null) return; // drop abandoned
+        choice = picked;
+      }
+
+      const taken = new Set(collisions);
+      const clashing = importable.filter((p) => taken.has(basename(p)));
+      const fresh = importable.filter((p) => !taken.has(basename(p)));
+      // "keep both" is the importer's own default, so it takes everything;
+      // "replace" splits the batch; "skip" drops the clashing files.
+      const toImport = choice === "keep-both" ? importable : fresh;
+      const toReplace = choice === "replace" ? clashing : [];
+      if (!toImport.length && !toReplace.length) return;
+
+      const tracked = [...toImport, ...toReplace];
+      setFiles((prev) => {
+        const next = [...prev];
+        for (const path of tracked) {
+          const filename = basename(path);
+          const key = `${folder}/${filename}`;
+          const existing = next.findIndex((f) => f.key === key);
+          const entry: UploadFile = {
+            key,
+            folder,
+            filename,
+            path,
+            status: "pending",
+            progress: 0,
+          };
+          if (existing >= 0) next[existing] = entry;
+          else next.push(entry);
+        }
+        return next;
+      });
+
+      try {
+        // Both stream import://progress against the same keys, so the tiles
+        // above track either kind of work identically.
+        await Promise.all([
+          toImport.length ? importPhotos(toImport, folder) : null,
+          toReplace.length ? replacePhotos(toReplace, folder) : null,
+        ]);
+      } catch (err) {
+        // Batch-level failure (e.g. invalid folder); per-file failures arrive
+        // as error events instead. Scope to this folder so a concurrent import
+        // elsewhere is left untouched.
+        const message = String(err);
+        setFiles((prev) =>
+          prev.map((f) =>
+            f.folder === folder &&
+            (f.status === "pending" || f.status === "uploading")
+              ? { ...f, status: "error", error: message }
+              : f
+          )
+        );
+        return;
+      }
+      for (const fn of listeners.current) fn(folder);
+    },
+    [askAboutCollisions]
+  );
 
   const handlePathsRef = useRef(handlePaths);
   useEffect(() => {
@@ -243,6 +317,14 @@ export function UploadProvider({ children }: { children: ReactNode }) {
       }}
     >
       {children}
+      {collisionPrompt && (
+        <ImportCollisionDialog
+          folder={collisionPrompt.folder}
+          collisions={collisionPrompt.collisions}
+          total={collisionPrompt.total}
+          onChoose={settleCollision}
+        />
+      )}
     </UploadContext.Provider>
   );
 }

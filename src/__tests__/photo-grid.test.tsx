@@ -133,6 +133,13 @@ afterEach(() => {
   cleanup();
 });
 
+/** A photo:// src with its `?v=` cache-buster stripped. These tests care about
+ * which object a tile addresses, not the version token that forces WKWebView
+ * to refetch after a replace (see resolveUrl in src/lib/image-url.ts). */
+function srcPath(el: Element) {
+  return el.getAttribute("src")?.split("?")[0];
+}
+
 describe("PhotoGrid", () => {
   it("shows loading state initially", () => {
     mockListPhotos.mockReturnValueOnce(new Promise(() => {}));
@@ -169,16 +176,13 @@ describe("PhotoGrid", () => {
     render(<PhotoGrid folder="vacation" />);
 
     const img = await screen.findByAltText("beach.jpg");
-    expect(img).toHaveAttribute(
-      "src",
-      "photo://localhost/vacation/beach_640.webp"
-    );
+    expect(srcPath(img)).toBe("photo://localhost/vacation/beach_640.webp");
 
     // A photo synced into the bucket externally has no variants yet — the
     // 640px request 404s and the tile must degrade to the original object
     // instead of a broken image.
     fireEvent.error(img);
-    expect(img).toHaveAttribute("src", "photo://localhost/vacation/beach.jpg");
+    expect(srcPath(img)).toBe("photo://localhost/vacation/beach.jpg");
   });
 
   it("keeps the image hidden until it loads so no broken glyph shows", async () => {
@@ -207,7 +211,7 @@ describe("PhotoGrid", () => {
     const img = await screen.findByAltText("beach.jpg");
     // Variant 404s → fall back to the original.
     fireEvent.error(img);
-    expect(img).toHaveAttribute("src", "photo://localhost/vacation/beach.jpg");
+    expect(srcPath(img)).toBe("photo://localhost/vacation/beach.jpg");
 
     // The original 404s too — the image never loads, so it stays hidden and
     // the quiet placeholder remains rather than a broken-image glyph.
@@ -256,7 +260,7 @@ describe("PhotoGrid", () => {
     render(<PhotoGrid folder="vacation" />);
     const img = await screen.findByAltText("beach.jpg");
     fireEvent.error(img);
-    expect(img).toHaveAttribute("src", "photo://localhost/vacation/beach.jpg");
+    expect(srcPath(img)).toBe("photo://localhost/vacation/beach.jpg");
 
     // The refresh regenerated the variants under the same key and bumped
     // updated_at; the reload it triggers must swap the tile off the original.
@@ -269,8 +273,7 @@ describe("PhotoGrid", () => {
       });
     });
     await waitFor(() =>
-      expect(screen.getByAltText("beach.jpg")).toHaveAttribute(
-        "src",
+      expect(srcPath(screen.getByAltText("beach.jpg"))).toBe(
         "photo://localhost/vacation/beach_640.webp"
       )
     );
@@ -291,10 +294,7 @@ describe("PhotoGrid", () => {
     // The old web pipeline stored "<base>_original.jpg" + "<base>_640.webp";
     // the thumbnail must strip the marker to find the existing variant.
     const img = await screen.findByAltText("R0007098_original.jpg");
-    expect(img).toHaveAttribute(
-      "src",
-      "photo://localhost/calella/R0007098_640.webp"
-    );
+    expect(srcPath(img)).toBe("photo://localhost/calella/R0007098_640.webp");
   });
 
   it("reloads the folder once a library refresh settles", async () => {
@@ -646,6 +646,101 @@ describe("PhotoGrid", () => {
     });
   });
 
+  describe("keyboard navigation", () => {
+    // Three completed tiles, sorted by name so the on-screen order is a, b, c.
+    const navPhotos: Photo[] = ["a", "b", "c"].map((n) =>
+      makePhoto({
+        id: n,
+        filename: `${n}.jpg`,
+        s3Key: `vacation/${n}.jpg`,
+        folder: "vacation",
+      })
+    );
+    const tile = (id: string) =>
+      document.querySelector<HTMLElement>(`[data-nav-id="${id}"]`);
+    // The keyboard cursor is the tile's own DOM focus (highlighted via
+    // :focus-visible in globals.css).
+    const isFocused = (id: string) => document.activeElement === tile(id);
+
+    async function renderNavGrid() {
+      mockListPhotos.mockResolvedValueOnce(navPhotos);
+      const view = render(<PhotoGrid folder="vacation" sortMode="name-asc" />);
+      await screen.findByAltText("a.jpg");
+      return view;
+    }
+
+    it("moves the focus cursor with the arrow keys and opens with Enter", async () => {
+      await renderNavGrid();
+
+      // First arrow press seats the cursor on the first tile.
+      fireEvent.keyDown(document.body, { key: "ArrowRight" });
+      expect(isFocused("a")).toBe(true);
+
+      fireEvent.keyDown(document.body, { key: "ArrowRight" });
+      expect(isFocused("a")).toBe(false);
+      expect(isFocused("b")).toBe(true);
+
+      fireEvent.keyDown(document.body, { key: "ArrowLeft" });
+      expect(isFocused("a")).toBe(true);
+
+      // Enter opens the focused tile in the lightbox.
+      fireEvent.keyDown(document.body, { key: "Enter" });
+      expect(screen.getByTestId("lightbox-filename")).toHaveTextContent("a.jpg");
+    });
+
+    it("navigates with vim hjkl", async () => {
+      await renderNavGrid();
+
+      fireEvent.keyDown(document.body, { key: "l" });
+      expect(isFocused("a")).toBe(true);
+      fireEvent.keyDown(document.body, { key: "l" });
+      expect(isFocused("b")).toBe(true);
+      fireEvent.keyDown(document.body, { key: "h" });
+      expect(isFocused("a")).toBe(true);
+    });
+
+    it("toggles selection of the focused tile with x", async () => {
+      await renderNavGrid();
+
+      fireEvent.keyDown(document.body, { key: "ArrowRight" }); // focus a
+      fireEvent.keyDown(document.body, { key: "x" });
+      expect(tile("a")).toHaveClass("border-accent");
+
+      fireEvent.keyDown(document.body, { key: "x" });
+      expect(tile("a")).not.toHaveClass("border-accent");
+    });
+
+    it("extends a range selection with Shift+arrow, growing and shrinking", async () => {
+      await renderNavGrid();
+
+      fireEvent.keyDown(document.body, { key: "ArrowRight" }); // focus a
+      fireEvent.keyDown(document.body, { key: "ArrowRight", shiftKey: true }); // a..b
+      expect(tile("a")).toHaveClass("border-accent");
+      expect(tile("b")).toHaveClass("border-accent");
+      expect(tile("c")).not.toHaveClass("border-accent");
+
+      fireEvent.keyDown(document.body, { key: "ArrowRight", shiftKey: true }); // a..c
+      expect(tile("c")).toHaveClass("border-accent");
+
+      // Shrinking back keeps the anchor fixed at a, so c drops out.
+      fireEvent.keyDown(document.body, { key: "ArrowLeft", shiftKey: true }); // a..b
+      expect(tile("a")).toHaveClass("border-accent");
+      expect(tile("b")).toHaveClass("border-accent");
+      expect(tile("c")).not.toHaveClass("border-accent");
+    });
+
+    it("ignores grid keys while the lightbox is open", async () => {
+      await renderNavGrid();
+
+      fireEvent.dblClick(screen.getByAltText("a.jpg"));
+      expect(screen.getByTestId("lightbox")).toBeInTheDocument();
+
+      // The lightbox owns the keyboard now — x must not reach the grid.
+      fireEvent.keyDown(document.body, { key: "x" });
+      expect(tile("a")).not.toHaveClass("border-accent");
+    });
+  });
+
   it("shows processing status for non-completed photos", async () => {
     mockListPhotos.mockResolvedValueOnce(mockPhotos);
 
@@ -709,6 +804,25 @@ describe("PhotoGrid", () => {
 
     fireEvent.load(container.querySelector("img.hidden")!);
     expect(onDismiss).toHaveBeenCalledWith("u1");
+  });
+
+  it("keeps a replace's tile on screen while it is still working", async () => {
+    // A replace targets a photo that is ALREADY "completed", unlike an import
+    // whose row is "pending" until the end. Handing off on the row's status
+    // alone would dismiss this tile the instant it learned its photo id —
+    // at 0%, before any progress could ever be seen.
+    mockListPhotos.mockResolvedValueOnce([mockPhotos[0]]);
+
+    const onDismiss = vi.fn();
+    const upload = makeUpload({ id: "1", status: "uploading", progress: 48 });
+    const { container } = render(
+      <PhotoGrid folder="vacation" uploads={[upload]} onDismissUpload={onDismiss} />
+    );
+
+    await waitFor(() => expect(screen.getByText("48%")).toBeInTheDocument());
+    // Not dismissed, and not even preloading the handoff image yet.
+    expect(onDismiss).not.toHaveBeenCalled();
+    expect(container.querySelector("img.hidden")).not.toBeInTheDocument();
   });
 
   it("dismisses the upload when processing fails so the photo tile shows the error", async () => {

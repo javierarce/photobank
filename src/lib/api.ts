@@ -143,6 +143,34 @@ export function importPhotos(paths: string[], folder: string): Promise<Photo[]> 
   return invoke("import_photos", { paths, folder });
 }
 
+/** Which of `filenames` already name a photo in `folder`, so a drop can offer
+ * Replace / Keep both / Skip instead of silently suffixing. Exact names only —
+ * a `failed` leftover isn't a collision (the importer retries it in place). */
+export function checkImportCollisions(
+  folder: string,
+  filenames: string[]
+): Promise<string[]> {
+  return invoke("check_import_collisions", { folder, filenames });
+}
+
+/** Overwrite the photos already holding these files' names in `folder`.
+ * Progress arrives via `import://progress` like importPhotos, so the same
+ * upload tiles track it; resolves with the updated catalog rows. */
+export function replacePhotos(
+  paths: string[],
+  folder: string
+): Promise<Photo[]> {
+  return invoke("replace_photos", { paths, folder });
+}
+
+/** Swap one photo's pixels for those of `path` (an absolute file path),
+ * keeping its key, id, folder, name, and tags — so anything already linking to
+ * the photo keeps resolving. The replacement must carry the same extension.
+ * Resolves with the updated catalog row. */
+export function replacePhoto(id: string, path: string): Promise<Photo> {
+  return invoke("replace_photo", { id, path });
+}
+
 /** Ask the importer to cancel an in-flight or queued upload by its
  * "folder/filename" key. Resolves immediately; the import stops at its next
  * checkpoint and confirms with a `cancelled` progress event. */
@@ -166,6 +194,12 @@ export type S3Settings = {
   region: string;
   bucket: string;
   accessKeyId: string;
+  /** CDN host serving the bucket ("img.example.com"). When set, the app reads
+   * objects through it instead of S3. */
+  cloudfrontDomain: string | null;
+  /** Distribution to invalidate when a photo is replaced, moved, or deleted,
+   * so the CDN stops serving the old object. */
+  cloudfrontDistributionId: string | null;
 };
 
 export type SettingsInfo = {

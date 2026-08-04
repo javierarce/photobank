@@ -1,13 +1,46 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { render, screen, fireEvent, cleanup, act, waitFor } from "@testing-library/react";
+import {
+  render as rtlRender,
+  screen,
+  fireEvent,
+  cleanup,
+  act,
+  waitFor,
+} from "@testing-library/react";
+import { MemoryRouter, Routes, Route } from "react-router-dom";
 import { PhotoLightbox } from "@/components/photo-lightbox";
 import type { Photo } from "@/lib/types";
 import { makePhoto } from "./fixtures";
+
+// The lightbox calls useNavigate (the folder name links to the folder view),
+// so every render needs a router context.
+function render(ui: Parameters<typeof rtlRender>[0]) {
+  const utils = rtlRender(<MemoryRouter>{ui}</MemoryRouter>);
+  return {
+    ...utils,
+    // Keep the router wrapper across rerenders so useNavigate stays available.
+    rerender: (next: Parameters<typeof rtlRender>[0]) =>
+      utils.rerender(<MemoryRouter>{next}</MemoryRouter>),
+  };
+}
 
 vi.mock("@/components/photo-tags", () => ({
   PhotoTags: ({ photoId }: { photoId: string }) => (
     <div data-testid="photo-tags">{photoId}</div>
   ),
+}));
+
+// The lightbox subscribes to import://progress to show a replace's percentage.
+// Capture the handler so tests can emit backend progress events.
+const hoisted = vi.hoisted(() => ({
+  progress: null as null | ((event: { payload: unknown }) => void),
+}));
+
+vi.mock("@tauri-apps/api/event", () => ({
+  listen: (_name: string, cb: (event: { payload: unknown }) => void) => {
+    hoisted.progress = cb;
+    return Promise.resolve(() => {});
+  },
 }));
 
 const exportPhotos = vi.fn().mockResolvedValue(null);
@@ -35,29 +68,222 @@ afterEach(() => {
   exportPhotos.mockClear();
 });
 
+/** A photo:// src with its `?v=` cache-buster stripped. These tests care about
+ * which object a tile addresses, not the version token that forces WKWebView
+ * to refetch after a replace (see resolveUrl in src/lib/image-url.ts). */
+function srcPath(el: Element) {
+  return el.getAttribute("src")?.split("?")[0];
+}
+
 describe("PhotoLightbox", () => {
   it("renders photo metadata", () => {
     render(<PhotoLightbox photo={photo} onClose={vi.fn()} />);
 
     expect(screen.getByText("test.jpg")).toBeInTheDocument();
-    expect(screen.getByText("inbox/")).toBeInTheDocument();
+    expect(screen.getByText("inbox")).toBeInTheDocument();
     expect(screen.getByText("Ricoh GR III")).toBeInTheDocument();
     expect(screen.getByText("GR Lens 18.3mm f/2.8")).toBeInTheDocument();
     expect(screen.getByText("18.3mm · f/2.8 · 1/250s · ISO 200")).toBeInTheDocument();
     expect(screen.getByText(/1920/)).toBeInTheDocument();
   });
 
+  it("closes and navigates to the folder when the folder name is clicked", () => {
+    const onClose = vi.fn();
+    const withFolder = makePhoto({
+      id: "1",
+      filename: "test.jpg",
+      s3Key: "my trip/test.jpg",
+      folder: "my trip",
+    });
+    rtlRender(
+      <MemoryRouter initialEntries={["/"]}>
+        <Routes>
+          <Route
+            path="/"
+            element={<PhotoLightbox photo={withFolder} onClose={onClose} />}
+          />
+          <Route path="/folders/:folder" element={<div>folder view</div>} />
+        </Routes>
+      </MemoryRouter>
+    );
+
+    fireEvent.click(screen.getByTestId("folder-link"));
+
+    // The parent clears `active` on close, so the lightbox must close first;
+    // otherwise it would stay mounted over the destination.
+    expect(onClose).toHaveBeenCalled();
+    // Spaces in the folder name are URL-encoded and decoded by the route.
+    expect(screen.getByText("folder view")).toBeInTheDocument();
+  });
+
   it("falls back to the original image when the 2880px variant is missing", () => {
     render(<PhotoLightbox photo={photo} onClose={vi.fn()} />);
 
     const img = screen.getByAltText("test.jpg");
-    expect(img).toHaveAttribute(
-      "src",
-      "photo://localhost/inbox/test_2880.webp"
-    );
+    expect(srcPath(img)).toBe("photo://localhost/inbox/test_2880.webp");
 
     fireEvent.error(img);
-    expect(img).toHaveAttribute("src", "photo://localhost/inbox/test.jpg");
+    expect(srcPath(img)).toBe("photo://localhost/inbox/test.jpg");
+  });
+
+  it("hides Replace when no handler is provided", () => {
+    render(<PhotoLightbox photo={photo} onClose={vi.fn()} />);
+
+    expect(screen.queryByTestId("replace-photo")).not.toBeInTheDocument();
+  });
+
+  it("locks the other actions while a replace is in flight", async () => {
+    let settle: () => void = () => {};
+    const onReplace = vi.fn(
+      () => new Promise<void>((resolve) => (settle = resolve))
+    );
+    render(
+      <PhotoLightbox
+        photo={photo}
+        onClose={vi.fn()}
+        onReplace={onReplace}
+        onDelete={vi.fn()}
+        onMove={vi.fn()}
+        onRename={vi.fn()}
+      />
+    );
+
+    fireEvent.click(screen.getByTestId("replace-photo"));
+    expect(onReplace).toHaveBeenCalledWith(photo);
+
+    // The photo's bytes are mid-flight: deleting or renaming it now would race
+    // the upload, so everything that mutates it is disabled meanwhile.
+    await waitFor(() =>
+      expect(screen.getByTestId("replace-photo")).toHaveTextContent("Replacing…")
+    );
+    expect(screen.getByTestId("replace-photo")).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Delete" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Move" })).toBeDisabled();
+    // Clicking the filename must not open the rename input mid-replace.
+    fireEvent.click(screen.getByTestId("filename-display"));
+    expect(screen.queryByTestId("filename-input")).not.toBeInTheDocument();
+
+    await act(async () => {
+      settle();
+    });
+    await waitFor(() =>
+      expect(screen.getByTestId("replace-photo")).toBeEnabled()
+    );
+  });
+
+  it("shows the backend's percentage while replacing", async () => {
+    let settle: () => void = () => {};
+    const onReplace = vi.fn(
+      () => new Promise<void>((resolve) => (settle = resolve))
+    );
+    render(
+      <PhotoLightbox photo={photo} onClose={vi.fn()} onReplace={onReplace} />
+    );
+
+    fireEvent.click(screen.getByTestId("replace-photo"));
+    await waitFor(() => screen.getByTestId("replace-progress"));
+
+    // Processing and each variant upload move the bar; an indeterminate
+    // spinner here reads as "nothing is happening" for a multi-second job.
+    act(() => {
+      hoisted.progress?.({
+        payload: { key: "inbox/test.jpg", progress: 64, status: "uploading" },
+      });
+    });
+    expect(screen.getByTestId("replace-progress")).toHaveTextContent(
+      "Replacing… 64%"
+    );
+
+    await act(async () => {
+      settle();
+    });
+    await waitFor(() =>
+      expect(screen.queryByTestId("replace-progress")).not.toBeInTheDocument()
+    );
+  });
+
+  it("ignores progress belonging to another photo", async () => {
+    const onReplace = vi.fn(() => new Promise<void>(() => {}));
+    render(
+      <PhotoLightbox photo={photo} onClose={vi.fn()} onReplace={onReplace} />
+    );
+    fireEvent.click(screen.getByTestId("replace-photo"));
+    await waitFor(() => screen.getByTestId("replace-progress"));
+
+    // A drop importing into the same folder streams events too; they must not
+    // drive this photo's bar.
+    act(() => {
+      hoisted.progress?.({
+        payload: { key: "inbox/other.jpg", progress: 90, status: "uploading" },
+      });
+    });
+
+    expect(screen.getByTestId("replace-progress")).toHaveTextContent(
+      "Replacing… 0%"
+    );
+  });
+
+  it("keeps the picture on screen when the file picker is cancelled", async () => {
+    // onReplace opens the picker before doing any work, so a cancel resolves
+    // without error. Blanking the image on click would strand a spinner over
+    // a photo that was never touched.
+    const onReplace = vi.fn().mockResolvedValue(undefined);
+    render(
+      <PhotoLightbox photo={photo} onClose={vi.fn()} onReplace={onReplace} />
+    );
+    const img = screen.getByAltText("test.jpg");
+    fireEvent.load(img);
+    expect(img).toHaveClass("opacity-100");
+
+    fireEvent.click(screen.getByTestId("replace-photo"));
+
+    await waitFor(() =>
+      expect(screen.getByTestId("replace-photo")).toBeEnabled()
+    );
+    expect(img).toHaveClass("opacity-100");
+    expect(screen.queryByTestId("replace-progress")).not.toBeInTheDocument();
+  });
+
+  it("surfaces a failed replace inline and re-enables the action", async () => {
+    // Tauri commands reject with a plain message string (see src/lib/api.ts) —
+    // the backend's extension guard is the one users will actually hit.
+    const onReplace = vi
+      .fn()
+      .mockRejectedValue("Replacement must be a .jpg file so the photo keeps its address");
+    render(
+      <PhotoLightbox photo={photo} onClose={vi.fn()} onReplace={onReplace} />
+    );
+
+    fireEvent.click(screen.getByTestId("replace-photo"));
+
+    await waitFor(() =>
+      expect(screen.getByTestId("replace-error")).toHaveTextContent(
+        "Replacement must be a .jpg file so the photo keeps its address"
+      )
+    );
+    expect(screen.getByTestId("replace-photo")).toBeEnabled();
+  });
+
+  it("busts the cached image with the photo's updatedAt", () => {
+    // Same key before and after a replace, so only a changing query makes the
+    // webview refetch — the response is served `immutable`.
+    const { rerender } = render(
+      <PhotoLightbox photo={photo} onClose={vi.fn()} />
+    );
+    const before = screen.getByAltText("test.jpg").getAttribute("src");
+
+    rerender(
+      <PhotoLightbox
+        photo={{ ...photo, updatedAt: "2026-07-25T10:30:00Z" }}
+        onClose={vi.fn()}
+      />
+    );
+
+    const after = screen.getByAltText("test.jpg").getAttribute("src");
+    expect(after).not.toBe(before);
+    expect(srcPath(screen.getByAltText("test.jpg"))).toBe(
+      "photo://localhost/inbox/test_2880.webp"
+    );
   });
 
   it("calls onClose when pressing Escape", () => {

@@ -5,16 +5,16 @@ use percent_encoding::percent_decode_str;
 use tauri::http::{header, Request, Response, StatusCode};
 use tauri::{AppHandle, Manager};
 
-use crate::settings::S3State;
-
 /// Disk budget for everything except the pinned 640px thumbnails. Oldest
 /// files are evicted first (by mtime — most large variants are viewed once,
 /// so plain age is a good-enough LRU stand-in).
 const LARGE_CACHE_CAP_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 
-/// Serve `photo://localhost/<s3-key>` from the disk cache, fetching from S3
-/// on a miss. Grid thumbnails and lightbox images all go through here, which
-/// makes S3 fetch-through and offline reads transparent to the frontend.
+/// Serve `photo://localhost/<s3-key>` from the disk cache, fetching from the
+/// CDN (or S3) on a miss. Grid thumbnails and lightbox images all go through
+/// here, which makes fetch-through and offline reads transparent to the
+/// frontend. A `?v=` query is ignored — see `resolveUrl` in
+/// src/lib/image-url.ts for why callers add one.
 pub async fn handle(app: AppHandle, request: Request<Vec<u8>>) -> Response<Vec<u8>> {
     match respond(&app, request.uri().path()).await {
         Ok(response) => response,
@@ -24,6 +24,72 @@ pub async fn handle(app: AppHandle, request: Request<Vec<u8>>) -> Response<Vec<u
             .body(message.into_bytes())
             .expect("static response builder never fails"),
     }
+}
+
+/// Serve `preview://localhost/<percent-encoded-absolute-path>` straight off
+/// the local disk. Dropped/picked images arrive as filesystem paths (not
+/// `File` objects, since Tauri intercepts the OS drag), so this lets an
+/// upload tile show the source pixels before the import finishes. Reads are
+/// gated to supported image extensions so the scheme can't be pointed at
+/// arbitrary local files.
+pub async fn handle_preview(request: Request<Vec<u8>>) -> Response<Vec<u8>> {
+    match respond_preview(request.uri().path()).await {
+        Ok(response) => response,
+        Err((status, message)) => Response::builder()
+            .status(status)
+            .header(header::CONTENT_TYPE, "text/plain")
+            .body(message.into_bytes())
+            .expect("static response builder never fails"),
+    }
+}
+
+async fn respond_preview(
+    path: &str,
+) -> std::result::Result<Response<Vec<u8>>, (StatusCode, String)> {
+    let local = decode_local_path(path)
+        .ok_or((StatusCode::BAD_REQUEST, "invalid preview path".to_string()))?;
+    if !is_previewable(&local) {
+        return Err((StatusCode::FORBIDDEN, "unsupported preview type".to_string()));
+    }
+    let bytes = tokio::fs::read(&local)
+        .await
+        .map_err(|e| (StatusCode::NOT_FOUND, format!("read failed: {e}")))?;
+
+    Ok(Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, content_type(&local.to_string_lossy()))
+        // A path can be reused (same drop retried) with different bytes, so
+        // don't let the webview cache a stale preview.
+        .header(header::CACHE_CONTROL, "no-store")
+        .body(bytes)
+        .expect("response builder with static headers never fails"))
+}
+
+/// Percent-decode the whole URL path into an absolute filesystem path. Unlike
+/// `decode_key`, the path is decoded as one string (its own slashes are
+/// encoded), and it must be absolute — a defensive guard, not a security
+/// boundary, since the scheme only ever serves local image files.
+fn decode_local_path(path: &str) -> Option<PathBuf> {
+    let decoded = percent_decode_str(path.trim_start_matches('/'))
+        .decode_utf8()
+        .ok()?
+        .to_string();
+    if decoded.is_empty() || !decoded.starts_with('/') || decoded.contains('\0') {
+        return None;
+    }
+    Some(PathBuf::from(decoded))
+}
+
+/// Only serve the formats the importer accepts (mirrors keys.rs
+/// `SUPPORTED_EXTENSIONS`), all of which WKWebView can decode.
+fn is_previewable(path: &Path) -> bool {
+    matches!(
+        path.extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.to_ascii_lowercase())
+            .as_deref(),
+        Some("jpg") | Some("jpeg") | Some("png") | Some("webp")
+    )
 }
 
 async fn respond(
@@ -51,28 +117,10 @@ async fn fetch_and_cache(
     key: &str,
     cache_path: &Path,
 ) -> std::result::Result<Vec<u8>, (StatusCode, String)> {
-    let state = app.state::<S3State>();
-    let guard = state.0.read().await;
-    let ctx = guard
-        .as_ref()
-        .ok_or((StatusCode::SERVICE_UNAVAILABLE, "S3 is not configured".to_string()))?;
-
-    let object = ctx
-        .client
-        .get_object()
-        .bucket(&ctx.bucket)
-        .key(key)
-        .send()
+    // Goes through the CDN when one is configured, S3 otherwise (cdn.rs).
+    let data = crate::cdn::get_object(app, key)
         .await
         .map_err(|e| (StatusCode::NOT_FOUND, format!("fetch failed: {e}")))?;
-    let data = object
-        .body
-        .collect()
-        .await
-        .map_err(|e| (StatusCode::BAD_GATEWAY, e.to_string()))?
-        .into_bytes()
-        .to_vec();
-    drop(guard);
 
     write_cache(cache_path, &data).await;
     if !is_pinned(key) {
@@ -203,7 +251,33 @@ fn collect_files(dir: &Path, out: &mut Vec<(PathBuf, u64, SystemTime)>) {
 
 #[cfg(test)]
 mod tests {
-    use super::{content_type, decode_key, is_pinned};
+    use super::{content_type, decode_key, decode_local_path, is_pinned, is_previewable};
+    use std::path::PathBuf;
+
+    #[test]
+    fn decode_local_path_decodes_absolute_paths() {
+        assert_eq!(
+            decode_local_path("/%2FUsers%2Fjav%2Fmy%20photo.jpg"),
+            Some(PathBuf::from("/Users/jav/my photo.jpg"))
+        );
+    }
+
+    #[test]
+    fn decode_local_path_rejects_relative_and_empty() {
+        assert_eq!(decode_local_path("/"), None);
+        assert_eq!(decode_local_path("/relative%2Fpath.jpg"), None);
+    }
+
+    #[test]
+    fn previewable_gates_on_supported_extensions() {
+        assert!(is_previewable(&PathBuf::from("/a/b.jpg")));
+        assert!(is_previewable(&PathBuf::from("/a/b.JPEG")));
+        assert!(is_previewable(&PathBuf::from("/a/b.png")));
+        assert!(is_previewable(&PathBuf::from("/a/b.webp")));
+        assert!(!is_previewable(&PathBuf::from("/a/b.gif")));
+        assert!(!is_previewable(&PathBuf::from("/a/secrets.txt")));
+        assert!(!is_previewable(&PathBuf::from("/a/noext")));
+    }
 
     #[test]
     fn decode_key_decodes_segments() {

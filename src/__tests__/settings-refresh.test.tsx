@@ -20,7 +20,7 @@ import {
 
 vi.mock("@/lib/api", () => ({
   getSettings: vi.fn().mockResolvedValue({
-    settings: { endpoint: null, region: "", bucket: "b", accessKeyId: "k" },
+    settings: { endpoint: null, region: "", bucket: "b", accessKeyId: "k", cloudfrontDomain: null, cloudfrontDistributionId: null },
     hasSecret: true,
     configured: true,
     catalogBucket: "b",
@@ -302,7 +302,7 @@ describe("Settings library refresh", () => {
 
   it("warns when the catalog was built from a different bucket", async () => {
     mockGetSettings.mockResolvedValueOnce({
-      settings: { endpoint: null, region: "", bucket: "new", accessKeyId: "k" },
+      settings: { endpoint: null, region: "", bucket: "new", accessKeyId: "k", cloudfrontDomain: null, cloudfrontDistributionId: null },
       hasSecret: true,
       configured: true,
       catalogBucket: "old-bucket",

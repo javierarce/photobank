@@ -8,7 +8,7 @@ import { getSettings } from "@/lib/api";
 // storage is configured, and open on demand (or on first run).
 vi.mock("@/lib/api", () => ({
   getSettings: vi.fn().mockResolvedValue({
-    settings: { endpoint: null, region: "auto", bucket: "my-bucket", accessKeyId: "AK" },
+    settings: { endpoint: null, region: "auto", bucket: "my-bucket", accessKeyId: "AK", cloudfrontDomain: null, cloudfrontDistributionId: null },
     hasSecret: true,
     configured: true,
     catalogBucket: "my-bucket",
@@ -79,7 +79,7 @@ describe("Settings storage fold", () => {
 
   it("starts expanded on first run when nothing is configured", async () => {
     mockGetSettings.mockResolvedValueOnce({
-      settings: { endpoint: null, region: "", bucket: "", accessKeyId: "" },
+      settings: { endpoint: null, region: "", bucket: "", accessKeyId: "", cloudfrontDomain: null, cloudfrontDistributionId: null },
       hasSecret: false,
       configured: false,
       catalogBucket: null,

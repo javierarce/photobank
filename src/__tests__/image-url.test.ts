@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { imageUrl, originalUrl } from "@/lib/image-url";
+import { imageUrl, originalUrl, previewUrl } from "@/lib/image-url";
 
 describe("image-url", () => {
   it("builds a photo:// URL for the default variant", () => {
@@ -52,6 +52,35 @@ describe("image-url", () => {
   it("returns the original object URL untouched by variant naming", () => {
     expect(originalUrl("inbox/photo.jpg")).toBe(
       "photo://localhost/inbox/photo.jpg"
+    );
+  });
+
+  it("appends a version cache-buster when one is given", () => {
+    // A replace keeps the photo's key but changes its bytes, and the protocol
+    // handler serves them `immutable` — without a changing query the webview
+    // would keep painting the old picture.
+    expect(imageUrl("inbox/photo.jpg", "640", "webp", "2026-07-25T10:30:00Z")).toBe(
+      "photo://localhost/inbox/photo_640.webp?v=2026-07-25T10%3A30%3A00Z"
+    );
+    expect(originalUrl("inbox/photo.jpg", "2026-07-25T10:30:00Z")).toBe(
+      "photo://localhost/inbox/photo.jpg?v=2026-07-25T10%3A30%3A00Z"
+    );
+  });
+
+  it("omits the query entirely when no version is given", () => {
+    // The handler only reads the URL path, but a bare key is what the rest of
+    // the suite (and any hand-built URL) expects.
+    expect(imageUrl("inbox/photo.jpg", "640", "webp", undefined)).toBe(
+      "photo://localhost/inbox/photo_640.webp"
+    );
+    expect(originalUrl("inbox/photo.jpg")).not.toContain("?");
+  });
+
+  it("builds a preview:// URL from an absolute local path, slashes encoded", () => {
+    // The whole path (its own slashes included) is one encoded URL segment,
+    // so the Rust handler can decode it back to the original absolute path.
+    expect(previewUrl("/Users/jav/my photos/café #1.jpg")).toBe(
+      "preview://localhost/%2FUsers%2Fjav%2Fmy%20photos%2Fcaf%C3%A9%20%231.jpg"
     );
   });
 });

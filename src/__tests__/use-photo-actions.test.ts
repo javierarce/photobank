@@ -1,24 +1,29 @@
 import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
 import { renderHook, act, cleanup, waitFor } from "@testing-library/react";
 import { usePhotoActions } from "@/hooks/use-photo-actions";
-import { deletePhoto } from "@/lib/api";
-import { ask, message } from "@tauri-apps/plugin-dialog";
+import { deletePhoto, replacePhoto } from "@/lib/api";
+import { ask, message, open } from "@tauri-apps/plugin-dialog";
 import type { Photo } from "@/lib/types";
 import { makePhoto } from "./fixtures";
 
 vi.mock("@/lib/api", () => ({
   deletePhoto: vi.fn(),
   updatePhoto: vi.fn(),
+  replacePhoto: vi.fn(),
+  loadPhotoMetadata: vi.fn(),
 }));
 
 vi.mock("@tauri-apps/plugin-dialog", () => ({
   ask: vi.fn(),
   message: vi.fn(),
+  open: vi.fn(),
 }));
 
 const mockDeletePhoto = vi.mocked(deletePhoto);
+const mockReplacePhoto = vi.mocked(replacePhoto);
 const mockAsk = vi.mocked(ask);
 const mockMessage = vi.mocked(message);
+const mockOpen = vi.mocked(open);
 
 // The grid is ordered newest-first; ids double as position markers here.
 function seed(): Photo[] {
@@ -257,5 +262,84 @@ describe("usePhotoActions — handleBulkDelete (optimistic)", () => {
     expect(outcome).toBe(false);
     expect(mockDeletePhoto).not.toHaveBeenCalled();
     expect(ids(result.current.photos)).toEqual(["a", "b", "c"]);
+  });
+});
+
+describe("usePhotoActions — handleReplace", () => {
+  it("filters the picker to the photo's own extension", async () => {
+    // A replace keeps the object's key, so the format can't change — offering
+    // other types in the picker would only set up a rejection from the backend.
+    mockOpen.mockResolvedValue(null);
+
+    const { result } = renderHook(() => usePhotoActions());
+    await act(async () => {
+      await result.current.handleReplace(
+        makePhoto({ id: "a", filename: "shot.PNG", s3Key: "f/shot.PNG" })
+      );
+    });
+
+    expect(mockOpen).toHaveBeenCalledWith(
+      expect.objectContaining({
+        multiple: false,
+        filters: [{ name: "PNG image", extensions: ["png"] }],
+      })
+    );
+  });
+
+  it("does nothing when the picker is cancelled", async () => {
+    mockOpen.mockResolvedValue(null);
+
+    const { result } = renderHook(() => usePhotoActions());
+    const photos = seed();
+    act(() => result.current.setPhotos(photos));
+
+    await act(async () => {
+      await result.current.handleReplace(photos[0]);
+    });
+
+    expect(mockReplacePhoto).not.toHaveBeenCalled();
+    expect(result.current.photos).toEqual(photos);
+  });
+
+  it("swaps in the updated row without disturbing the photo's position", async () => {
+    mockOpen.mockResolvedValue("/tmp/edited.jpg");
+    const photos = seed();
+    // Same id and key — a replace changes the pixels, not the photo.
+    const updated = { ...photos[1], updatedAt: "2026-07-25T10:30:00Z" };
+    mockReplacePhoto.mockResolvedValue(updated);
+
+    const { result } = renderHook(() => usePhotoActions());
+    act(() => result.current.setPhotos(photos));
+    act(() => result.current.setActive(photos[1]));
+
+    await act(async () => {
+      await result.current.handleReplace(photos[1]);
+    });
+
+    expect(mockReplacePhoto).toHaveBeenCalledWith("b", "/tmp/edited.jpg");
+    // Order is untouched, and the row carries the new updatedAt that busts the
+    // cached thumbnail (see resolveUrl in src/lib/image-url.ts).
+    expect(ids(result.current.photos)).toEqual(["a", "b", "c"]);
+    expect(result.current.photos[1].updatedAt).toBe("2026-07-25T10:30:00Z");
+    // The open lightbox follows along rather than showing the stale row.
+    expect(result.current.active).toEqual(updated);
+  });
+
+  it("propagates a failure so the lightbox can show it inline", async () => {
+    mockOpen.mockResolvedValue("/tmp/edited.png");
+    mockReplacePhoto.mockRejectedValue("Replacement must be a .jpg file");
+
+    const { result } = renderHook(() => usePhotoActions());
+    const photos = seed();
+    act(() => result.current.setPhotos(photos));
+
+    await expect(
+      act(async () => {
+        await result.current.handleReplace(photos[0]);
+      })
+    ).rejects.toBe("Replacement must be a .jpg file");
+
+    // Nothing was optimistically changed, so the grid still shows the old photo.
+    expect(result.current.photos).toEqual(photos);
   });
 });
