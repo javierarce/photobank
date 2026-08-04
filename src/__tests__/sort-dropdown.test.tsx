@@ -21,6 +21,8 @@ describe("SortDropdown", () => {
     expect(screen.getByRole("menu")).toBeInTheDocument();
     expect(screen.getByRole("menuitemradio", { name: /Newest first/ })).toBeInTheDocument();
     expect(screen.getByRole("menuitemradio", { name: /Oldest first/ })).toBeInTheDocument();
+    expect(screen.getByRole("menuitemradio", { name: /Recently added/ })).toBeInTheDocument();
+    expect(screen.getByRole("menuitemradio", { name: /First added/ })).toBeInTheDocument();
     expect(screen.getByRole("menuitemradio", { name: /Name \(A–Z\)/ })).toBeInTheDocument();
     expect(screen.getByRole("menuitemradio", { name: /Name \(Z–A\)/ })).toBeInTheDocument();
   });
@@ -42,9 +44,9 @@ describe("SortDropdown", () => {
     render(<SortDropdown value="date-desc" onChange={onChange} />);
 
     fireEvent.click(screen.getByLabelText("Sort photos"));
-    fireEvent.click(screen.getByRole("menuitemradio", { name: /Name \(A–Z\)/ }));
+    fireEvent.click(screen.getByRole("menuitemradio", { name: /Recently added/ }));
 
-    expect(onChange).toHaveBeenCalledWith("name-asc");
+    expect(onChange).toHaveBeenCalledWith("added-desc");
     expect(screen.queryByRole("menu")).not.toBeInTheDocument();
   });
 

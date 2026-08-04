@@ -2,12 +2,22 @@ import type { Photo } from "@/lib/types";
 
 // The ways a folder's photos can be ordered. The date modes read the capture
 // date from the filename (see fileDate); `date-desc` is the default so the
-// newest shots lead.
-export type SortMode = "date-desc" | "date-asc" | "name-asc" | "name-desc";
+// newest shots lead. The added modes read createdAt — when the photo entered
+// the catalog — which is how you find what you just uploaded regardless of
+// when it was shot.
+export type SortMode =
+  | "date-desc"
+  | "date-asc"
+  | "added-desc"
+  | "added-asc"
+  | "name-asc"
+  | "name-desc";
 
 export const SORT_OPTIONS: { value: SortMode; label: string }[] = [
   { value: "date-desc", label: "Newest first" },
   { value: "date-asc", label: "Oldest first" },
+  { value: "added-desc", label: "Recently added" },
+  { value: "added-asc", label: "First added" },
   { value: "name-asc", label: "Name (A–Z)" },
   { value: "name-desc", label: "Name (Z–A)" },
 ];
@@ -52,6 +62,14 @@ function fileDate(p: Photo): number {
   return Number(m[1]) * 10000 + Number(m[2]) * 100 + Number(m[3]);
 }
 
+// When the row entered the catalog, as milliseconds: the upload time for a
+// local import, the sync time for a photo the refresh discovered in the
+// bucket. Unparseable (or missing) values rank as the oldest.
+function addedAt(p: Photo): number {
+  const t = Date.parse(p.createdAt);
+  return Number.isNaN(t) ? 0 : t;
+}
+
 // Natural, case-insensitive compare so IMG_2 sorts before IMG_10.
 const byName = (a: Photo, b: Photo) =>
   a.filename.localeCompare(b.filename, undefined, {
@@ -71,6 +89,10 @@ export function sortPhotos(photos: Photo[], mode: SortMode): Photo[] {
       return sorted.sort((a, b) => fileDate(a) - fileDate(b) || byName(a, b));
     case "date-desc":
       return sorted.sort((a, b) => fileDate(b) - fileDate(a) || byName(b, a));
+    case "added-asc":
+      return sorted.sort((a, b) => addedAt(a) - addedAt(b) || byName(a, b));
+    case "added-desc":
+      return sorted.sort((a, b) => addedAt(b) - addedAt(a) || byName(b, a));
     case "name-asc":
       return sorted.sort(byName);
     case "name-desc":
