@@ -91,6 +91,71 @@ describe("sortPhotos — filename date", () => {
   });
 });
 
+describe("sortPhotos — added (createdAt)", () => {
+  // An old shot uploaded today vs. a recent shot uploaded long ago: the two
+  // date axes disagree, which is the whole point of the added modes.
+  const oldShotJustAdded = makePhoto({
+    id: "just-added",
+    filename: "2017_09_02_Berlin_00003.jpg",
+    createdAt: "2026-08-01T09:00:00.000Z",
+  });
+  const recentShotAddedEarlier = makePhoto({
+    id: "added-earlier",
+    filename: "2025-04-12-Berlin-DSCF4162.jpg",
+    createdAt: "2026-07-19T14:25:14.000Z",
+  });
+
+  it("puts the most recently added photo first", () => {
+    expect(
+      ids(sortPhotos([recentShotAddedEarlier, oldShotJustAdded], "added-desc"))
+    ).toEqual(["just-added", "added-earlier"]);
+  });
+
+  it("puts the first-added photo first", () => {
+    expect(
+      ids(sortPhotos([oldShotJustAdded, recentShotAddedEarlier], "added-asc"))
+    ).toEqual(["added-earlier", "just-added"]);
+  });
+
+  it("ignores the filename date", () => {
+    // Newest-first by filename would lead with the 2025 shot; added-desc
+    // leads with the 2017 one because it landed in the catalog later.
+    expect(sortPhotos([recentShotAddedEarlier, oldShotJustAdded], "date-desc")[0].id).toBe(
+      "added-earlier"
+    );
+  });
+
+  it("breaks a same-instant tie by filename in the sort direction", () => {
+    // A batch upload can stamp two rows with the same millisecond.
+    const a = makePhoto({
+      id: "a",
+      filename: "R0014353.jpg",
+      createdAt: "2026-08-01T09:00:00.000Z",
+    });
+    const b = makePhoto({
+      id: "b",
+      filename: "R0014360.jpg",
+      createdAt: "2026-08-01T09:00:00.000Z",
+    });
+    expect(ids(sortPhotos([a, b], "added-desc"))).toEqual(["b", "a"]);
+    expect(ids(sortPhotos([b, a], "added-asc"))).toEqual(["a", "b"]);
+  });
+
+  it("sinks a photo with an unparseable createdAt to the bottom of a newest-first list", () => {
+    const broken = makePhoto({ id: "broken", filename: "x.jpg", createdAt: "" });
+    expect(ids(sortPhotos([broken, oldShotJustAdded], "added-desc"))).toEqual([
+      "just-added",
+      "broken",
+    ]);
+  });
+
+  it("does not mutate the input array", () => {
+    const input = [recentShotAddedEarlier, oldShotJustAdded];
+    sortPhotos(input, "added-desc");
+    expect(ids(input)).toEqual(["added-earlier", "just-added"]);
+  });
+});
+
 describe("sortPhotos — name", () => {
   it("orders by filename naturally (IMG_2 before IMG_10)", () => {
     const two = makePhoto({ id: "2", filename: "IMG_2.jpg" });
