@@ -54,3 +54,11 @@ export type SearchFacets = {
   models: string[];
   lenses: string[];
 };
+
+/** Autocomplete pools scoped to one folder (mirrors Rust `FolderFacets`). */
+export type FolderFacets = {
+  tags: string[];
+  makes: string[];
+  models: string[];
+  lenses: string[];
+};

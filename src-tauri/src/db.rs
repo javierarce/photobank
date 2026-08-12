@@ -78,6 +78,19 @@ pub struct SearchFacets {
     pub lenses: Vec<String>,
 }
 
+/// Autocomplete pools scoped to a single folder — the values that actually
+/// occur among that folder's photos, so the in-folder search field only
+/// suggests tags/cameras/lenses you could match there. Camera facets carry the
+/// same lazy-metadata caveat as [`SearchFacets`].
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FolderFacets {
+    pub tags: Vec<String>,
+    pub makes: Vec<String>,
+    pub models: Vec<String>,
+    pub lenses: Vec<String>,
+}
+
 /// Column list matching `photo_from_row`. Keep the two in sync.
 pub const PHOTO_COLUMNS: &str = "id, filename, s3_key, folder, mime_type, file_size, \
     width, height, processing_status, camera_make, camera_model, lens, focal_length, \

@@ -13,9 +13,11 @@ import { listen } from "@tauri-apps/api/event";
 import { imageUrl, previewUrl } from "@/lib/image-url";
 import {
   listPhotos,
+  searchPhotoIds,
   REFRESH_PROGRESS_EVENT,
   type RefreshProgress,
 } from "@/lib/api";
+import { usesMetadataFilter } from "@/lib/search-query";
 import { PhotoLightbox } from "@/components/photo-lightbox";
 import { BulkTagDialog } from "@/components/bulk-tag-dialog";
 import { SelectionCheck } from "@/components/selection-check";
@@ -45,6 +47,12 @@ type Props = {
   folder: string;
   /** How to order the tiles; defaults to newest-first by filename date. */
   sortMode?: SortMode;
+  /** Ankitron-style typed query (tag:, camera:, iso:>=800, …) run backend-side
+   * by search_photo_ids scoped to this folder; empty shows every photo. */
+  query?: string;
+  /** Notifies the parent whether this folder has any photos (drives the
+   * in-folder search field, which is pointless on an empty folder). */
+  onHasPhotosChange?: (hasPhotos: boolean) => void;
   /** In-flight uploads, rendered as tiles with an inline progress bar. */
   uploads?: UploadFile[];
   onDismissUpload?: (key: string) => void;
@@ -55,6 +63,8 @@ export const PhotoGrid = forwardRef<PhotoGridRef, Props>(function PhotoGrid(
   {
     folder,
     sortMode = DEFAULT_SORT_MODE,
+    query = "",
+    onHasPhotosChange,
     uploads = NO_UPLOADS,
     onDismissUpload,
     onCancelUpload,
@@ -86,6 +96,7 @@ export const PhotoGrid = forwardRef<PhotoGridRef, Props>(function PhotoGrid(
     toggle,
     extendTo,
     clear,
+    retain,
     selectAll,
     setPool,
     setActions,
@@ -127,10 +138,76 @@ export const PhotoGrid = forwardRef<PhotoGridRef, Props>(function PhotoGrid(
   // carrying content updates like updated_at through) plus a value-key for the
   // active upload ids (whose Set identity churns with the uploads prop).
   const activeUploadKey = [...activeUploadIds].join(",");
+  // The in-folder search reuses the global typed-query engine (tag:, camera:,
+  // iso:>=800, …) by running search_photos scoped to this folder and keeping
+  // the ids it matched. `matchIds` is null when no search is active; then every
+  // photo shows. Kept across keystrokes so the grid holds the last result while
+  // the next debounced search is in flight, rather than flashing the full set.
+  const trimmedQuery = query.trim();
+  // The last search's outcome, tagged with the query it belongs to. Carrying the
+  // query means the filter can keep showing a previous (stale) result while the
+  // next debounced search is in flight — deliberately, so refining a query
+  // doesn't flash the full folder — while the empty state and the error message
+  // below only speak for a result that actually corresponds to what's typed.
+  const [search, setSearch] = useState<{
+    query: string;
+    ids: Set<string>;
+    failed: boolean;
+  } | null>(null);
+  // Bumped after a tag edit (bulk editor or the lightbox's per-photo tags).
+  // Tags live outside the `photos` rows, so unlike every other mutation they
+  // don't move the fingerprint below and need an explicit signal.
+  const [tagEditNonce, setTagEditNonce] = useState(0);
+
+  // Any change to the folder's rows can change what the query matches: an import
+  // landing, a library refresh or "Load info" filling EXIF, a rename. Folding a
+  // digest of the rows into the search key re-runs the search for all of them,
+  // instead of hand-wiring a callback per mutation and missing the ones nobody
+  // thought of. A reload that returns identical rows leaves the digest
+  // unchanged, so the 3s processing poll doesn't re-search on every tick.
+  const photosFingerprint = useMemo(
+    () => photos.map((p) => `${p.id}:${p.updatedAt}`).join(","),
+    [photos]
+  );
+
+  useEffect(() => {
+    if (!trimmedQuery) return;
+    let cancelled = false;
+    const timer = setTimeout(() => {
+      searchPhotoIds(trimmedQuery, folder)
+        .then((ids) => {
+          if (!cancelled)
+            setSearch({ query: trimmedQuery, ids: new Set(ids), failed: false });
+        })
+        // Fail closed — filter to nothing rather than implying everything
+        // matched — but record the failure so the UI can say so instead of
+        // claiming the folder has no matches.
+        .catch(() => {
+          if (!cancelled)
+            setSearch({ query: trimmedQuery, ids: new Set(), failed: true });
+        });
+    }, 200);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [trimmedQuery, folder, photosFingerprint, tagEditNonce]);
+
+  const reloadSearch = useCallback(() => setTagEditNonce((n) => n + 1), []);
+
+  // True once the in-flight search has caught up with what's typed; until then
+  // the tiles shown belong to the previous query.
+  const searchSettled = search?.query === trimmedQuery;
+
   const visiblePhotos = useMemo(
-    () => sortedPhotos.filter((p) => !activeUploadIds.has(p.id)),
+    () =>
+      sortedPhotos.filter(
+        (p) =>
+          !activeUploadIds.has(p.id) &&
+          (!trimmedQuery || search === null || search.ids.has(p.id))
+      ),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [sortedPhotos, activeUploadKey]
+    [sortedPhotos, activeUploadKey, trimmedQuery, search]
   );
 
   // Keyboard cursor over the tiles: arrows/hjkl move DOM focus between tiles
@@ -185,6 +262,16 @@ export const PhotoGrid = forwardRef<PhotoGridRef, Props>(function PhotoGrid(
     setPool(visiblePhotos);
     return () => setPool([]);
   }, [visiblePhotos, setPool]);
+
+  // A search hides tiles, so confine the selection to what's still on screen:
+  // otherwise the toolbar would count photos the user can't see and a bulk
+  // delete would destroy them. Only prune once the search has caught up with
+  // what's typed, so the in-flight window doesn't drop photos the new query
+  // will keep.
+  useEffect(() => {
+    if (!trimmedQuery || !searchSettled) return;
+    retain(new Set(visiblePhotos.map((p) => p.id)));
+  }, [trimmedQuery, searchSettled, visiblePhotos, retain]);
 
   // Selection belongs to the current folder; drop it when the folder changes
   // or when leaving the grid entirely.
@@ -257,6 +344,12 @@ export const PhotoGrid = forwardRef<PhotoGridRef, Props>(function PhotoGrid(
 
   useImperativeHandle(ref, () => ({ refresh: loadPhotos }));
 
+  // Tell the parent whether this folder has any photos so it can show/hide the
+  // in-folder search field (searching an empty folder makes no sense).
+  useEffect(() => {
+    onHasPhotosChange?.(photos.length > 0);
+  }, [photos.length, onHasPhotosChange]);
+
   // A library refresh (Settings, or auto-started after a rebuild) regenerates
   // missing variants; reload once it settles so tiles swap from their
   // original-image fallback to the real thumbnails.
@@ -312,6 +405,43 @@ export const PhotoGrid = forwardRef<PhotoGridRef, Props>(function PhotoGrid(
     );
   }
 
+  // The empty-results shortcut skips the whole main render, so it must not fire
+  // while an overlay the user is interacting with is open: an edit made inside
+  // one (removing the tag being searched) can empty the results mid-interaction,
+  // and unmounting here would tear the overlay down without clearing `active` /
+  // `tagTargets` — leaving the keyboard handler short-circuited and the overlay
+  // primed to pop back open later. Falling through keeps them mounted over an
+  // empty grid until the user closes them. It also waits for `searchSettled`,
+  // so the message never speaks for a query that hasn't been run yet.
+  if (
+    trimmedQuery &&
+    searchSettled &&
+    !visiblePhotos.length &&
+    !activeUploads.length &&
+    !active &&
+    !tagTargets
+  ) {
+    // A failed search filters everything out too, but saying "no matches" would
+    // be a lie — report the failure instead, matching the global search page.
+    if (search?.failed) {
+      return (
+        <p className="text-sm text-red-600 dark:text-red-400">Search failed.</p>
+      );
+    }
+    return (
+      <>
+        {usesMetadataFilter(trimmedQuery) && (
+          <p className="mb-3 text-xs text-foreground/40">
+            Metadata filters only match photos whose info has been loaded.
+          </p>
+        )}
+        <p className="text-sm text-foreground/60">
+          No photos match “{trimmedQuery}”.
+        </p>
+      </>
+    );
+  }
+
   return (
     <>
       {onDismissUpload &&
@@ -333,6 +463,11 @@ export const PhotoGrid = forwardRef<PhotoGridRef, Props>(function PhotoGrid(
             onError={() => onDismissUpload(upload.key)}
           />
         ))}
+      {trimmedQuery && usesMetadataFilter(trimmedQuery) && (
+        <p className="mb-3 text-xs text-foreground/40">
+          Metadata filters only match photos whose info has been loaded.
+        </p>
+      )}
       <div
         ref={gridRef}
         className="fade-in grid select-none gap-2 grid-cols-[repeat(auto-fill,minmax(min(200px,100%),1fr))]"
@@ -374,6 +509,7 @@ export const PhotoGrid = forwardRef<PhotoGridRef, Props>(function PhotoGrid(
               onRename={handleRename}
               onReplace={handleReplace}
               onLoadInfo={handleLoadInfo}
+              onTagsChange={reloadSearch}
               onPrev={canNavigate ? () => setActive(prev) : undefined}
               onNext={canNavigate ? () => setActive(next) : undefined}
             />
@@ -385,8 +521,12 @@ export const PhotoGrid = forwardRef<PhotoGridRef, Props>(function PhotoGrid(
           photos={tagTargets}
           onClose={() => setTagTargets(null)}
           // Keep the selection after applying so the same photos can be tagged
-          // again without re-selecting.
-          onApplied={() => setTagTargets(null)}
+          // again without re-selecting; re-run any active search so photos that
+          // no longer match a tag: query drop out.
+          onApplied={() => {
+            setTagTargets(null);
+            reloadSearch();
+          }}
         />
       )}
     </>

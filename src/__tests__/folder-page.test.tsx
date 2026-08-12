@@ -1,16 +1,35 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { render, screen, cleanup, fireEvent, waitFor } from "@testing-library/react";
-import { forwardRef } from "react";
-import { MemoryRouter, Route, Routes } from "react-router-dom";
+import { forwardRef, useEffect } from "react";
+import { MemoryRouter, Route, Routes, useNavigate } from "react-router-dom";
 import FolderPage from "@/routes/folder";
-import { renameFolder } from "@/lib/api";
+import { listFolderFacets, renameFolder } from "@/lib/api";
 
 vi.mock("@/lib/api", () => ({
   renameFolder: vi.fn(),
+  // The in-folder SearchField loads its folder-scoped autocomplete pool on
+  // mount (the global-pool loaders are unused in folder mode).
+  listFolderFacets: vi.fn(() =>
+    Promise.resolve({ tags: [], makes: [], models: [], lenses: [] })
+  ),
+  listTags: vi.fn(() => Promise.resolve([])),
+  listFolders: vi.fn(() => Promise.resolve([])),
+  listSearchFacets: vi.fn(() =>
+    Promise.resolve({ makes: [], models: [], lenses: [] })
+  ),
 }));
 
+// The real grid reports whether the folder has photos, which gates the search
+// field. Report "has photos" so the field renders in these tests.
 vi.mock("@/components/photo-grid", () => ({
-  PhotoGrid: forwardRef(function PhotoGrid() {
+  PhotoGrid: forwardRef(function PhotoGrid({
+    onHasPhotosChange,
+  }: {
+    onHasPhotosChange?: (has: boolean) => void;
+  }) {
+    useEffect(() => {
+      onHasPhotosChange?.(true);
+    }, [onHasPhotosChange]);
     return null;
   }),
 }));
@@ -45,6 +64,26 @@ const mockRenameFolder = vi.mocked(renameFolder);
 function renderPage(folder = "trips") {
   return render(
     <MemoryRouter initialEntries={[`/folders/${encodeURIComponent(folder)}`]}>
+      <Routes>
+        <Route path="/folders/:folder" element={<FolderPage />} />
+      </Routes>
+    </MemoryRouter>
+  );
+}
+
+// Navigating between two folders keeps FolderPage mounted (same route, new
+// param), which is exactly the case the query reset has to handle.
+function GoTo({ folder }: { folder: string }) {
+  const navigate = useNavigate();
+  return (
+    <button onClick={() => navigate(`/folders/${folder}`)}>go-{folder}</button>
+  );
+}
+
+function renderPageWithNav(folder = "trips", target = "beach") {
+  return render(
+    <MemoryRouter initialEntries={[`/folders/${encodeURIComponent(folder)}`]}>
+      <GoTo folder={target} />
       <Routes>
         <Route path="/folders/:folder" element={<FolderPage />} />
       </Routes>
@@ -91,6 +130,45 @@ describe("FolderPage — rename", () => {
     renderPage("trips");
 
     expect(screen.getByRole("button", { name: "Rename" })).toBeEnabled();
+  });
+
+  it("offers a folder search field once the folder has photos", async () => {
+    renderPage("trips");
+    // The field appears after the grid reports the folder has photos.
+    const search = await screen.findByRole("textbox", {
+      name: "Search this folder",
+    });
+    expect(search).toBeInTheDocument();
+    // The autocomplete pool is loaded scoped to this folder.
+    expect(vi.mocked(listFolderFacets)).toHaveBeenCalledWith("trips");
+
+    fireEvent.change(search, { target: { value: "tag:sunset" } });
+    expect(search).toHaveValue("tag:sunset");
+  });
+
+  it("clears the search when navigating to another folder", async () => {
+    renderPageWithNav("trips", "beach");
+
+    const search = await screen.findByRole("textbox", {
+      name: "Search this folder",
+    });
+    fireEvent.change(search, { target: { value: "tag:sunset" } });
+    expect(search).toHaveValue("tag:sunset");
+
+    // The page stays mounted across the param change, so a leftover query would
+    // silently filter the new folder — and the field is briefly unmounted while
+    // the new grid loads, hiding the fact that a filter is still applied.
+    fireEvent.click(screen.getByText("go-beach"));
+
+    await waitFor(() => {
+      expect(screen.getByTestId("folder-title")).toHaveTextContent("beach");
+    });
+    const next = await screen.findByRole("textbox", {
+      name: "Search this folder",
+    });
+    expect(next).toHaveValue("");
+    // And the new folder's own autocomplete pool is loaded.
+    expect(vi.mocked(listFolderFacets)).toHaveBeenCalledWith("beach");
   });
 
   it("locks folder mutations while the rename is in flight", async () => {

@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
   FolderCount,
+  FolderFacets,
   Photo,
   SearchFacets,
   Tag,
@@ -25,12 +26,23 @@ export function searchPhotos(params: {
   q?: string;
   tag?: string;
   camera?: string;
+  /** Restrict the search to a single folder (the in-folder search field). */
+  folder?: string;
 }): Promise<Photo[]> {
   return invoke("search_photos", {
     q: params.q || null,
     tag: params.tag || null,
     camera: params.camera || null,
+    folder: params.folder || null,
   });
+}
+
+/** Ids of the photos in one folder matching `q` — the in-folder search field's
+ * filter. Uncapped (unlike `searchPhotos`, which caps the results page at 200),
+ * because these ids hide non-matching tiles in a grid that already holds every
+ * row in the folder: a truncated set would silently hide matching photos. */
+export function searchPhotoIds(q: string, folder: string): Promise<string[]> {
+  return invoke("search_photo_ids", { q, folder });
 }
 
 export function listTags(): Promise<Tag[]> {
@@ -39,6 +51,12 @@ export function listTags(): Promise<Tag[]> {
 
 export function listSearchFacets(): Promise<SearchFacets> {
   return invoke("list_search_facets");
+}
+
+/** Tags + camera facets that occur within a single folder (the in-folder
+ * search field's scoped autocomplete pools). */
+export function listFolderFacets(folder: string): Promise<FolderFacets> {
+  return invoke("list_folder_facets", { folder });
 }
 
 export function getPhotoTags(photoId: string): Promise<Tag[]> {

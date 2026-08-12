@@ -122,6 +122,20 @@ export function SelectionProvider({ children }: { children: ReactNode }) {
     anchorRef.current = null;
   }, []);
 
+  // Drop any selected photo that is no longer among `ids`. The grids call this
+  // when a filter hides tiles, so the selection can never outlive what's on
+  // screen — otherwise the toolbar would report a count the user can't see and
+  // a bulk delete would destroy hidden photos. Returns the previous array
+  // unchanged when nothing was dropped, so callers can run it from an effect
+  // without looping.
+  const retain = useCallback((ids: Set<string>) => {
+    setSelected((prev) => {
+      const next = prev.filter((p) => ids.has(p.id));
+      return next.length === prev.length ? prev : next;
+    });
+    if (anchorRef.current && !ids.has(anchorRef.current)) anchorRef.current = null;
+  }, []);
+
   const value = useMemo(
     () => ({
       selected,
@@ -132,6 +146,7 @@ export function SelectionProvider({ children }: { children: ReactNode }) {
       snapshot,
       selectAll,
       clear,
+      retain,
       pool,
       setPool,
       actions,
@@ -146,6 +161,7 @@ export function SelectionProvider({ children }: { children: ReactNode }) {
       snapshot,
       selectAll,
       clear,
+      retain,
       pool,
       actions,
     ]

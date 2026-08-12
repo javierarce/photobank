@@ -92,6 +92,42 @@ describe("PhotoTags", () => {
     expect(screen.queryByText("Landscape")).not.toBeInTheDocument();
   });
 
+  it("reports tag additions and removals so an open search can re-run", async () => {
+    const onTagsChange = vi.fn();
+    render(<PhotoTags photoId="p1" onTagsChange={onTagsChange} />);
+
+    await waitFor(() => {
+      expect(screen.getByText("Landscape")).toBeInTheDocument();
+    });
+    expect(onTagsChange).not.toHaveBeenCalled(); // not fired by the initial load
+
+    const input = screen.getByRole("textbox");
+    fireEvent.change(input, { target: { value: "NewTag" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    await waitFor(() => expect(onTagsChange).toHaveBeenCalledTimes(1));
+
+    fireEvent.click(screen.getAllByText("×")[0]);
+    await waitFor(() => expect(onTagsChange).toHaveBeenCalledTimes(2));
+  });
+
+  it("does not report a tag change when the write fails", async () => {
+    const onTagsChange = vi.fn();
+    mockAddPhotoTag.mockRejectedValueOnce("boom");
+    render(<PhotoTags photoId="p1" onTagsChange={onTagsChange} />);
+
+    await waitFor(() => {
+      expect(screen.getByText("Landscape")).toBeInTheDocument();
+    });
+
+    const input = screen.getByRole("textbox");
+    fireEvent.change(input, { target: { value: "NewTag" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+
+    // The tag was never applied, so nothing downstream should be invalidated.
+    await waitFor(() => expect(mockAddPhotoTag).toHaveBeenCalled());
+    expect(onTagsChange).not.toHaveBeenCalled();
+  });
+
   it("shows tag suggestions while typing", async () => {
     render(<PhotoTags photoId="p1" />);
 

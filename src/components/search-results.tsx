@@ -184,7 +184,11 @@ export function SearchResults() {
     return <p className="text-sm text-foreground/60">Enter a search term.</p>;
   }
 
-  if (!photos.length) {
+  // Not while an overlay is open: a tag edit made inside the lightbox (or the
+  // bulk editor) can empty the results mid-interaction, and returning here would
+  // unmount it without clearing `active` / `tagTargets` — so it would pop back
+  // open over unrelated results on the next search that matches.
+  if (!photos.length && !active && !tagTargets) {
     return <p className="text-sm text-foreground/60">No results found.</p>;
   }
 
@@ -252,9 +256,23 @@ export function SearchResults() {
               onClose={() => setActive(null)}
               onDelete={handleDelete}
               onMove={handleMove}
-              onRename={handleRename}
-              onReplace={handleReplace}
-              onLoadInfo={handleLoadInfo}
+              // Every edit that can change whether the photo still matches the
+              // query re-runs the search, so it drops out when it no longer
+              // does: a rename (filename: queries), a replace or loading EXIF
+              // (iso:/camera:/date: queries) and tag edits alike.
+              onRename={async (photo, newFilename) => {
+                await handleRename(photo, newFilename);
+                setReloadNonce((n) => n + 1);
+              }}
+              onReplace={async (photo) => {
+                await handleReplace(photo);
+                setReloadNonce((n) => n + 1);
+              }}
+              onLoadInfo={async (photo) => {
+                await handleLoadInfo(photo);
+                setReloadNonce((n) => n + 1);
+              }}
+              onTagsChange={() => setReloadNonce((n) => n + 1)}
               onPrev={canNavigate ? () => setActive(prev) : undefined}
               onNext={canNavigate ? () => setActive(next) : undefined}
             />
