@@ -112,15 +112,33 @@ export const PhotoGrid = forwardRef<PhotoGridRef, Props>(function PhotoGrid(
     () => new Map(photos.map((p) => [p.id, p])),
     [photos]
   );
+  // An upload that has settled into `error` over a `failed` row hands its error
+  // off to the photo tile (dismissed by the effect below). Any other upload
+  // keeps its tile, whatever the row says: re-dropping a file that failed
+  // retries it in place — the importer reuses that same failed row — and our
+  // copy of the row keeps reading "failed" until the batch's refresh lands,
+  // well after the retry has finalized it to `completed` and reported done.
+  // Only the error path ever writes `failed` mid-session, so a live upload over
+  // a failed row is always stale data, never news.
   const activeUploads = useMemo(
     () =>
       uploads.filter(
-        (u) => !u.id || photoById.get(u.id)?.processingStatus !== "failed"
+        (u) =>
+          u.status !== "error" ||
+          !u.id ||
+          photoById.get(u.id)?.processingStatus !== "failed"
       ),
     [uploads, photoById]
   );
   const activeUploadIds = useMemo(
     () => new Set(activeUploads.map((u) => u.id)),
+    [activeUploads]
+  );
+  // A retry only learns the reused row's id once the importer reserves it, so
+  // match by name too — otherwise that row's stale "Failed" tile sits on screen
+  // beside the upload tile that has taken over its slot.
+  const coveredKeys = useMemo(
+    () => new Set(activeUploads.map((u) => u.key)),
     [activeUploads]
   );
   // Order the tiles per the chosen sort; this also drives the selection pool,
@@ -137,7 +155,7 @@ export const PhotoGrid = forwardRef<PhotoGridRef, Props>(function PhotoGrid(
   // sortedPhotos BY REFERENCE (it only changes when photos or the sort change,
   // carrying content updates like updated_at through) plus a value-key for the
   // active upload ids (whose Set identity churns with the uploads prop).
-  const activeUploadKey = [...activeUploadIds].join(",");
+  const activeUploadKey = `${[...activeUploadIds].join(",")}|${[...coveredKeys].join(",")}`;
   // The in-folder search reuses the global typed-query engine (tag:, camera:,
   // iso:>=800, …) by running search_photos scoped to this folder and keeping
   // the ids it matched. `matchIds` is null when no search is active; then every
@@ -204,6 +222,10 @@ export const PhotoGrid = forwardRef<PhotoGridRef, Props>(function PhotoGrid(
       sortedPhotos.filter(
         (p) =>
           !activeUploadIds.has(p.id) &&
+          !(
+            p.processingStatus === "failed" &&
+            coveredKeys.has(`${p.folder}/${p.filename}`)
+          ) &&
           (!trimmedQuery || search === null || search.ids.has(p.id))
       ),
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -382,10 +404,14 @@ export const PhotoGrid = forwardRef<PhotoGridRef, Props>(function PhotoGrid(
   const tiles = usePresence(visiblePhotos, photoKey);
 
   // Failed processing hands off to the photo tile, which owns the error state.
+  // Only when this upload is the one that failed, though: a retry reuses the
+  // failed row, so dismissing on the row alone would drop a live import out of
+  // the upload list entirely — no tile, no Cancel button — leaving the previous
+  // attempt's "Failed" tile in its place until the refresh lands.
   useEffect(() => {
     if (!onDismissUpload) return;
     for (const u of uploads) {
-      if (!u.id) continue;
+      if (!u.id || u.status !== "error") continue;
       const photo = photos.find((p) => p.id === u.id);
       if (photo?.processingStatus === "failed") onDismissUpload(u.key);
     }
