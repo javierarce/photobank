@@ -15,6 +15,7 @@ import {
 } from "react-router-dom";
 import { FolderList } from "@/components/folder-list";
 import { listFolders } from "@/lib/api";
+import type { FolderSortMode } from "@/lib/folder-sort";
 import { makeFolder } from "@/__tests__/fixtures";
 
 vi.mock("@/lib/api", () => ({
@@ -52,10 +53,16 @@ function LocationProbe() {
   return <div data-testid="location">{useLocation().pathname}</div>;
 }
 
-function renderFolderList() {
+function renderFolderList(
+  sort?: FolderSortMode,
+  onFoldersLoaded?: (names: string[]) => void
+) {
   return render(
     <MemoryRouter>
-      <FolderList />
+      <FolderList sort={sort} onFoldersLoaded={onFoldersLoaded} />
+      {/* Stands in for the header's New folder field: typing in an input must
+          not drive the grid cursor. */}
+      <input data-testid="outside-input" />
       <Routes>
         <Route path="/folders/:folder" element={<FolderProbe />} />
         <Route path="*" element={<LocationProbe />} />
@@ -94,66 +101,6 @@ describe("FolderList", () => {
     });
   });
 
-  it("navigates to a newly named folder's page", async () => {
-    mockListFolders.mockResolvedValueOnce([makeFolder({ folder: "vacation", count: 3 })]);
-
-    renderFolderList();
-
-    fireEvent.click(await screen.findByTestId("new-folder-card"));
-    const input = screen.getByTestId("new-folder-input");
-    fireEvent.change(input, { target: { value: "  My Trip  " } });
-    fireEvent.keyDown(input, { key: "Enter" });
-
-    await waitFor(() => {
-      expect(screen.getByTestId("folder-param")).toHaveTextContent("My Trip");
-    });
-  });
-
-  it("opens the existing folder when the name matches (case-insensitively)", async () => {
-    mockListFolders.mockResolvedValueOnce([makeFolder({ folder: "Vacation", count: 3 })]);
-
-    renderFolderList();
-
-    fireEvent.click(await screen.findByTestId("new-folder-card"));
-    const input = screen.getByTestId("new-folder-input");
-    fireEvent.change(input, { target: { value: "vacation" } });
-    fireEvent.keyDown(input, { key: "Enter" });
-
-    await waitFor(() => {
-      expect(screen.getByTestId("folder-param")).toHaveTextContent("Vacation");
-    });
-  });
-
-  it("dismisses the new-folder input on blur without navigating", async () => {
-    mockListFolders.mockResolvedValueOnce([makeFolder({ folder: "vacation", count: 3 })]);
-
-    renderFolderList();
-
-    fireEvent.click(await screen.findByTestId("new-folder-card"));
-    const input = screen.getByTestId("new-folder-input");
-    fireEvent.change(input, { target: { value: "scratch" } });
-    fireEvent.blur(input);
-
-    expect(screen.queryByTestId("new-folder-input")).not.toBeInTheDocument();
-    expect(screen.getByTestId("location")).toHaveTextContent("/");
-    expect(screen.getByTestId("new-folder-card")).toBeInTheDocument();
-  });
-
-  it("cancels the new-folder input on Escape without navigating", async () => {
-    mockListFolders.mockResolvedValueOnce([makeFolder({ folder: "vacation", count: 3 })]);
-
-    renderFolderList();
-
-    fireEvent.click(await screen.findByTestId("new-folder-card"));
-    const input = screen.getByTestId("new-folder-input");
-    fireEvent.change(input, { target: { value: "scratch" } });
-    fireEvent.keyDown(input, { key: "Escape" });
-
-    expect(screen.queryByTestId("new-folder-input")).not.toBeInTheDocument();
-    expect(screen.getByTestId("location")).toHaveTextContent("/");
-    expect(screen.getByTestId("new-folder-card")).toBeInTheDocument();
-  });
-
   it("renders folders with counts", async () => {
     mockListFolders.mockResolvedValueOnce([
       makeFolder({ folder: "vacation", count: 12 }),
@@ -168,6 +115,44 @@ describe("FolderList", () => {
     expect(screen.getByText("12 photos")).toBeInTheDocument();
     expect(screen.getByText("barcelona")).toBeInTheDocument();
     expect(screen.getByText("1 photo")).toBeInTheDocument();
+  });
+
+  it("orders the cards by the sort it is given, whatever order they arrive in", async () => {
+    const listed = [
+      makeFolder({ folder: "vacation", lastAddedAt: "2026-05-01T00:00:00Z" }),
+      makeFolder({ folder: "berlin", lastAddedAt: "2026-01-01T00:00:00Z" }),
+    ];
+    // Once per render below; a lingering implementation would leak into the
+    // tests that follow.
+    mockListFolders.mockResolvedValueOnce(listed).mockResolvedValueOnce(listed);
+
+    const cardNames = () =>
+      Array.from(document.querySelectorAll("[data-nav-id]")).map((el) =>
+        el.getAttribute("data-nav-id")
+      );
+
+    renderFolderList("name-asc");
+    await screen.findByText("vacation");
+    expect(cardNames()).toEqual(["berlin", "vacation"]);
+
+    cleanup();
+    renderFolderList("updated-desc");
+    await screen.findByText("vacation");
+    expect(cardNames()).toEqual(["vacation", "berlin"]);
+  });
+
+  it("reports the loaded folder names to the header", async () => {
+    mockListFolders.mockResolvedValueOnce([
+      makeFolder({ folder: "vacation" }),
+      makeFolder({ folder: "berlin" }),
+    ]);
+    const onFoldersLoaded = vi.fn();
+
+    renderFolderList(undefined, onFoldersLoaded);
+
+    await waitFor(() => {
+      expect(onFoldersLoaded).toHaveBeenLastCalledWith(["vacation", "berlin"]);
+    });
   });
 
   it("shows each folder's cover thumbnail", async () => {
@@ -224,6 +209,8 @@ describe("FolderList", () => {
     // :focus-visible in globals.css).
     const isFocused = (folder: string) => document.activeElement === card(folder);
 
+    // The cards render in the default (name) order, so the cursor walks
+    // barcelona → berlin → vacation whatever order the backend listed them in.
     async function renderNavList() {
       mockListFolders.mockResolvedValueOnce([
         makeFolder({ folder: "vacation", count: 3 }),
@@ -237,42 +224,37 @@ describe("FolderList", () => {
     it("moves the focus cursor across folders with arrows and vim keys", async () => {
       await renderNavList();
 
-      // First press seats the cursor on the first folder card (the New folder
-      // card is skipped — it isn't a nav target).
+      // First press seats the cursor on the first folder card.
       fireEvent.keyDown(document.body, { key: "ArrowRight" });
-      expect(isFocused("vacation")).toBe(true);
-
-      fireEvent.keyDown(document.body, { key: "l" }); // vim right
-      expect(isFocused("vacation")).toBe(false);
       expect(isFocused("barcelona")).toBe(true);
 
+      fireEvent.keyDown(document.body, { key: "l" }); // vim right
+      expect(isFocused("barcelona")).toBe(false);
+      expect(isFocused("berlin")).toBe(true);
+
       fireEvent.keyDown(document.body, { key: "h" }); // vim left
-      expect(isFocused("vacation")).toBe(true);
+      expect(isFocused("barcelona")).toBe(true);
     });
 
     it("opens the focused folder with Enter", async () => {
       await renderNavList();
 
-      fireEvent.keyDown(document.body, { key: "ArrowRight" }); // focus vacation
       fireEvent.keyDown(document.body, { key: "ArrowRight" }); // focus barcelona
+      fireEvent.keyDown(document.body, { key: "ArrowRight" }); // focus berlin
       fireEvent.keyDown(document.body, { key: "Enter" });
 
       await waitFor(() => {
-        expect(screen.getByTestId("folder-param")).toHaveTextContent(
-          "barcelona"
-        );
+        expect(screen.getByTestId("folder-param")).toHaveTextContent("berlin");
       });
     });
 
     it("does not navigate on grid keys typed into an input", async () => {
       await renderNavList();
 
-      // Start editing a new folder name; keystrokes there must not drive the
-      // grid cursor or open a folder.
-      fireEvent.click(screen.getByTestId("new-folder-card"));
-      const input = screen.getByTestId("new-folder-input");
-      fireEvent.keyDown(input, { key: "l" });
-      expect(isFocused("vacation")).toBe(false);
+      // Typing a folder name (or a search) must not drive the grid cursor or
+      // open a folder.
+      fireEvent.keyDown(screen.getByTestId("outside-input"), { key: "l" });
+      expect(isFocused("barcelona")).toBe(false);
     });
   });
 

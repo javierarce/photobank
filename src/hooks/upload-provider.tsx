@@ -80,6 +80,14 @@ function folderAtPoint(position: { x: number; y: number }): string | null {
   return target?.dataset.dropFolder ?? null;
 }
 
+/** Whether the cursor sits over a drop-sink surface — the dialog collecting
+ * files for a folder that doesn't exist yet. Only meaningful when a sink is
+ * actually registered, which the caller checks (see `registerDropSink`). */
+function sinkAtPoint(position: { x: number; y: number }): boolean {
+  const el = document.elementFromPoint(position.x, position.y);
+  return !!el?.closest("[data-drop-sink]");
+}
+
 /**
  * App-wide import state. Living above the router means an upload started on
  * one screen keeps streaming progress after you navigate — the folder card,
@@ -92,6 +100,17 @@ export function UploadProvider({ children }: { children: ReactNode }) {
   const [files, setFiles] = useState<UploadFile[]>([]);
   const [isDragging, setIsDragging] = useState(false);
   const [dropFolder, setDropFolder] = useState<string | null>(null);
+  const [overDropSink, setOverDropSink] = useState(false);
+
+  // The open dialog staging a drop for a folder that doesn't exist yet. It
+  // outranks the folder hit-test: a modal covers the cards anyway.
+  const dropSink = useRef<((paths: string[]) => void) | null>(null);
+  const registerDropSink = useCallback((fn: (paths: string[]) => void) => {
+    dropSink.current = fn;
+    return () => {
+      if (dropSink.current === fn) dropSink.current = null;
+    };
+  }, []);
 
   // A finished upload's tile is dismissed as soon as its thumbnail lands —
   // mid-batch, not only at the end — so a percentage averaged over the
@@ -366,15 +385,26 @@ export function UploadProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     const unlisten = getCurrentWebview().onDragDropEvent((event) => {
       const p = event.payload;
+      const onSink = (position: { x: number; y: number }) =>
+        !!dropSink.current && sinkAtPoint(position);
       if (p.type === "enter" || p.type === "over") {
         setIsDragging(true);
-        setDropFolder(folderAtPoint(p.position));
+        const sink = onSink(p.position);
+        setOverDropSink(sink);
+        setDropFolder(sink ? null : folderAtPoint(p.position));
       } else if (p.type === "leave") {
         setIsDragging(false);
         setDropFolder(null);
+        setOverDropSink(false);
       } else if (p.type === "drop") {
         setIsDragging(false);
         setDropFolder(null);
+        setOverDropSink(false);
+        // A dialog is collecting the files itself; it decides where they go.
+        if (onSink(p.position)) {
+          dropSink.current?.(p.paths.filter(isImportable));
+          return;
+        }
         const folder = folderAtPoint(p.position);
         // No drop target under the cursor — the user must aim at a folder.
         if (folder) handlePathsRef.current(p.paths, folder);
@@ -385,13 +415,25 @@ export function UploadProvider({ children }: { children: ReactNode }) {
     };
   }, []);
 
-  const openFilePicker = useCallback(async (folder: string) => {
+  const pickImages = useCallback(async () => {
     const selection = await open({
       multiple: true,
       filters: [{ name: "Images", extensions: [...SUPPORTED_EXTENSIONS] }],
     });
-    if (!selection) return;
-    const paths = Array.isArray(selection) ? selection : [selection];
+    if (!selection) return [];
+    return Array.isArray(selection) ? selection : [selection];
+  }, []);
+
+  const openFilePicker = useCallback(
+    async (folder: string) => {
+      const paths = await pickImages();
+      if (paths.length) handlePathsRef.current(paths, folder);
+    },
+    [pickImages]
+  );
+
+  // Files a dialog collected on its own (staged before the folder existed).
+  const importPaths = useCallback((paths: string[], folder: string) => {
     handlePathsRef.current(paths, folder);
   }, []);
 
@@ -401,11 +443,15 @@ export function UploadProvider({ children }: { children: ReactNode }) {
         files,
         isDragging,
         dropFolder,
+        overDropSink,
         summarize,
         removeUpload,
         cancelUpload,
         clearCompleted,
         openFilePicker,
+        pickImages,
+        importPaths,
+        registerDropSink,
         onUploadComplete,
       }}
     >

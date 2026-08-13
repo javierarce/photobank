@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
+import { useEffect } from "react";
 import {
   render,
   screen,
@@ -21,6 +22,7 @@ import {
 // native drag-drop subscription the provider also registers.
 const hoisted = vi.hoisted(() => ({
   progress: null as null | ((event: { payload: unknown }) => void),
+  dragDrop: null as null | ((event: { payload: unknown }) => void),
 }));
 
 vi.mock("@tauri-apps/api/event", () => ({
@@ -32,7 +34,10 @@ vi.mock("@tauri-apps/api/event", () => ({
 
 vi.mock("@tauri-apps/api/webview", () => ({
   getCurrentWebview: () => ({
-    onDragDropEvent: () => Promise.resolve(() => {}),
+    onDragDropEvent: (cb: (event: { payload: unknown }) => void) => {
+      hoisted.dragDrop = cb;
+      return Promise.resolve(() => {});
+    },
   }),
 }));
 
@@ -118,6 +123,7 @@ async function seedUpload() {
 beforeEach(() => {
   vi.clearAllMocks();
   hoisted.progress = null;
+  hoisted.dragDrop = null;
   // invoke() always returns a promise; the mock must too, so the provider's
   // `.catch` has something to attach to.
   mockCancelImport.mockResolvedValue(undefined);
@@ -415,5 +421,89 @@ describe("UploadProvider dock badge", () => {
 
     await waitFor(() => expect(mockSetUploadBadge).toHaveBeenCalledWith(25));
     expect(mockSetUploadBadge).toHaveBeenCalledTimes(1);
+  });
+});
+
+// A dialog staging a drop for a folder that doesn't exist yet: it registers a
+// sink and marks its surface with data-drop-sink.
+function SinkConsumer({ onDrop }: { onDrop: (paths: string[]) => void }) {
+  const { registerDropSink, overDropSink } = useUpload();
+  useEffect(() => registerDropSink(onDrop), [registerDropSink, onDrop]);
+  return (
+    <>
+      <div data-drop-sink data-testid="sink">
+        {overDropSink ? "over" : "away"}
+      </div>
+      <div data-drop-folder="vacation" data-testid="card" />
+    </>
+  );
+}
+
+/** Aim the native cursor at an element: the provider hit-tests the DOM, which
+ * jsdom has no layout for, so the lookup is answered directly. */
+function aimAt(testId: string) {
+  document.elementFromPoint = () => screen.getByTestId(testId);
+}
+
+function fireDrag(payload: Record<string, unknown>) {
+  act(() => {
+    hoisted.dragDrop?.({ payload: { position: { x: 1, y: 1 }, ...payload } });
+  });
+}
+
+describe("UploadProvider drop sink", () => {
+  it("hands a drop on the sink to the dialog instead of importing it", () => {
+    const staged = vi.fn();
+    render(
+      <UploadProvider>
+        <SinkConsumer onDrop={staged} />
+      </UploadProvider>
+    );
+
+    aimAt("sink");
+    fireDrag({ type: "over" });
+    expect(screen.getByTestId("sink")).toHaveTextContent("over");
+
+    // The junk in the drop never reaches the dialog — only importable images.
+    fireDrag({ type: "drop", paths: ["/tmp/a.jpg", "/tmp/notes.txt"] });
+
+    expect(staged).toHaveBeenCalledWith(["/tmp/a.jpg"]);
+    expect(mockImportPhotos).not.toHaveBeenCalled();
+    expect(screen.getByTestId("sink")).toHaveTextContent("away");
+  });
+
+  it("still imports a drop that lands on a folder card", async () => {
+    const staged = vi.fn();
+    render(
+      <UploadProvider>
+        <SinkConsumer onDrop={staged} />
+      </UploadProvider>
+    );
+
+    aimAt("card");
+    fireDrag({ type: "drop", paths: ["/tmp/a.jpg"] });
+
+    await waitFor(() =>
+      expect(mockImportPhotos).toHaveBeenCalledWith(["/tmp/a.jpg"], "vacation")
+    );
+    expect(staged).not.toHaveBeenCalled();
+  });
+
+  it("goes back to importing once the dialog unregisters", () => {
+    const staged = vi.fn();
+    const { unmount } = render(
+      <UploadProvider>
+        <SinkConsumer onDrop={staged} />
+      </UploadProvider>
+    );
+    const sink = screen.getByTestId("sink");
+    unmount();
+
+    // The sink element is gone with the dialog; a stale hit-test must not
+    // swallow the drop.
+    document.elementFromPoint = () => sink;
+    fireDrag({ type: "drop", paths: ["/tmp/a.jpg"] });
+
+    expect(staged).not.toHaveBeenCalled();
   });
 });

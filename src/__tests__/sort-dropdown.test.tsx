@@ -1,19 +1,39 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { render, screen, fireEvent, cleanup } from "@testing-library/react";
 import { SortDropdown } from "@/components/sort-dropdown";
+import { SORT_OPTIONS, type SortMode } from "@/lib/photo-sort";
+import { FOLDER_SORT_OPTIONS } from "@/lib/folder-sort";
 
 afterEach(() => {
   cleanup();
 });
 
+// Most cases exercise the dropdown as the folder page uses it: the photo sort.
+function PhotoSort({
+  value,
+  onChange,
+}: {
+  value: SortMode;
+  onChange: (mode: SortMode) => void;
+}) {
+  return (
+    <SortDropdown
+      value={value}
+      options={SORT_OPTIONS}
+      onChange={onChange}
+      label="Sort photos"
+    />
+  );
+}
+
 describe("SortDropdown", () => {
   it("shows the current option's label", () => {
-    render(<SortDropdown value="name-asc" onChange={vi.fn()} />);
+    render(<PhotoSort value="name-asc" onChange={vi.fn()} />);
     expect(screen.getByLabelText("Sort photos")).toHaveTextContent("Name (A–Z)");
   });
 
   it("opens the menu and lists every option", () => {
-    render(<SortDropdown value="date-desc" onChange={vi.fn()} />);
+    render(<PhotoSort value="date-desc" onChange={vi.fn()} />);
 
     expect(screen.queryByRole("menu")).not.toBeInTheDocument();
     fireEvent.click(screen.getByLabelText("Sort photos"));
@@ -28,7 +48,7 @@ describe("SortDropdown", () => {
   });
 
   it("reports the active option via aria-checked", () => {
-    render(<SortDropdown value="date-asc" onChange={vi.fn()} />);
+    render(<PhotoSort value="date-asc" onChange={vi.fn()} />);
     fireEvent.click(screen.getByLabelText("Sort photos"));
 
     expect(
@@ -41,7 +61,7 @@ describe("SortDropdown", () => {
 
   it("calls onChange and closes the menu when an option is chosen", () => {
     const onChange = vi.fn();
-    render(<SortDropdown value="date-desc" onChange={onChange} />);
+    render(<PhotoSort value="date-desc" onChange={onChange} />);
 
     fireEvent.click(screen.getByLabelText("Sort photos"));
     fireEvent.click(screen.getByRole("menuitemradio", { name: /Recently added/ }));
@@ -52,7 +72,7 @@ describe("SortDropdown", () => {
 
   it("closes on Escape without changing the sort", () => {
     const onChange = vi.fn();
-    render(<SortDropdown value="date-desc" onChange={onChange} />);
+    render(<PhotoSort value="date-desc" onChange={onChange} />);
 
     fireEvent.click(screen.getByLabelText("Sort photos"));
     fireEvent.keyDown(document, { key: "Escape" });
@@ -68,7 +88,7 @@ describe("SortDropdown", () => {
     };
     document.addEventListener("keydown", onOuterKeyDown);
     try {
-      render(<SortDropdown value="date-desc" onChange={vi.fn()} />);
+      render(<PhotoSort value="date-desc" onChange={vi.fn()} />);
       const trigger = screen.getByLabelText("Sort photos");
       fireEvent.click(trigger);
       expect(screen.getByRole("menu")).toBeInTheDocument();
@@ -82,10 +102,30 @@ describe("SortDropdown", () => {
     }
   });
 
+  it("drives another option set — the home page's folder order", () => {
+    const onChange = vi.fn();
+    render(
+      <SortDropdown
+        value="name-asc"
+        options={FOLDER_SORT_OPTIONS}
+        onChange={onChange}
+        label="Sort folders"
+      />
+    );
+
+    const trigger = screen.getByLabelText("Sort folders");
+    expect(trigger).toHaveTextContent("Name (A–Z)");
+
+    fireEvent.click(trigger);
+    fireEvent.click(screen.getByRole("menuitemradio", { name: /Recently updated/ }));
+
+    expect(onChange).toHaveBeenCalledWith("updated-desc");
+  });
+
   it("closes when clicking outside", () => {
     render(
       <div>
-        <SortDropdown value="date-desc" onChange={vi.fn()} />
+        <PhotoSort value="date-desc" onChange={vi.fn()} />
         <button type="button">elsewhere</button>
       </div>
     );

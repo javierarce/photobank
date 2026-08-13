@@ -1,18 +1,26 @@
 import { useEffect, useRef, useState } from "react";
-import { SORT_OPTIONS, type SortMode } from "@/lib/photo-sort";
 
-type Props = {
-  value: SortMode;
-  onChange: (mode: SortMode) => void;
+type Props<T extends string> = {
+  value: T;
+  options: readonly { value: T; label: string }[];
+  onChange: (mode: T) => void;
+  /** Names what's being ordered on the trigger, e.g. "Sort photos". */
+  label: string;
 };
 
 /**
- * A compact menu button for choosing how the folder's photos are ordered. It
- * shows the current option and opens a popover of the rest — modeled on
- * ExportButton's popover (outside-click / capture-phase Escape to close, so
- * Escape here doesn't also clear the selection or close the lightbox).
+ * A compact menu button for choosing an order — the folder's photos on the
+ * folder page, the folder cards on the home page. It shows the current option
+ * and opens a popover of the rest, modeled on ExportButton's popover
+ * (outside-click / capture-phase Escape to close, so Escape here doesn't also
+ * clear the selection or close the lightbox).
  */
-export function SortDropdown({ value, onChange }: Props) {
+export function SortDropdown<T extends string>({
+  value,
+  options,
+  onChange,
+  label,
+}: Props<T>) {
   const [open, setOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
   const buttonRef = useRef<HTMLButtonElement>(null);
@@ -37,9 +45,9 @@ export function SortDropdown({ value, onChange }: Props) {
     };
   }, [open]);
 
-  const current = SORT_OPTIONS.find((o) => o.value === value) ?? SORT_OPTIONS[0];
+  const current = options.find((o) => o.value === value) ?? options[0];
 
-  const choose = (mode: SortMode) => {
+  const choose = (mode: T) => {
     setOpen(false);
     onChange(mode);
   };
@@ -51,7 +59,7 @@ export function SortDropdown({ value, onChange }: Props) {
         type="button"
         aria-haspopup="menu"
         aria-expanded={open}
-        aria-label="Sort photos"
+        aria-label={label}
         onClick={() => setOpen((v) => !v)}
         className="flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-sm font-medium text-foreground/70 transition-colors hover:border-foreground/35 hover:text-foreground"
       >
@@ -73,7 +81,7 @@ export function SortDropdown({ value, onChange }: Props) {
           role="menu"
           className="absolute right-0 top-full z-10 mt-1 min-w-44 overflow-hidden rounded-md border border-border bg-background shadow-lg"
         >
-          {SORT_OPTIONS.map((opt) => (
+          {options.map((opt) => (
             <button
               key={opt.value}
               type="button"

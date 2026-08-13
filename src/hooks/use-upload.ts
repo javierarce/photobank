@@ -25,6 +25,9 @@ export type UploadContextValue = {
   isDragging: boolean;
   /** The folder whose drop target sits under the cursor, or null. */
   dropFolder: string | null;
+  /** True while a native file drag is over the registered drop sink — the New
+   * folder dialog, which stages files instead of importing them. */
+  overDropSink: boolean;
   /**
    * Whole-batch progress for one folder, or for every folder at once when
    * called with no argument. Counts files whose tiles have already been
@@ -37,6 +40,17 @@ export type UploadContextValue = {
   clearCompleted: () => void;
   /** Open the OS file picker and import the selection into `folder`. */
   openFilePicker: (folder: string) => void;
+  /** Open the OS file picker and return the chosen paths without importing
+   * them — for a destination that doesn't exist yet. */
+  pickImages: () => Promise<string[]>;
+  /** Import already-known paths (e.g. files staged in a dialog) into `folder`. */
+  importPaths: (paths: string[], folder: string) => void;
+  /**
+   * Divert drops that land on a `[data-drop-sink]` element to `fn`, which
+   * receives the importable paths instead of the importer. Only one sink is
+   * active at a time (a modal); returns an unsubscribe.
+   */
+  registerDropSink: (fn: (paths: string[]) => void) => () => void;
   /** Subscribe to import-batch completion; returns an unsubscribe fn. */
   onUploadComplete: (fn: CompleteListener) => () => void;
 };
