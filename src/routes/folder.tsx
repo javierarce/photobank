@@ -9,6 +9,7 @@ import {
 } from "@/components/selection-toolbar";
 import { SortDropdown } from "@/components/sort-dropdown";
 import { loadSortMode, saveSortMode, type SortMode } from "@/lib/photo-sort";
+import type { UploadSummary } from "@/lib/upload-progress";
 import { useUpload } from "@/hooks/use-upload";
 import { useBackgroundDeselect, useSelection } from "@/hooks/use-selection";
 
@@ -34,6 +35,7 @@ export default function FolderPage() {
   const {
     files,
     dropFolder,
+    summarize,
     openFilePicker,
     removeUpload,
     cancelUpload,
@@ -60,6 +62,8 @@ export default function FolderPage() {
   }, [onUploadComplete, folder]);
 
   const folderUploads = files.filter((f) => f.folder === folder);
+  // One number for the whole drop, next to the per-tile percentages.
+  const batch = summarize(folder);
   const cancellable = folderUploads.filter(
     (u) => u.status === "pending" || u.status === "uploading"
   );
@@ -103,19 +107,18 @@ export default function FolderPage() {
                 <SelectionActionBar />
               ) : (
                 <div className="flex shrink-0 items-center gap-2">
-                  <SortDropdown value={sortMode} onChange={handleSortChange} />
-                  {cancellable.length > 0 && (
-                    <button
-                      type="button"
-                      onClick={() =>
+                  {/* Cancelling the rest of the batch lives on the bar's ✕,
+                      so there's no separate Cancel button here. */}
+                  {batch.total > 0 && (
+                    <UploadProgress
+                      {...batch}
+                      cancellable={cancellable.length}
+                      onCancel={() =>
                         cancellable.forEach((u) => cancelUpload(u.key))
                       }
-                      className="rounded-md border border-border px-3 py-1.5 text-sm font-medium text-foreground/70 transition hover:border-foreground/35 hover:text-foreground active:scale-[0.97]"
-                    >
-                      Cancel {cancellable.length} upload
-                      {cancellable.length > 1 ? "s" : ""}
-                    </button>
+                    />
                   )}
+                  <SortDropdown value={sortMode} onChange={handleSortChange} />
                   {/* inbox is the import default — renaming it would only see
                       it reappear on the next upload (the backend refuses too) */}
                   {folder !== "inbox" && (
@@ -183,6 +186,60 @@ export default function FolderPage() {
             <span className="font-mono">{folder}/</span>
           </p>
         </div>
+      )}
+    </div>
+  );
+}
+
+/** The whole drop's progress in the folder header: a bar, how many files have
+ * landed, one percentage for the batch — the per-tile percentages only say
+ * where each individual file is — and an ✕ to cancel what's left, sitting
+ * with the readout it acts on. */
+function UploadProgress({
+  total,
+  completed,
+  percent,
+  failed,
+  cancellable,
+  onCancel,
+}: UploadSummary & {
+  /** How many uploads can still be stopped; 0 hides the ✕. */
+  cancellable: number;
+  onCancel: () => void;
+}) {
+  return (
+    <div className="flex shrink-0 items-center gap-2">
+      <div
+        role="progressbar"
+        aria-valuemin={0}
+        aria-valuemax={100}
+        aria-valuenow={percent}
+        aria-label={`Uploading ${total} image${total > 1 ? "s" : ""}`}
+        className="h-1 w-20 overflow-hidden rounded-full bg-foreground/10"
+      >
+        <div
+          className="h-full bg-accent transition-[width] duration-200 ease-linear"
+          style={{ width: `${percent}%` }}
+        />
+      </div>
+      <span className="text-sm tabular-nums text-foreground/60">
+        {completed}/{total} · {percent}%
+      </span>
+      {failed > 0 && (
+        <span className="text-sm tabular-nums text-red-600 dark:text-red-400">
+          {failed} failed
+        </span>
+      )}
+      {cancellable > 0 && (
+        <button
+          type="button"
+          onClick={onCancel}
+          aria-label={`Cancel ${cancellable} upload${cancellable > 1 ? "s" : ""}`}
+          title={`Cancel ${cancellable} upload${cancellable > 1 ? "s" : ""}`}
+          className="p-1 text-sm leading-none text-foreground/40 transition-colors hover:text-foreground"
+        >
+          ✕
+        </button>
       )}
     </div>
   );

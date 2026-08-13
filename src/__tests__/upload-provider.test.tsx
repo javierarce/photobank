@@ -14,6 +14,7 @@ import {
   checkImportCollisions,
   importPhotos,
   replacePhotos,
+  setUploadBadge,
 } from "@/lib/api";
 
 // Capture the import://progress listener so tests can emit events, and stub the
@@ -44,25 +45,34 @@ vi.mock("@/lib/api", () => ({
   replacePhotos: vi.fn(),
   checkImportCollisions: vi.fn(),
   cancelImport: vi.fn(),
+  setUploadBadge: vi.fn(),
 }));
 
 const mockImportPhotos = vi.mocked(importPhotos);
 const mockReplacePhotos = vi.mocked(replacePhotos);
 const mockCheckCollisions = vi.mocked(checkImportCollisions);
 const mockCancelImport = vi.mocked(cancelImport);
+const mockSetUploadBadge = vi.mocked(setUploadBadge);
 
 // A tiny consumer that renders each upload's status and a cancel button, plus a
 // trigger to seed an upload through the file picker (which drives handlePaths).
 function Consumer() {
-  const { files, openFilePicker, cancelUpload } = useUpload();
+  const { files, summarize, openFilePicker, cancelUpload, removeUpload } =
+    useUpload();
+  const batch = summarize("vacation");
   return (
     <div>
       <button onClick={() => openFilePicker("vacation")}>pick</button>
+      <span data-testid="summary">
+        {batch.completed}/{batch.total} · {batch.percent}%
+      </span>
       <ul>
         {files.map((f) => (
           <li key={f.key}>
             <span data-testid={`status-${f.filename}`}>{f.status}</span>
             <button onClick={() => cancelUpload(f.key)}>cancel-{f.filename}</button>
+            {/* Stands in for the grid dismissing a tile once its thumbnail lands */}
+            <button onClick={() => removeUpload(f.key)}>dismiss-{f.filename}</button>
           </li>
         ))}
       </ul>
@@ -116,6 +126,7 @@ beforeEach(() => {
   mockCheckCollisions.mockResolvedValue([]);
   mockImportPhotos.mockResolvedValue([]);
   mockReplacePhotos.mockResolvedValue([]);
+  mockSetUploadBadge.mockResolvedValue(undefined);
 });
 
 afterEach(() => {
@@ -278,5 +289,131 @@ describe("UploadProvider name collisions", () => {
       expect(mockImportPhotos).toHaveBeenCalledWith(["/tmp/beach.jpg"], "vacation")
     );
     expect(screen.queryByTestId("collision-list")).not.toBeInTheDocument();
+  });
+});
+
+function fileEvent(
+  filename: string,
+  status: string,
+  progress: number
+) {
+  return {
+    key: `vacation/${filename}`,
+    photoId: filename,
+    filename,
+    folder: "vacation",
+    progress,
+    status,
+    error: null,
+  };
+}
+
+describe("UploadProvider batch progress", () => {
+  it("averages the drop into one percentage", async () => {
+    await dropTwo([]);
+    await waitFor(() => screen.getByTestId("status-sunset.jpg"));
+
+    emit(fileEvent("beach.jpg", "done", 100));
+    emit(fileEvent("sunset.jpg", "uploading", 50));
+
+    expect(screen.getByTestId("summary")).toHaveTextContent("1/2 · 75%");
+  });
+
+  it("keeps a dismissed upload in the total so the percentage never drops", async () => {
+    await dropTwo([]);
+    await waitFor(() => screen.getByTestId("status-sunset.jpg"));
+    emit(fileEvent("beach.jpg", "done", 100));
+    emit(fileEvent("sunset.jpg", "uploading", 50));
+
+    // The grid dismisses the finished tile mid-batch, once its thumbnail lands.
+    fireEvent.click(screen.getByText("dismiss-beach.jpg"));
+
+    expect(screen.queryByTestId("status-beach.jpg")).not.toBeInTheDocument();
+    expect(screen.getByTestId("summary")).toHaveTextContent("1/2 · 75%");
+  });
+
+  it("forgets the tally once the batch is over", async () => {
+    await dropTwo([]);
+    await waitFor(() => screen.getByTestId("status-sunset.jpg"));
+    emit(fileEvent("beach.jpg", "done", 100));
+    emit(fileEvent("sunset.jpg", "done", 100));
+
+    fireEvent.click(screen.getByText("dismiss-beach.jpg"));
+    fireEvent.click(screen.getByText("dismiss-sunset.jpg"));
+
+    // Nothing left to report — the next drop starts from zero, not 2/2.
+    await waitFor(() =>
+      expect(screen.getByTestId("summary")).toHaveTextContent("0/0 · 0%")
+    );
+  });
+
+  it("does not let an undismissed failure carry a tally into the next drop", async () => {
+    await dropTwo([]);
+    await waitFor(() => screen.getByTestId("status-sunset.jpg"));
+    emit(fileEvent("beach.jpg", "done", 100));
+    emit(fileEvent("sunset.jpg", "error", 40));
+    fireEvent.click(screen.getByText("dismiss-beach.jpg"));
+
+    // The failed tile is still on screen, but it's outside the ratio — so the
+    // batch is over and there's nothing left to report.
+    expect(screen.getByTestId("status-sunset.jpg")).toBeInTheDocument();
+    expect(screen.getByTestId("summary")).toHaveTextContent("0/0 · 0%");
+
+    // A fresh drop alongside that lingering failure starts from zero rather
+    // than inheriting the finished batch's one completed file.
+    const dialog = await import("@tauri-apps/plugin-dialog");
+    vi.mocked(dialog.open).mockResolvedValueOnce(["/tmp/dune.jpg"]);
+    fireEvent.click(screen.getByText("pick"));
+    await waitFor(() => screen.getByTestId("status-dune.jpg"));
+
+    emit(fileEvent("dune.jpg", "uploading", 50));
+    expect(screen.getByTestId("summary")).toHaveTextContent("0/1 · 50%");
+  });
+
+  it("leaves a cancelled upload out of the total", async () => {
+    await dropTwo([]);
+    await waitFor(() => screen.getByTestId("status-sunset.jpg"));
+    emit(fileEvent("beach.jpg", "cancelled", 30));
+    emit(fileEvent("sunset.jpg", "uploading", 60));
+
+    // A cancelled file was never part of the batch's work.
+    expect(screen.getByTestId("summary")).toHaveTextContent("0/1 · 60%");
+  });
+});
+
+describe("UploadProvider dock badge", () => {
+  it("shows the overall percentage on the app icon while importing", async () => {
+    await dropTwo([]);
+    await waitFor(() => screen.getByTestId("status-sunset.jpg"));
+
+    emit(fileEvent("beach.jpg", "uploading", 80));
+    emit(fileEvent("sunset.jpg", "uploading", 20));
+
+    await waitFor(() => expect(mockSetUploadBadge).toHaveBeenLastCalledWith(50));
+  });
+
+  it("clears the badge once nothing is uploading", async () => {
+    await dropTwo([]);
+    await waitFor(() => screen.getByTestId("status-sunset.jpg"));
+    emit(fileEvent("beach.jpg", "uploading", 80));
+
+    emit(fileEvent("beach.jpg", "done", 100));
+    emit(fileEvent("sunset.jpg", "done", 100));
+
+    await waitFor(() => expect(mockSetUploadBadge).toHaveBeenLastCalledWith(null));
+  });
+
+  it("does not re-badge on every progress tick", async () => {
+    await dropTwo([]);
+    await waitFor(() => screen.getByTestId("status-sunset.jpg"));
+    mockSetUploadBadge.mockClear();
+
+    // Two ticks that leave the whole-batch percentage where it was: the second
+    // re-renders but must not cost another IPC round trip.
+    emit(fileEvent("beach.jpg", "uploading", 50));
+    emit(fileEvent("beach.jpg", "uploading", 50));
+
+    await waitFor(() => expect(mockSetUploadBadge).toHaveBeenCalledWith(25));
+    expect(mockSetUploadBadge).toHaveBeenCalledTimes(1);
   });
 });

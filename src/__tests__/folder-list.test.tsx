@@ -27,6 +27,13 @@ vi.mock("@/hooks/use-upload", () => ({
     files: [],
     isDragging: false,
     dropFolder: null,
+    summarize: () => ({
+      total: 0,
+      completed: 0,
+      active: 0,
+      percent: 0,
+      failed: 0,
+    }),
     clearCompleted: () => {},
     onUploadComplete: () => () => {},
   }),

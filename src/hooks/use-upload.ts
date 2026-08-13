@@ -1,4 +1,5 @@
 import { createContext, useContext } from "react";
+import type { UploadSummary } from "@/lib/upload-progress";
 
 export type UploadFile = {
   /** Stable key: "folder/filename" — matches import://progress events. */
@@ -24,6 +25,12 @@ export type UploadContextValue = {
   isDragging: boolean;
   /** The folder whose drop target sits under the cursor, or null. */
   dropFolder: string | null;
+  /**
+   * Whole-batch progress for one folder, or for every folder at once when
+   * called with no argument. Counts files whose tiles have already been
+   * dismissed, so the percentage only ever moves forwards.
+   */
+  summarize: (folder?: string) => UploadSummary;
   removeUpload: (key: string) => void;
   /** Signal the importer to cancel an in-flight or queued upload by its key. */
   cancelUpload: (key: string) => void;
