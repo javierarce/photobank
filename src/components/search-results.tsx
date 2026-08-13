@@ -237,7 +237,9 @@ export function SearchResults() {
               <p className="truncate text-xs text-white">{displayName(photo.filename)}</p>
               <p className="text-[10px] text-white/70">{photo.folder}</p>
             </div>
-            {isSelected(photo.id) && <SelectionCheck />}
+            {/* The corner check is the multi-select cue; a lone selected photo
+                says so with its accent border alone. */}
+            {isSelected(photo.id) && selected.length > 1 && <SelectionCheck />}
           </button>
         ))}
       </div>

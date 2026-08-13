@@ -266,4 +266,22 @@ describe("SearchResults", () => {
     expect(await screen.findByText("No results found.")).toBeInTheDocument();
     expect(screen.queryByTestId("lightbox")).toBeNull();
   });
+
+  it("shows the corner check only once several results are selected", async () => {
+    mockSearchPhotos.mockResolvedValueOnce(mockPhotos);
+
+    renderSearch({ tag: "landscape" });
+    const tile = (id: string) =>
+      document.querySelector<HTMLElement>(`[data-nav-id="${id}"]`);
+    const check = (id: string) => tile(id)?.querySelector(".badge-in") ?? null;
+
+    fireEvent.click(await screen.findByAltText("beach.jpg"));
+    expect(tile("1")).toHaveClass("border-accent");
+    // One selected photo says so with its border; the badge is the multi cue.
+    expect(check("1")).toBeNull();
+
+    fireEvent.click(screen.getByAltText("mountain.jpg"), { metaKey: true });
+    expect(check("1")).not.toBeNull();
+    expect(check("2")).not.toBeNull();
+  });
 });
