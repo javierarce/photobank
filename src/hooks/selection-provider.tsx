@@ -40,17 +40,29 @@ export function SelectionProvider({ children }: { children: ReactNode }) {
     anchorRef.current = photo.id;
   }, []);
 
+  // A modifier-less click, Finder-style: this photo becomes the whole selection
+  // and the anchor a following Shift-click ranges from.
+  const selectOnly = useCallback((photo: Photo) => {
+    setSelected([photo]);
+    anchorRef.current = photo.id;
+  }, []);
+
   const selectRange = useCallback(
-    (photo: Photo) => {
+    (photo: Photo, { additive = false }: { additive?: boolean } = {}) => {
       const anchorId = anchorRef.current;
       const anchorIdx = anchorId
         ? pool.findIndex((p) => p.id === anchorId)
         : -1;
       const targetIdx = pool.findIndex((p) => p.id === photo.id);
       if (anchorIdx === -1 || targetIdx === -1) {
-        // No usable anchor (or an unknown photo) — behave like a plain add.
+        // No usable anchor (or an unknown photo) — fall back to what the same
+        // click without Shift would have done, which also seeds the anchor.
         setSelected((prev) =>
-          prev.some((p) => p.id === photo.id) ? prev : [...prev, photo]
+          additive
+            ? prev.some((p) => p.id === photo.id)
+              ? prev
+              : [...prev, photo]
+            : [photo]
         );
         anchorRef.current = photo.id;
         return;
@@ -59,13 +71,18 @@ export function SelectionProvider({ children }: { children: ReactNode }) {
         anchorIdx < targetIdx
           ? [anchorIdx, targetIdx]
           : [targetIdx, anchorIdx];
+      const span = pool.slice(start, end + 1);
       setSelected((prev) => {
-        // Keep the existing order, union in the whole anchor→target span.
+        // Plain Shift-click *is* the selection (so re-clicking closer to the
+        // anchor shrinks it); Cmd+Shift-click unions the span into what's
+        // already there, keeping the existing order.
+        if (!additive) return span;
         const byId = new Map(prev.map((p) => [p.id, p]));
-        for (let i = start; i <= end; i++) byId.set(pool[i].id, pool[i]);
+        for (const p of span) byId.set(p.id, p);
         return Array.from(byId.values());
       });
-      anchorRef.current = photo.id;
+      // Anchor intentionally left put, so successive Shift-clicks re-range from
+      // the same origin instead of walking it forward one tile at a time.
     },
     [pool]
   );
@@ -141,6 +158,7 @@ export function SelectionProvider({ children }: { children: ReactNode }) {
       selected,
       isSelected,
       toggle,
+      selectOnly,
       selectRange,
       extendTo,
       snapshot,
@@ -156,6 +174,7 @@ export function SelectionProvider({ children }: { children: ReactNode }) {
       selected,
       isSelected,
       toggle,
+      selectOnly,
       selectRange,
       extendTo,
       snapshot,
