@@ -62,9 +62,17 @@ pub struct TagCount {
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct FolderCount {
     pub folder: String,
     pub count: i64,
+    /// Key of the photo standing in for the folder on the home page — the
+    /// user's pick when they set one, otherwise the folder's newest
+    /// displayable photo. None while the folder has nothing to show.
+    pub cover_key: Option<String>,
+    /// The cover photo's `updated_at`, the cache-buster its URL carries (see
+    /// src/lib/image-url.ts).
+    pub cover_version: Option<String>,
 }
 
 /// Distinct EXIF values for search autocomplete. Tags and folders already have
@@ -188,6 +196,21 @@ ALTER TABLE photos ADD COLUMN variants_ok INTEGER NOT NULL DEFAULT 1;
 UPDATE photos SET variants_ok = 0
     WHERE processing_status = 'completed' AND width IS NULL;
 PRAGMA user_version = 3;
+COMMIT;
+";
+
+/// The photo a folder shows on the home page, when the user picked one. Keyed
+/// by folder name (folders aren't rows — a folder is just the `folder` field
+/// on its photos), so a folder rename carries the row along; deleting the
+/// photo drops the pick and the folder falls back to its default cover.
+const SCHEMA_V4: &str = "
+BEGIN;
+CREATE TABLE folder_covers (
+    folder TEXT PRIMARY KEY,
+    photo_id TEXT NOT NULL REFERENCES photos (id) ON DELETE CASCADE,
+    updated_at TEXT NOT NULL
+);
+PRAGMA user_version = 4;
 COMMIT;
 ";
 
@@ -318,6 +341,9 @@ fn migrate(conn: &Connection) -> Result<()> {
     }
     if version < 3 {
         conn.execute_batch(SCHEMA_V3)?;
+    }
+    if version < 4 {
+        conn.execute_batch(SCHEMA_V4)?;
     }
     Ok(())
 }
@@ -450,8 +476,26 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 3);
+        assert_eq!(version, 4);
         assert_eq!(get_meta(&conn, "anything").unwrap(), None);
+    }
+
+    #[test]
+    fn deleting_a_photo_drops_the_cover_it_was_chosen_for() {
+        let conn = open_in_memory();
+        insert_photo(&conn, "p1", "trips", "photo.jpg");
+        conn.execute(
+            "INSERT INTO folder_covers (folder, photo_id, updated_at) VALUES ('trips', 'p1', ?1)",
+            params![now()],
+        )
+        .unwrap();
+
+        conn.execute("DELETE FROM photos WHERE id = 'p1'", []).unwrap();
+
+        let remaining: i64 = conn
+            .query_row("SELECT COUNT(*) FROM folder_covers", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(remaining, 0);
     }
 
     #[test]

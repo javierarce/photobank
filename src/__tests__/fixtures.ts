@@ -1,4 +1,4 @@
-import type { Photo } from "@/lib/types";
+import type { FolderCount, Photo } from "@/lib/types";
 
 export function makePhoto(overrides: Partial<Photo> = {}): Photo {
   return {
@@ -24,6 +24,18 @@ export function makePhoto(overrides: Partial<Photo> = {}): Photo {
     variantsOk: true,
     createdAt: "2026-01-01T00:00:00Z",
     updatedAt: "2026-01-01T00:00:00Z",
+    ...overrides,
+  };
+}
+
+/** A folder listing row. Covers default to none, so a test only spells them
+ * out when it's about the folder card's thumbnail. */
+export function makeFolder(overrides: Partial<FolderCount> = {}): FolderCount {
+  return {
+    folder: "inbox",
+    count: 1,
+    coverKey: null,
+    coverVersion: null,
     ...overrides,
   };
 }

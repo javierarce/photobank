@@ -1,6 +1,8 @@
 import { useEffect, useState, useCallback, useRef } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { listFolders } from "@/lib/api";
+import { ThumbnailImage } from "@/components/thumbnail";
+import { ThumbnailFallback } from "@/components/thumbnail-fallback";
 import { useUpload, type UploadFile } from "@/hooks/use-upload";
 import { useGridNavigation } from "@/hooks/use-grid-navigation";
 import type { FolderCount } from "@/lib/types";
@@ -194,24 +196,40 @@ function FolderCard({
       // Keyboard cursor is this card's focus; highlight in globals.css under
       // [data-nav-id]:focus-visible.
       data-nav-id={folder.folder}
-      className={`relative flex flex-col gap-1 overflow-hidden rounded-lg border p-4 transition-colors ${border}`}
+      className={`relative flex flex-col overflow-hidden rounded-lg border transition-colors ${border}`}
     >
-      <span className="text-sm font-medium text-foreground">
-        {folder.folder}
-      </span>
-      {inFlight.length > 0 ? (
-        <span className="text-xs tabular-nums text-accent">
-          Uploading {inFlight.length} image{inFlight.length > 1 ? "s" : ""}…
+      {/* The folder's cover: its chosen photo, else its newest one. A folder
+          with nothing displayable yet keeps the same frame with the standard
+          placeholder in it, so the cards stay a uniform size. */}
+      <div className="relative aspect-[3/2] w-full overflow-hidden bg-foreground/[0.04] dark:bg-foreground/5">
+        {folder.coverKey ? (
+          <ThumbnailImage
+            s3Key={folder.coverKey}
+            version={folder.coverVersion ?? ""}
+            alt=""
+          />
+        ) : (
+          <ThumbnailFallback />
+        )}
+      </div>
+      <div className="flex flex-col gap-1 p-3">
+        <span className="truncate text-sm font-medium text-foreground">
+          {folder.folder}
         </span>
-      ) : failed > 0 ? (
-        <span className="text-xs text-red-600 dark:text-red-400">
-          {failed} image{failed > 1 ? "s" : ""} failed to upload
-        </span>
-      ) : (
-        <span className="text-xs tabular-nums text-foreground/50">
-          {folder.count} {folder.count === 1 ? "photo" : "photos"}
-        </span>
-      )}
+        {inFlight.length > 0 ? (
+          <span className="text-xs tabular-nums text-accent">
+            Uploading {inFlight.length} image{inFlight.length > 1 ? "s" : ""}…
+          </span>
+        ) : failed > 0 ? (
+          <span className="text-xs text-red-600 dark:text-red-400">
+            {failed} image{failed > 1 ? "s" : ""} failed to upload
+          </span>
+        ) : (
+          <span className="text-xs tabular-nums text-foreground/50">
+            {folder.count} {folder.count === 1 ? "photo" : "photos"}
+          </span>
+        )}
+      </div>
 
       {inFlight.length > 0 && (
         <div className="absolute inset-x-0 bottom-0 h-1 bg-foreground/10">
