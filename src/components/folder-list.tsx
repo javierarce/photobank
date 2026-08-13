@@ -3,7 +3,8 @@ import { Link, useNavigate } from "react-router-dom";
 import { listFolders } from "@/lib/api";
 import { ThumbnailImage } from "@/components/thumbnail";
 import { ThumbnailFallback } from "@/components/thumbnail-fallback";
-import { useUpload, type UploadFile } from "@/hooks/use-upload";
+import { useUpload } from "@/hooks/use-upload";
+import type { UploadSummary } from "@/lib/upload-progress";
 import { useGridNavigation } from "@/hooks/use-grid-navigation";
 import type { FolderCount } from "@/lib/types";
 
@@ -11,7 +12,7 @@ export function FolderList() {
   const [folders, setFolders] = useState<FolderCount[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const { files, isDragging, dropFolder, clearCompleted, onUploadComplete } =
+  const { isDragging, dropFolder, summarize, clearCompleted, onUploadComplete } =
     useUpload();
   const navigate = useNavigate();
   const gridRef = useRef<HTMLDivElement>(null);
@@ -80,7 +81,7 @@ export function FolderList() {
           <FolderCard
             key={f.folder}
             folder={f}
-            uploads={files.filter((u) => u.folder === f.folder)}
+            uploads={summarize(f.folder)}
             isDragging={isDragging}
             isDropTarget={dropFolder === f.folder}
           />
@@ -171,15 +172,12 @@ function FolderCard({
   isDropTarget,
 }: {
   folder: FolderCount;
-  uploads: UploadFile[];
+  /** This folder's import batch, if one is running. */
+  uploads: UploadSummary;
   isDragging: boolean;
   isDropTarget: boolean;
 }) {
-  const inFlight = uploads.filter((u) => u.status !== "error");
-  const failed = uploads.length - inFlight.length;
-  const progress = inFlight.length
-    ? Math.round(inFlight.reduce((sum, u) => sum + u.progress, 0) / inFlight.length)
-    : 0;
+  const { total, completed, percent, failed } = uploads;
 
   // While a drag is in progress, every card advertises itself as droppable; the
   // one under the cursor lights up so the target is unmistakable.
@@ -216,9 +214,9 @@ function FolderCard({
         <span className="truncate text-sm font-medium text-foreground">
           {folder.folder}
         </span>
-        {inFlight.length > 0 ? (
+        {total > 0 ? (
           <span className="text-xs tabular-nums text-accent">
-            Uploading {inFlight.length} image{inFlight.length > 1 ? "s" : ""}…
+            Uploading {completed}/{total} image{total > 1 ? "s" : ""} · {percent}%
           </span>
         ) : failed > 0 ? (
           <span className="text-xs text-red-600 dark:text-red-400">
@@ -231,11 +229,11 @@ function FolderCard({
         )}
       </div>
 
-      {inFlight.length > 0 && (
+      {total > 0 && (
         <div className="absolute inset-x-0 bottom-0 h-1 bg-foreground/10">
           <div
             className="h-full bg-accent transition-[width] duration-200 ease-linear"
-            style={{ width: `${progress}%` }}
+            style={{ width: `${percent}%` }}
           />
         </div>
       )}

@@ -1060,6 +1060,34 @@ pub fn cancel_import(
     Ok(())
 }
 
+/// The dock badge for an import at `percent`, or `None` when nothing is
+/// running. Clamped: a rounding slip past 100 would read as nonsense on an
+/// icon the user can only glance at.
+fn badge_label(percent: Option<u32>) -> Option<String> {
+    percent.map(|p| format!("{}%", p.min(100)))
+}
+
+/// Mirror the overall import progress onto the app icon, so a long drop can be
+/// watched while Photobank is in the background. `None` clears the badge.
+/// Badge labels are macOS-only in Tauri, so this is a no-op elsewhere.
+#[tauri::command]
+pub fn set_upload_badge(app: tauri::AppHandle, percent: Option<u32>) -> Result<()> {
+    let label = badge_label(percent);
+    #[cfg(target_os = "macos")]
+    {
+        use tauri::Manager;
+        // No window yet (or already gone) means nothing to badge.
+        if let Some(window) = app.get_webview_window("main") {
+            window
+                .set_badge_label(label)
+                .map_err(|e| Error::msg(e.to_string()))?;
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = (app, label);
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn export_photos(
     app: tauri::AppHandle,
@@ -1072,8 +1100,8 @@ pub async fn export_photos(
 #[cfg(test)]
 mod tests {
     use super::{
-        add_tags, build_query, chosen_cover_id, folder_cover, like_pattern, remove_tags,
-        rename_tag_inner, set_cover, split_terms, tag_counts, tags_for_photos,
+        add_tags, badge_label, build_query, chosen_cover_id, folder_cover, like_pattern,
+        remove_tags, rename_tag_inner, set_cover, split_terms, tag_counts, tags_for_photos,
     };
     use crate::db::{self, now, open_in_memory, PHOTO_COLUMNS};
     use rusqlite::{params, Connection};
@@ -1084,6 +1112,16 @@ mod tests {
         assert_eq!(like_pattern("a_b"), "%a\\_b%");
         assert_eq!(like_pattern("back\\slash"), "%back\\\\slash%");
         assert_eq!(like_pattern("plain"), "%plain%");
+    }
+
+    #[test]
+    fn the_dock_badge_reads_as_a_percentage() {
+        assert_eq!(badge_label(Some(0)).as_deref(), Some("0%"));
+        assert_eq!(badge_label(Some(47)).as_deref(), Some("47%"));
+        // A rounding slip past 100 would read as nonsense on the icon.
+        assert_eq!(badge_label(Some(140)).as_deref(), Some("100%"));
+        // Nothing importing means no badge at all.
+        assert_eq!(badge_label(None), None);
     }
 
     // --- Type-based search (build_query / facets) ---

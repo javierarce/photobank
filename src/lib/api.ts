@@ -195,6 +195,12 @@ export function cancelImport(key: string): Promise<void> {
   return invoke("cancel_import", { key });
 }
 
+/** Show whole-batch import progress on the app icon (the macOS dock badge);
+ * `null` clears it. */
+export function setUploadBadge(percent: number | null): Promise<void> {
+  return invoke("set_upload_badge", { percent });
+}
+
 /** Which stored version of a photo to export. */
 export type ExportResolution = "640" | "1280" | "2880" | "original";
 

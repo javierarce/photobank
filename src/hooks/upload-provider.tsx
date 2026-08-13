@@ -13,7 +13,9 @@ import {
   checkImportCollisions,
   importPhotos,
   replacePhotos,
+  setUploadBadge,
 } from "@/lib/api";
+import { summarizeUploads } from "@/lib/upload-progress";
 import { isSupportedImage, SUPPORTED_EXTENSIONS } from "@/lib/keys";
 import {
   ImportCollisionDialog,
@@ -45,6 +47,17 @@ const isImportable = isSupportedImage;
 
 function basename(path: string) {
   return path.split("/").pop() ?? path;
+}
+
+/**
+ * Whether a folder still has a batch running. A failed tile lingers on screen
+ * until the user dismisses it, but it sits outside the progress ratio (see
+ * summarizeUploads), so it doesn't keep the batch alive — otherwise its folder
+ * would report a finished batch forever, and the next drop would inherit that
+ * batch's tally.
+ */
+function batchRunning(files: UploadFile[], folder: string) {
+  return files.some((f) => f.folder === folder && f.status !== "error");
 }
 
 /**
@@ -80,6 +93,13 @@ export function UploadProvider({ children }: { children: ReactNode }) {
   const [isDragging, setIsDragging] = useState(false);
   const [dropFolder, setDropFolder] = useState<string | null>(null);
 
+  // A finished upload's tile is dismissed as soon as its thumbnail lands —
+  // mid-batch, not only at the end — so a percentage averaged over the
+  // surviving tiles would slide backwards as the done ones drop out. Count the
+  // dismissed-but-finished files per folder and keep them in the ratio until
+  // the batch is over.
+  const [retired, setRetired] = useState<Record<string, number>>({});
+
   const listeners = useRef<Set<CompleteListener>>(new Set());
   const onUploadComplete = useCallback((fn: CompleteListener) => {
     listeners.current.add(fn);
@@ -88,9 +108,41 @@ export function UploadProvider({ children }: { children: ReactNode }) {
     };
   }, []);
 
-  const removeUpload = useCallback((key: string) => {
-    setFiles((prev) => prev.filter((f) => f.key !== key));
+  // Removals read the current files through a ref rather than from inside a
+  // setFiles updater: updaters must stay pure (React may re-run them), and
+  // tallying retirements is a side effect.
+  const filesRef = useRef(files);
+  useEffect(() => {
+    filesRef.current = files;
+  });
+
+  const retire = useCallback((leaving: UploadFile[]) => {
+    // Only a completed upload carries its 100% into the batch total. A failed
+    // one is outside the ratio, and a cancelled one never reaches removeUpload.
+    const done = leaving.filter((f) => f.status === "done");
+    if (!done.length) return;
+    setRetired((prev) => {
+      const next = { ...prev };
+      for (const f of done) next[f.folder] = (next[f.folder] ?? 0) + 1;
+      return next;
+    });
   }, []);
+
+  // A tally only counts while its folder still has tiles: once the last one is
+  // dismissed the batch is over and there is nothing left to report. The
+  // stored number is cleared by the next drop into that folder (handlePaths).
+  const retiredFor = useCallback(
+    (folder: string) => (batchRunning(files, folder) ? retired[folder] ?? 0 : 0),
+    [files, retired]
+  );
+
+  const removeUpload = useCallback(
+    (key: string) => {
+      retire(filesRef.current.filter((f) => f.key === key));
+      setFiles((prev) => prev.filter((f) => f.key !== key));
+    },
+    [retire]
+  );
 
   const cancelUpload = useCallback((key: string) => {
     // Optimistically show the tile as cancelling but keep it (and its id, so
@@ -110,8 +162,38 @@ export function UploadProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const clearCompleted = useCallback(() => {
+    retire(filesRef.current.filter((f) => f.status === "done"));
     setFiles((prev) => prev.filter((f) => f.status !== "done"));
-  }, []);
+  }, [retire]);
+
+  const summarize = useCallback(
+    (folder?: string) => {
+      if (folder !== undefined) {
+        return summarizeUploads(
+          files.filter((f) => f.folder === folder),
+          retiredFor(folder)
+        );
+      }
+      const folders = new Set(files.map((f) => f.folder));
+      const retiredAll = [...folders].reduce(
+        (sum, f) => sum + retiredFor(f),
+        0
+      );
+      return summarizeUploads(files, retiredAll);
+    },
+    [files, retiredFor]
+  );
+
+  // Mirror the overall import onto the app icon, so a long drop can be watched
+  // from another app. `badge` is a plain value, so the effect only fires when
+  // the displayed number actually changes — not on every progress event.
+  const { active, percent } = summarize();
+  const badge = active > 0 ? percent : null;
+  useEffect(() => {
+    // A badge is cosmetic; if the platform (or the window) won't take it,
+    // there's nothing to tell the user.
+    setUploadBadge(badge).catch(() => {});
+  }, [badge]);
 
   // A drop whose names are already taken parks here until the user chooses.
   // The promise resolver lets `handlePaths` await a React dialog inline rather
@@ -174,6 +256,16 @@ export function UploadProvider({ children }: { children: ReactNode }) {
       if (!toImport.length && !toReplace.length) return;
 
       const tracked = [...toImport, ...toReplace];
+      // A drop into a folder with nothing in flight starts a new batch, so its
+      // old tally goes; dropping on top of a running import joins that batch
+      // and keeps it.
+      if (!batchRunning(filesRef.current, folder)) {
+        setRetired((prev) =>
+          Object.fromEntries(
+            Object.entries(prev).filter(([name]) => name !== folder)
+          )
+        );
+      }
       setFiles((prev) => {
         const next = [...prev];
         for (const path of tracked) {
@@ -309,6 +401,7 @@ export function UploadProvider({ children }: { children: ReactNode }) {
         files,
         isDragging,
         dropFolder,
+        summarize,
         removeUpload,
         cancelUpload,
         clearCompleted,

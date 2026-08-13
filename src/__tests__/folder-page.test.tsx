@@ -4,6 +4,8 @@ import { forwardRef, useEffect } from "react";
 import { MemoryRouter, Route, Routes, useNavigate } from "react-router-dom";
 import FolderPage from "@/routes/folder";
 import { listFolderFacets, renameFolder } from "@/lib/api";
+import { summarizeUploads } from "@/lib/upload-progress";
+import type { UploadFile } from "@/hooks/use-upload";
 
 vi.mock("@/lib/api", () => ({
   renameFolder: vi.fn(),
@@ -39,18 +41,31 @@ vi.mock("@/components/selection-toolbar", () => ({
   SelectionActionBar: () => <div data-testid="selection-actions" />,
 }));
 
-// Mutable upload state so tests can simulate in-flight imports
+// Mutable upload state so tests can simulate in-flight imports. `retired`
+// stands in for tiles the grid has already dismissed — the provider keeps them
+// in the batch total.
 const uploadState = vi.hoisted(() => ({
   files: [] as { folder: string; status: string }[],
+  retired: 0,
+  cancelUpload: vi.fn(),
 }));
 
 vi.mock("@/hooks/use-upload", () => ({
   useUpload: () => ({
     files: uploadState.files,
     dropFolder: null,
+    // The real summary maths, over the mocked files — so the header assertions
+    // below exercise what the provider would actually hand the page.
+    summarize: (folder?: string) =>
+      summarizeUploads(
+        (uploadState.files as UploadFile[]).filter(
+          (f) => folder === undefined || f.folder === folder
+        ),
+        uploadState.retired
+      ),
     openFilePicker: vi.fn(),
     removeUpload: vi.fn(),
-    cancelUpload: vi.fn(),
+    cancelUpload: uploadState.cancelUpload,
     onUploadComplete: () => () => {},
   }),
 }));
@@ -100,7 +115,92 @@ afterEach(() => {
   cleanup();
   vi.clearAllMocks();
   uploadState.files = [];
+  uploadState.retired = 0;
   selectionState.selected = [];
+});
+
+describe("FolderPage — batch upload progress", () => {
+  function upload(name: string, progress: number, status = "uploading") {
+    return {
+      folder: "trips",
+      filename: name,
+      key: `trips/${name}`,
+      status,
+      progress,
+    } as never;
+  }
+
+  it("shows one percentage for the whole drop", () => {
+    uploadState.files = [
+      upload("a.jpg", 100, "done"),
+      upload("b.jpg", 50),
+      upload("c.jpg", 0),
+    ];
+    renderPage("trips");
+
+    const bar = screen.getByRole("progressbar");
+    expect(bar).toHaveAttribute("aria-valuenow", "50");
+    expect(screen.getByText("1/3 · 50%")).toBeInTheDocument();
+  });
+
+  it("keeps dismissed uploads in the total so the percentage never drops", () => {
+    // Two files landed and their tiles are already gone; one is half-way.
+    uploadState.retired = 2;
+    uploadState.files = [upload("c.jpg", 50)];
+    renderPage("trips");
+
+    expect(screen.getByText("2/3 · 83%")).toBeInTheDocument();
+  });
+
+  it("leaves failures out of the ratio and counts them separately", () => {
+    uploadState.files = [
+      upload("a.jpg", 100, "done"),
+      upload("b.jpg", 40, "error"),
+    ];
+    renderPage("trips");
+
+    expect(screen.getByText("1/1 · 100%")).toBeInTheDocument();
+    expect(screen.getByText("1 failed")).toBeInTheDocument();
+  });
+
+  it("shows nothing when the folder has no imports running", () => {
+    renderPage("trips");
+    expect(screen.queryByRole("progressbar")).not.toBeInTheDocument();
+  });
+
+  it("cancels the rest of the batch from the ✕ beside the bar", () => {
+    uploadState.files = [
+      upload("a.jpg", 100, "done"),
+      upload("b.jpg", 50),
+      upload("c.jpg", 0, "pending"),
+    ];
+    renderPage("trips");
+
+    // Only b and c can still be stopped — a has already landed.
+    fireEvent.click(screen.getByLabelText("Cancel 2 uploads"));
+
+    expect(uploadState.cancelUpload).toHaveBeenCalledTimes(2);
+    expect(uploadState.cancelUpload).toHaveBeenCalledWith("trips/b.jpg");
+    expect(uploadState.cancelUpload).toHaveBeenCalledWith("trips/c.jpg");
+  });
+
+  it("hides the ✕ once nothing can be cancelled", () => {
+    // The batch is fully uploaded; its tiles just haven't been dismissed yet.
+    uploadState.files = [upload("a.jpg", 100, "done")];
+    renderPage("trips");
+
+    expect(screen.getByRole("progressbar")).toBeInTheDocument();
+    expect(screen.queryByLabelText(/Cancel/)).not.toBeInTheDocument();
+  });
+
+  it("ignores imports into other folders", () => {
+    uploadState.files = [
+      { folder: "beach", status: "uploading", key: "beach/x.jpg", progress: 10 } as never,
+    ];
+    renderPage("trips");
+
+    expect(screen.queryByRole("progressbar")).not.toBeInTheDocument();
+  });
 });
 
 describe("FolderPage — selection title row", () => {

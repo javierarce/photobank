@@ -104,6 +104,7 @@ fn main() {
             commands::replace_photos,
             commands::check_import_collisions,
             commands::cancel_import,
+            commands::set_upload_badge,
             commands::export_photos,
             settings::get_settings,
             settings::save_settings,
