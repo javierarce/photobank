@@ -877,7 +877,7 @@ describe("PhotoGrid", () => {
     mockListPhotos.mockResolvedValueOnce([mockPhotos[2]]);
 
     const onDismiss = vi.fn();
-    const upload = makeUpload({ id: "3", filename: "failed.jpg" });
+    const upload = makeUpload({ id: "3", filename: "failed.jpg", status: "error" });
     render(
       <PhotoGrid folder="vacation" uploads={[upload]} onDismissUpload={onDismiss} />
     );
@@ -886,6 +886,100 @@ describe("PhotoGrid", () => {
       expect(onDismiss).toHaveBeenCalledWith("u1");
     });
     expect(screen.getByText("Failed")).toBeInTheDocument();
+  });
+
+  // Re-dropping a file that failed retries it in place: the importer reuses
+  // that same `failed` row, so the row still reads "failed" (our copy of it is
+  // stale until the retry lands) while a live import is running against it.
+  describe("retrying a failed import", () => {
+    // The tile only learns the reused row's id once the importer reserves it.
+    const retry = (overrides: Partial<UploadFile> = {}) =>
+      makeUpload({
+        key: "vacation/failed.jpg",
+        filename: "failed.jpg",
+        status: "pending",
+        progress: 0,
+        ...overrides,
+      });
+
+    it("keeps the retry's tile instead of dismissing it as failed", async () => {
+      mockListPhotos.mockResolvedValueOnce([mockPhotos[2]]);
+
+      const onDismiss = vi.fn();
+      const upload = retry({ id: "3", status: "uploading", progress: 40 });
+      render(
+        <PhotoGrid
+          folder="vacation"
+          uploads={[upload]}
+          onDismissUpload={onDismiss}
+          onCancelUpload={vi.fn()}
+        />
+      );
+
+      await waitFor(() => {
+        expect(screen.getByText("40%")).toBeInTheDocument();
+      });
+      // The tile stays in the upload list (so the toolbar still counts it as
+      // cancellable) and keeps its own Cancel button.
+      expect(onDismiss).not.toHaveBeenCalled();
+      expect(screen.getByText("Cancel")).toBeInTheDocument();
+      // ...and the stale error tile it is replacing is gone.
+      expect(screen.queryByText("Failed")).not.toBeInTheDocument();
+    });
+
+    it("keeps the retry's tile while the finished row is still stale", async () => {
+      // The importer finalizes the row to "completed" before it reports done,
+      // but our copy only catches up when the batch's refresh fires — which,
+      // for a multi-file drop, is after the LAST file finishes. Handing off in
+      // that window would show a "Failed" tile for an upload that succeeded.
+      mockListPhotos.mockResolvedValueOnce([mockPhotos[2]]);
+
+      const onDismiss = vi.fn();
+      const upload = retry({ id: "3", status: "done", progress: 100 });
+      render(
+        <PhotoGrid
+          folder="vacation"
+          uploads={[upload]}
+          onDismissUpload={onDismiss}
+        />
+      );
+
+      await waitFor(() => {
+        expect(screen.getByText("Processing…")).toBeInTheDocument();
+      });
+      expect(onDismiss).not.toHaveBeenCalled();
+      expect(screen.queryByText("Failed")).not.toBeInTheDocument();
+    });
+
+    it("hides the stale failed tile before the retry knows its photo id", async () => {
+      mockListPhotos.mockResolvedValueOnce([mockPhotos[2]]);
+
+      render(<PhotoGrid folder="vacation" uploads={[retry()]} />);
+
+      await waitFor(() => {
+        expect(screen.getByText("0%")).toBeInTheDocument();
+      });
+      expect(screen.queryByText("Failed")).not.toBeInTheDocument();
+    });
+
+    it("hands back to the photo tile once the retry fails again", async () => {
+      mockListPhotos.mockResolvedValueOnce([mockPhotos[2]]);
+
+      const onDismiss = vi.fn();
+      const upload = retry({ id: "3", status: "error", error: "boom" });
+      render(
+        <PhotoGrid
+          folder="vacation"
+          uploads={[upload]}
+          onDismissUpload={onDismiss}
+        />
+      );
+
+      await waitFor(() => {
+        expect(onDismiss).toHaveBeenCalledWith("vacation/failed.jpg");
+      });
+      expect(screen.getByText("Failed")).toBeInTheDocument();
+    });
   });
 
   it("offers a Cancel button on an in-flight tile and reports its key", async () => {
