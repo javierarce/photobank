@@ -284,4 +284,22 @@ describe("SearchResults", () => {
     expect(check("1")).not.toBeNull();
     expect(check("2")).not.toBeNull();
   });
+
+  it("keeps the result count for one selected photo and only adds the actions", async () => {
+    mockSearchPhotos.mockResolvedValueOnce(mockPhotos);
+
+    renderSearch({ tag: "landscape" });
+    fireEvent.click(await screen.findByAltText("beach.jpg"));
+
+    // Left side unchanged; the right side gains the bulk actions.
+    expect(screen.getByText("2 results")).toBeInTheDocument();
+    expect(screen.queryByText("1 selected")).toBeNull();
+    expect(screen.getByRole("button", { name: "Delete" })).toBeInTheDocument();
+
+    // A second photo promotes the row to the full count-and-clear toolbar.
+    fireEvent.click(screen.getByAltText("mountain.jpg"), { metaKey: true });
+    expect(screen.getByText("2 selected")).toBeInTheDocument();
+    expect(screen.queryByText("2 results")).toBeNull();
+    expect(screen.getByRole("button", { name: "Clear" })).toBeInTheDocument();
+  });
 });

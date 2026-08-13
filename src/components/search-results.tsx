@@ -6,7 +6,10 @@ import { usesMetadataFilter } from "@/lib/search-query";
 import { PhotoLightbox } from "@/components/photo-lightbox";
 import { BulkTagDialog } from "@/components/bulk-tag-dialog";
 import { SelectionCheck } from "@/components/selection-check";
-import { SelectionToolbar } from "@/components/selection-toolbar";
+import {
+  SelectionActionBar,
+  SelectionToolbar,
+} from "@/components/selection-toolbar";
 import { Thumbnail } from "@/components/thumbnail";
 import type { Photo } from "@/lib/types";
 import { usePhotoActions } from "@/hooks/use-photo-actions";
@@ -194,13 +197,19 @@ export function SearchResults() {
 
   return (
     <div className="flex flex-col gap-4">
+      {/* Several photos selected swaps the whole row for the bulk toolbar; a
+          single selection keeps the result count where it was and only adds
+          the actions on the right. */}
       <div className="flex min-h-[34px] items-center justify-between gap-4">
-        {selected.length > 0 ? (
+        {selected.length > 1 ? (
           <SelectionToolbar />
         ) : (
-          <p className="text-sm text-foreground/60">
-            {photos.length} {photos.length === 1 ? "result" : "results"}
-          </p>
+          <>
+            <p className="text-sm text-foreground/60">
+              {photos.length} {photos.length === 1 ? "result" : "results"}
+            </p>
+            {selected.length === 1 && <SelectionActionBar />}
+          </>
         )}
       </div>
       {usesMetadataFilter(q) && (
