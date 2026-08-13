@@ -486,6 +486,9 @@ export const PhotoGrid = forwardRef<PhotoGridRef, Props>(function PhotoGrid(
             photo={entry.item}
             presenceState={entry.state}
             selected={isSelected(entry.item.id)}
+            // The corner check is the multi-select cue; a lone selected photo
+            // says so with its accent border alone (see PhotoTile).
+            showCheck={isSelected(entry.item.id) && selected.length > 1}
             onClick={onClick}
             onDoubleClick={onDoubleClick}
           />
@@ -536,17 +539,24 @@ export const PhotoGrid = forwardRef<PhotoGridRef, Props>(function PhotoGrid(
 /** A single selectable grid tile. Memoized so a selection change only
  * re-renders the tiles whose `selected` flag actually flipped, not the whole
  * grid — with the click handlers kept stable (see selection-provider's
- * snapshot), toggling one photo reconciles one tile instead of N. */
+ * snapshot), toggling one photo reconciles one tile instead of N. `showCheck`
+ * is passed pre-resolved (rather than the selection count) for the same reason:
+ * when the selection grows past one, only the tiles whose badge appears
+ * re-render. */
 const PhotoTile = memo(function PhotoTile({
   photo,
   presenceState,
   selected,
+  showCheck,
   onClick,
   onDoubleClick,
 }: {
   photo: Photo;
   presenceState: PresenceState;
   selected: boolean;
+  /** Whether to show the corner check — only while several photos are
+   * selected; a single selection is marked by the border alone. */
+  showCheck: boolean;
   onClick: (e: MouseEvent, photo: Photo) => void;
   onDoubleClick: (photo: Photo) => void;
 }) {
@@ -573,7 +583,7 @@ const PhotoTile = memo(function PhotoTile({
           </span>
         </div>
       )}
-      {selected && <SelectionCheck />}
+      {showCheck && <SelectionCheck />}
     </button>
   );
 });

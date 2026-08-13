@@ -19,8 +19,12 @@ export type SelectionContextValue = {
   selected: Photo[];
   isSelected: (id: string) => boolean;
   toggle: (photo: Photo) => void;
-  /** Extend the selection from the anchor to this photo (Shift-click range). */
-  selectRange: (photo: Photo) => void;
+  /** Make this photo the entire selection (a modifier-less click). */
+  selectOnly: (photo: Photo) => void;
+  /** Select the anchor→photo range (Shift-click). Replaces the selection with
+   * that span, or unions it in when `additive` (Cmd+Shift-click); the anchor
+   * stays put so the next Shift-click re-ranges from the same origin. */
+  selectRange: (photo: Photo, opts?: { additive?: boolean }) => void;
   /** Keyboard Shift+move range: replace the selection with the contiguous span
    * from the anchor to `target`, seeding the anchor at `origin` on the first
    * step and keeping it fixed after, so the span can grow and shrink. */
@@ -56,14 +60,17 @@ export function useSelection() {
 }
 
 /**
- * Thumbnail interaction: a single click selects (toggles) immediately, a double
- * click opens. The select commits on the first click for an instant, weightless
- * feel; if that click turns out to be the lead of a double click, the dblclick
- * handler reverts it so opening never alters the selection or anchor. The brief
- * flash before the revert is hidden behind the opening lightbox.
+ * Thumbnail interaction, following the OS file manager: a plain click selects
+ * just that photo, Cmd/Ctrl+click toggles one in or out of the selection,
+ * Shift+click takes the range back to the last clicked photo (Cmd+Shift+click
+ * adds that range), and a double click opens. The select commits on the first
+ * click for an instant, weightless feel; if that click turns out to be the lead
+ * of a double click, the dblclick handler reverts it so opening never alters
+ * the selection or anchor. The brief flash before the revert is hidden behind
+ * the opening lightbox.
  */
 export function useThumbnailActivation(onOpen: (photo: Photo) => void) {
-  const { toggle, selectRange, snapshot } = useSelection();
+  const { toggle, selectOnly, selectRange, snapshot } = useSelection();
   // How to undo the most recent click's select, kept so a double click that
   // lands right after can roll it back. One hook instance is shared by every
   // thumbnail; only a dblclick on the same tile consumes this.
@@ -75,11 +82,13 @@ export function useThumbnailActivation(onOpen: (photo: Photo) => void) {
       // it and the leading click already ran.
       if (e.detail > 1) return;
       const restore = snapshot();
-      if (e.shiftKey) selectRange(photo);
-      else toggle(photo);
+      const additive = e.metaKey || e.ctrlKey;
+      if (e.shiftKey) selectRange(photo, { additive });
+      else if (additive) toggle(photo);
+      else selectOnly(photo);
       undo.current = restore;
     },
-    [toggle, selectRange, snapshot]
+    [toggle, selectOnly, selectRange, snapshot]
   );
 
   const onDoubleClick = useCallback(

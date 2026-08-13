@@ -3,7 +3,10 @@ import { useParams } from "react-router-dom";
 import { FolderTitle } from "@/components/folder-title";
 import { SearchField } from "@/components/search-field";
 import { PhotoGrid, PhotoGridRef } from "@/components/photo-grid";
-import { SelectionToolbar } from "@/components/selection-toolbar";
+import {
+  SelectionActionBar,
+  SelectionToolbar,
+} from "@/components/selection-toolbar";
 import { SortDropdown } from "@/components/sort-dropdown";
 import { loadSortMode, saveSortMode, type SortMode } from "@/lib/photo-sort";
 import type { UploadSummary } from "@/lib/upload-progress";
@@ -85,10 +88,12 @@ export default function FolderPage() {
       onClick={handleBackgroundClick}
     >
       <main className="mx-auto max-w-[1600px] px-6 py-8">
-        {/* The folder title bar turns into a bulk-action toolbar while photos
-            are selected; otherwise it shows the folder name + Upload. */}
+        {/* The folder title bar turns into a bulk-action toolbar once SEVERAL
+            photos are selected. A single selection keeps the folder name in
+            place and only swaps the right-hand controls for the actions, so
+            clicking one thumbnail doesn't feel like changing modes. */}
         <div className="flex min-h-[34px] items-center justify-between gap-4">
-          {selected.length > 0 ? (
+          {selected.length > 1 ? (
             <SelectionToolbar />
           ) : (
             <>
@@ -98,38 +103,44 @@ export default function FolderPage() {
                 onEditingChange={setEditingTitle}
                 onRenamingChange={setRenamingFolder}
               />
-              <div className="flex shrink-0 items-center gap-2">
-                {batch.total > 0 && (
-                  <UploadProgress
-                    {...batch}
-                    cancellable={cancellable.length}
-                    onCancel={() =>
-                      cancellable.forEach((u) => cancelUpload(u.key))
-                    }
-                  />
-                )}
-                <SortDropdown value={sortMode} onChange={handleSortChange} />
-                {/* inbox is the import default — renaming it would only see
-                    it reappear on the next upload (the backend refuses too) */}
-                {folder !== "inbox" && (
+              {selected.length === 1 ? (
+                <SelectionActionBar />
+              ) : (
+                <div className="flex shrink-0 items-center gap-2">
+                  {/* Cancelling the rest of the batch lives on the bar's ✕,
+                      so there's no separate Cancel button here. */}
+                  {batch.total > 0 && (
+                    <UploadProgress
+                      {...batch}
+                      cancellable={cancellable.length}
+                      onCancel={() =>
+                        cancellable.forEach((u) => cancelUpload(u.key))
+                      }
+                    />
+                  )}
+                  <SortDropdown value={sortMode} onChange={handleSortChange} />
+                  {/* inbox is the import default — renaming it would only see
+                      it reappear on the next upload (the backend refuses too) */}
+                  {folder !== "inbox" && (
+                    <button
+                      type="button"
+                      onClick={() => setEditingTitle(true)}
+                      disabled={renamingFolder || importing}
+                      className="rounded-md border border-border px-3 py-1.5 text-sm font-medium text-foreground/70 transition hover:border-foreground/35 hover:text-foreground active:scale-[0.97] disabled:pointer-events-none disabled:opacity-50"
+                    >
+                      Rename
+                    </button>
+                  )}
                   <button
                     type="button"
-                    onClick={() => setEditingTitle(true)}
-                    disabled={renamingFolder || importing}
+                    onClick={() => openFilePicker(folder)}
+                    disabled={renamingFolder}
                     className="rounded-md border border-border px-3 py-1.5 text-sm font-medium text-foreground/70 transition hover:border-foreground/35 hover:text-foreground active:scale-[0.97] disabled:pointer-events-none disabled:opacity-50"
                   >
-                    Rename
+                    Upload
                   </button>
-                )}
-                <button
-                  type="button"
-                  onClick={() => openFilePicker(folder)}
-                  disabled={renamingFolder}
-                  className="rounded-md border border-border px-3 py-1.5 text-sm font-medium text-foreground/70 transition hover:border-foreground/35 hover:text-foreground active:scale-[0.97] disabled:pointer-events-none disabled:opacity-50"
-                >
-                  Upload
-                </button>
-              </div>
+                </div>
+              )}
             </>
           )}
         </div>

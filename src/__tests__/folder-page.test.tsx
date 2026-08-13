@@ -37,7 +37,8 @@ vi.mock("@/components/photo-grid", () => ({
 }));
 
 vi.mock("@/components/selection-toolbar", () => ({
-  SelectionToolbar: () => null,
+  SelectionToolbar: () => <div data-testid="selection-toolbar" />,
+  SelectionActionBar: () => <div data-testid="selection-actions" />,
 }));
 
 // Mutable upload state so tests can simulate in-flight imports. `retired`
@@ -69,8 +70,12 @@ vi.mock("@/hooks/use-upload", () => ({
   }),
 }));
 
+// Mutable selection so tests can render the page with none, one, or several
+// photos selected — the title row is laid out differently for each.
+const selectionState = vi.hoisted(() => ({ selected: [] as { id: string }[] }));
+
 vi.mock("@/hooks/use-selection", () => ({
-  useSelection: () => ({ selected: [] }),
+  useSelection: () => ({ selected: selectionState.selected }),
   useBackgroundDeselect: () => () => {},
 }));
 
@@ -111,6 +116,7 @@ afterEach(() => {
   vi.clearAllMocks();
   uploadState.files = [];
   uploadState.retired = 0;
+  selectionState.selected = [];
 });
 
 describe("FolderPage — batch upload progress", () => {
@@ -194,6 +200,36 @@ describe("FolderPage — batch upload progress", () => {
     renderPage("trips");
 
     expect(screen.queryByRole("progressbar")).not.toBeInTheDocument();
+  });
+});
+
+describe("FolderPage — selection title row", () => {
+  it("keeps the folder title and swaps only the right-hand controls for one photo", () => {
+    selectionState.selected = [{ id: "1" }];
+    renderPage();
+
+    // The left side is untouched: still the folder name, not "1 selected".
+    expect(screen.getByTestId("folder-title")).toHaveTextContent("trips");
+    expect(screen.queryByTestId("selection-toolbar")).toBeNull();
+    // Only the right side changes — the actions take over from Upload/Rename.
+    expect(screen.getByTestId("selection-actions")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Upload" })).toBeNull();
+  });
+
+  it("replaces the whole title row with the bulk toolbar for several photos", () => {
+    selectionState.selected = [{ id: "1" }, { id: "2" }];
+    renderPage();
+
+    expect(screen.getByTestId("selection-toolbar")).toBeInTheDocument();
+    expect(screen.queryByTestId("folder-title")).toBeNull();
+  });
+
+  it("shows the folder controls when nothing is selected", () => {
+    renderPage();
+
+    expect(screen.getByTestId("folder-title")).toHaveTextContent("trips");
+    expect(screen.getByRole("button", { name: "Upload" })).toBeInTheDocument();
+    expect(screen.queryByTestId("selection-actions")).toBeNull();
   });
 });
 
