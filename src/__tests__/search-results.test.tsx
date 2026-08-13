@@ -266,4 +266,40 @@ describe("SearchResults", () => {
     expect(await screen.findByText("No results found.")).toBeInTheDocument();
     expect(screen.queryByTestId("lightbox")).toBeNull();
   });
+
+  it("shows the corner check only once several results are selected", async () => {
+    mockSearchPhotos.mockResolvedValueOnce(mockPhotos);
+
+    renderSearch({ tag: "landscape" });
+    const tile = (id: string) =>
+      document.querySelector<HTMLElement>(`[data-nav-id="${id}"]`);
+    const check = (id: string) => tile(id)?.querySelector(".badge-in") ?? null;
+
+    fireEvent.click(await screen.findByAltText("beach.jpg"));
+    expect(tile("1")).toHaveClass("border-accent");
+    // One selected photo says so with its border; the badge is the multi cue.
+    expect(check("1")).toBeNull();
+
+    fireEvent.click(screen.getByAltText("mountain.jpg"), { metaKey: true });
+    expect(check("1")).not.toBeNull();
+    expect(check("2")).not.toBeNull();
+  });
+
+  it("keeps the result count for one selected photo and only adds the actions", async () => {
+    mockSearchPhotos.mockResolvedValueOnce(mockPhotos);
+
+    renderSearch({ tag: "landscape" });
+    fireEvent.click(await screen.findByAltText("beach.jpg"));
+
+    // Left side unchanged; the right side gains the bulk actions.
+    expect(screen.getByText("2 results")).toBeInTheDocument();
+    expect(screen.queryByText("1 selected")).toBeNull();
+    expect(screen.getByRole("button", { name: "Delete" })).toBeInTheDocument();
+
+    // A second photo promotes the row to the full count-and-clear toolbar.
+    fireEvent.click(screen.getByAltText("mountain.jpg"), { metaKey: true });
+    expect(screen.getByText("2 selected")).toBeInTheDocument();
+    expect(screen.queryByText("2 results")).toBeNull();
+    expect(screen.getByRole("button", { name: "Clear" })).toBeInTheDocument();
+  });
 });

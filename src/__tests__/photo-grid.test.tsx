@@ -741,6 +741,54 @@ describe("PhotoGrid", () => {
     });
   });
 
+  describe("selection", () => {
+    // Three completed tiles, sorted by name so the on-screen order is a, b, c.
+    const selPhotos: Photo[] = ["a", "b", "c"].map((n) =>
+      makePhoto({
+        id: n,
+        filename: `${n}.jpg`,
+        s3Key: `vacation/${n}.jpg`,
+        folder: "vacation",
+      })
+    );
+    const tile = (id: string) =>
+      document.querySelector<HTMLElement>(`[data-nav-id="${id}"]`);
+    const check = (id: string) => tile(id)?.querySelector(".badge-in") ?? null;
+
+    async function renderSelGrid() {
+      mockListPhotos.mockResolvedValueOnce(selPhotos);
+      const view = render(<PhotoGrid folder="vacation" sortMode="name-asc" />);
+      await screen.findByAltText("a.jpg");
+      return view;
+    }
+
+    it("marks a single selection with the border alone, no corner check", async () => {
+      await renderSelGrid();
+
+      fireEvent.click(screen.getByAltText("a.jpg"));
+
+      expect(tile("a")).toHaveClass("border-accent");
+      // The badge is the multi-select cue; one photo doesn't need it.
+      expect(check("a")).toBeNull();
+    });
+
+    it("shows the corner check once several photos are selected", async () => {
+      await renderSelGrid();
+
+      fireEvent.click(screen.getByAltText("a.jpg"));
+      fireEvent.click(screen.getByAltText("b.jpg"), { metaKey: true });
+
+      expect(check("a")).not.toBeNull();
+      expect(check("b")).not.toBeNull();
+      expect(check("c")).toBeNull();
+
+      // Back down to one selected photo, the badges go away again.
+      fireEvent.click(screen.getByAltText("b.jpg"), { metaKey: true });
+      expect(tile("a")).toHaveClass("border-accent");
+      expect(check("a")).toBeNull();
+    });
+  });
+
   it("shows processing status for non-completed photos", async () => {
     mockListPhotos.mockResolvedValueOnce(mockPhotos);
 
