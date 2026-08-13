@@ -17,15 +17,126 @@ pub fn list_folders(db: State<Db>) -> Result<Vec<FolderCount>> {
     let mut stmt = conn.prepare(
         "SELECT folder, COUNT(*) FROM photos GROUP BY folder ORDER BY folder",
     )?;
-    let folders = stmt
+    let mut folders = stmt
         .query_map([], |row| {
             Ok(FolderCount {
                 folder: row.get(0)?,
                 count: row.get(1)?,
+                cover_key: None,
+                cover_version: None,
             })
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
+    drop(stmt);
+    for folder in &mut folders {
+        if let Some((key, version)) = folder_cover(&conn, &folder.folder)? {
+            folder.cover_key = Some(key);
+            folder.cover_version = Some(version);
+        }
+    }
     Ok(folders)
+}
+
+/// The (key, version) of the photo representing `folder` on the home page.
+/// The user's pick wins as long as it still holds — a cover that was moved
+/// out of the folder, or hasn't finished importing, falls through.
+///
+/// The automatic fallback is the folder's newest photo THAT HAS VARIANTS, so
+/// merely opening the home page can never pull a full original down to fill a
+/// tile: a folder whose photos are still awaiting a refresh (originals synced
+/// in from elsewhere) shows the placeholder until those thumbnails exist. An
+/// explicit pick is honoured either way — that one the user asked for.
+fn folder_cover(conn: &Connection, folder: &str) -> Result<Option<(String, String)>> {
+    let chosen = conn
+        .query_row(
+            "SELECT p.s3_key, p.updated_at FROM folder_covers c
+             JOIN photos p ON p.id = c.photo_id
+             WHERE c.folder = ?1 AND p.folder = ?1 AND p.processing_status = 'completed'",
+            params![folder],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
+    if chosen.is_some() {
+        return Ok(chosen);
+    }
+    Ok(conn
+        .query_row(
+            "SELECT s3_key, updated_at FROM photos
+             WHERE folder = ?1 AND processing_status = 'completed' AND variants_ok = 1
+             ORDER BY created_at DESC
+             LIMIT 1",
+            params![folder],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?)
+}
+
+/// The photo id the user picked as `folder`'s cover, or None when they never
+/// picked one (or the pick no longer holds — see [`folder_cover`]). Drives the
+/// lightbox's set/remove toggle.
+fn chosen_cover_id(conn: &Connection, folder: &str) -> Result<Option<String>> {
+    Ok(conn
+        .query_row(
+            "SELECT c.photo_id FROM folder_covers c
+             JOIN photos p ON p.id = c.photo_id
+             WHERE c.folder = ?1 AND p.folder = ?1",
+            params![folder],
+            |row| row.get(0),
+        )
+        .optional()?)
+}
+
+/// Pick `photo_id` as the thumbnail `folder` shows on the home page.
+fn set_cover(conn: &Connection, folder: &str, photo_id: &str) -> Result<()> {
+    let belongs: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM photos WHERE id = ?1 AND folder = ?2",
+        params![photo_id, folder],
+        |row| row.get(0),
+    )?;
+    if belongs == 0 {
+        return Err(Error::msg("That photo is not in this folder"));
+    }
+    conn.execute(
+        "INSERT INTO folder_covers (folder, photo_id, updated_at) VALUES (?1, ?2, ?3)
+         ON CONFLICT (folder) DO UPDATE
+            SET photo_id = excluded.photo_id, updated_at = excluded.updated_at",
+        params![folder, photo_id, db::now()],
+    )?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn get_folder_cover(db: State<Db>, folder: String) -> Result<Option<String>> {
+    let conn = db.0.lock().unwrap();
+    chosen_cover_id(&conn, &folder)
+}
+
+/// Set the folder's cover photo. Rejects a photo from another folder, so the
+/// pick can't outlive a move it never saw.
+#[tauri::command]
+pub fn set_folder_cover(
+    app: tauri::AppHandle,
+    db: State<Db>,
+    folder: String,
+    photo_id: String,
+) -> Result<()> {
+    {
+        let conn = db.0.lock().unwrap();
+        set_cover(&conn, &folder, &photo_id)?;
+    }
+    crate::manifest::schedule_upload(&app);
+    Ok(())
+}
+
+/// Drop the folder's cover pick; it falls back to its newest photo.
+#[tauri::command]
+pub fn clear_folder_cover(app: tauri::AppHandle, db: State<Db>, folder: String) -> Result<()> {
+    {
+        let conn = db.0.lock().unwrap();
+        conn.execute("DELETE FROM folder_covers WHERE folder = ?1", params![folder])?;
+    }
+    crate::manifest::schedule_upload(&app);
+    Ok(())
 }
 
 #[tauri::command]
@@ -989,8 +1100,8 @@ pub async fn export_photos(
 #[cfg(test)]
 mod tests {
     use super::{
-        add_tags, badge_label, build_query, like_pattern, remove_tags, rename_tag_inner,
-        split_terms, tag_counts, tags_for_photos,
+        add_tags, badge_label, build_query, chosen_cover_id, folder_cover, like_pattern,
+        remove_tags, rename_tag_inner, set_cover, split_terms, tag_counts, tags_for_photos,
     };
     use crate::db::{self, now, open_in_memory, PHOTO_COLUMNS};
     use rusqlite::{params, Connection};
@@ -1479,5 +1590,118 @@ mod tests {
             )
             .unwrap();
         assert_eq!(links, 0);
+    }
+
+    // --- Folder covers ---
+
+    /// A displayable photo of `folder`, pinned to an explicit created_at so
+    /// the default-cover ordering is deterministic.
+    fn insert_cover_candidate(
+        conn: &Connection,
+        id: &str,
+        folder: &str,
+        created_at: &str,
+        variants_ok: bool,
+    ) {
+        conn.execute(
+            "INSERT INTO photos
+             (id, filename, s3_key, folder, processing_status, variants_ok, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, 'completed', ?5, ?6, ?6)",
+            params![
+                id,
+                format!("{id}.jpg"),
+                format!("{folder}/{id}.jpg"),
+                folder,
+                variants_ok,
+                created_at,
+            ],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn folder_cover_falls_back_to_the_newest_photo_with_thumbnails() {
+        let conn = open_in_memory();
+        insert_cover_candidate(&conn, "old", "trips", "2026-01-01T00:00:00Z", true);
+        insert_cover_candidate(&conn, "new", "trips", "2026-03-01T00:00:00Z", true);
+        // Newest of all, but its variants are missing — showing it would mean
+        // pulling the original down to fill a folder tile.
+        insert_cover_candidate(&conn, "raw", "trips", "2026-04-01T00:00:00Z", false);
+        // Still importing: nothing to show yet.
+        insert(&conn, "pending", "p.jpg", "trips", None, None, None, None, None, None);
+
+        let (key, _) = folder_cover(&conn, "trips").unwrap().unwrap();
+        assert_eq!(key, "trips/new.jpg");
+
+        // A folder with nothing displayable has no cover at all.
+        assert!(folder_cover(&conn, "empty").unwrap().is_none());
+    }
+
+    #[test]
+    fn a_folder_awaiting_its_thumbnails_shows_no_automatic_cover() {
+        let conn = open_in_memory();
+        // Originals synced into the bucket from elsewhere: the refresh hasn't
+        // built their variants yet. The home page shows the placeholder rather
+        // than downloading a full original per card.
+        insert_cover_candidate(&conn, "a", "trips", "2026-01-01T00:00:00Z", false);
+        insert_cover_candidate(&conn, "b", "trips", "2026-02-01T00:00:00Z", false);
+
+        assert!(folder_cover(&conn, "trips").unwrap().is_none());
+
+        // An explicit pick is the user's call, so it shows regardless — the
+        // thumbnail falls back to the original for that one photo.
+        set_cover(&conn, "trips", "a").unwrap();
+        assert_eq!(folder_cover(&conn, "trips").unwrap().unwrap().0, "trips/a.jpg");
+    }
+
+    #[test]
+    fn a_chosen_cover_wins_over_the_newest_photo() {
+        let conn = open_in_memory();
+        insert_cover_candidate(&conn, "old", "trips", "2026-01-01T00:00:00Z", true);
+        insert_cover_candidate(&conn, "new", "trips", "2026-03-01T00:00:00Z", true);
+
+        set_cover(&conn, "trips", "old").unwrap();
+
+        let (key, version) = folder_cover(&conn, "trips").unwrap().unwrap();
+        assert_eq!(key, "trips/old.jpg");
+        assert_eq!(version, "2026-01-01T00:00:00Z");
+        assert_eq!(chosen_cover_id(&conn, "trips").unwrap(), Some("old".into()));
+
+        // Picking again replaces the previous choice rather than erroring.
+        set_cover(&conn, "trips", "new").unwrap();
+        assert_eq!(chosen_cover_id(&conn, "trips").unwrap(), Some("new".into()));
+        assert_eq!(folder_cover(&conn, "trips").unwrap().unwrap().0, "trips/new.jpg");
+    }
+
+    #[test]
+    fn a_cover_photo_that_leaves_the_folder_stops_counting() {
+        let conn = open_in_memory();
+        insert_cover_candidate(&conn, "old", "trips", "2026-01-01T00:00:00Z", true);
+        insert_cover_candidate(&conn, "new", "trips", "2026-03-01T00:00:00Z", true);
+        set_cover(&conn, "trips", "old").unwrap();
+
+        conn.execute(
+            "UPDATE photos SET folder = 'beach', s3_key = 'beach/old.jpg' WHERE id = 'old'",
+            [],
+        )
+        .unwrap();
+
+        // Both the card and the lightbox toggle fall back to "no pick".
+        assert_eq!(folder_cover(&conn, "trips").unwrap().unwrap().0, "trips/new.jpg");
+        assert_eq!(chosen_cover_id(&conn, "trips").unwrap(), None);
+        // And it doesn't leak into the folder it landed in.
+        assert_eq!(chosen_cover_id(&conn, "beach").unwrap(), None);
+    }
+
+    #[test]
+    fn a_photo_from_another_folder_cannot_be_a_cover() {
+        let conn = open_in_memory();
+        insert_cover_candidate(&conn, "a", "trips", "2026-01-01T00:00:00Z", true);
+        insert_cover_candidate(&conn, "b", "beach", "2026-01-01T00:00:00Z", true);
+
+        let err = set_cover(&conn, "trips", "b").unwrap_err();
+        assert!(err.to_string().contains("not in this folder"), "{err}");
+        assert!(set_cover(&conn, "trips", "nope").is_err());
+        assert_eq!(chosen_cover_id(&conn, "trips").unwrap(), None);
     }
 }

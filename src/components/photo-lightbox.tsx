@@ -5,6 +5,7 @@ import { imageUrl, originalUrl } from "@/lib/image-url";
 import { displayName } from "@/lib/keys";
 import { exportPhotos } from "@/lib/api";
 import { ExportButton } from "@/components/export-button";
+import { FolderCoverButton } from "@/components/folder-cover-button";
 import { PhotoTags } from "@/components/photo-tags";
 import type { Photo } from "@/lib/types";
 
@@ -479,6 +480,7 @@ export function PhotoLightbox({
                 {replaceError}
               </p>
             )}
+            <FolderCoverButton photo={photo} disabled={renaming || replacing} />
             {onReplace && (
               <button
                 type="button"

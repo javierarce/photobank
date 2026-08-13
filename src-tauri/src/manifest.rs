@@ -47,12 +47,24 @@ struct PhotoTagRow {
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct FolderCoverRow {
+    folder: String,
+    photo_id: String,
+    updated_at: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct Manifest {
     version: u32,
     exported_at: String,
     photos: Vec<Photo>,
     tags: Vec<TagRow>,
     photo_tags: Vec<PhotoTagRow>,
+    /// Defaulted so a manifest written before folder covers existed still
+    /// restores — it simply carries no picks.
+    #[serde(default)]
+    folder_covers: Vec<FolderCoverRow>,
 }
 
 /// Debounced manifest upload: consecutive mutations within the window
@@ -160,12 +172,28 @@ fn build(app: &AppHandle) -> Result<Manifest> {
         rows
     };
 
+    let folder_covers = {
+        let mut stmt =
+            conn.prepare("SELECT folder, photo_id, updated_at FROM folder_covers ORDER BY folder")?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok(FolderCoverRow {
+                    folder: row.get(0)?,
+                    photo_id: row.get(1)?,
+                    updated_at: row.get(2)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        rows
+    };
+
     Ok(Manifest {
         version: 1,
         exported_at: db::now(),
         photos,
         tags,
         photo_tags,
+        folder_covers,
     })
 }
 
@@ -297,6 +325,7 @@ fn replace_catalog(
         photos: Vec::new(),
         tags: Vec::new(),
         photo_tags: Vec::new(),
+        folder_covers: Vec::new(),
     });
     let by_key: std::collections::HashMap<&str, &Photo> = manifest
         .photos
@@ -308,6 +337,7 @@ fn replace_catalog(
     let mut guard = db.0.lock().unwrap();
     let tx = guard.transaction()?;
 
+    tx.execute("DELETE FROM folder_covers", [])?;
     tx.execute("DELETE FROM photo_tags", [])?;
     tx.execute("DELETE FROM tags", [])?;
     tx.execute("DELETE FROM photos", [])?;
@@ -392,6 +422,19 @@ fn replace_catalog(
         tx.execute(
             "INSERT OR IGNORE INTO photo_tags (photo_id, tag_id) VALUES (?1, ?2)",
             rusqlite::params![pt.photo_id, pt.tag_id],
+        )?;
+    }
+    for cover in &manifest.folder_covers {
+        // Same rule as tags: a pick only survives if its photo's object is
+        // still in the bucket. A pick whose folder no longer matches the photo
+        // is harmless — list_folders ignores it and shows the default cover.
+        if !kept_ids.contains(cover.photo_id.as_str()) {
+            continue;
+        }
+        tx.execute(
+            "INSERT OR IGNORE INTO folder_covers (folder, photo_id, updated_at)
+             VALUES (?1, ?2, ?3)",
+            rusqlite::params![cover.folder, cover.photo_id, cover.updated_at],
         )?;
     }
 

@@ -11,6 +11,27 @@ import type { Photo } from "@/lib/types";
  * on `onError` alone here: for the custom `photo://` scheme WKWebView doesn't
  * reliably fire it, so visibility is gated on a successful `onLoad` instead. */
 export function Thumbnail({ photo }: { photo: Photo }) {
+  return (
+    <ThumbnailImage
+      s3Key={photo.s3Key}
+      version={photo.updatedAt}
+      alt={photo.filename}
+    />
+  );
+}
+
+/** The same picture without a catalog row behind it — the folder cards know
+ * only their cover's key and version (see `FolderCount`). */
+export function ThumbnailImage({
+  s3Key,
+  version,
+  alt,
+}: {
+  s3Key: string;
+  /** The photo's `updatedAt`; doubles as the cache-buster. */
+  version: string;
+  alt: string;
+}) {
   const [loaded, setLoaded] = useState(false);
   // When the 640px variant is missing from the bucket (original synced in
   // externally, refresh not done yet), fall back to the original object.
@@ -18,7 +39,7 @@ export function Thumbnail({ photo }: { photo: Photo }) {
   // Retry from scratch when the key changes (rename/move) or the row is touched
   // at all — a refresh regenerates variants under the same key and bumps
   // updated_at, and the tile instance survives the reload (keyed by id).
-  const marker = `${photo.s3Key}@${photo.updatedAt}`;
+  const marker = `${s3Key}@${version}`;
   const [prevMarker, setPrevMarker] = useState(marker);
   if (prevMarker !== marker) {
     setPrevMarker(marker);
@@ -43,10 +64,10 @@ export function Thumbnail({ photo }: { photo: Photo }) {
         // remounting alone would still show the previous image.
         src={
           fallback
-            ? originalUrl(photo.s3Key, photo.updatedAt)
-            : imageUrl(photo.s3Key, "640", "webp", photo.updatedAt)
+            ? originalUrl(s3Key, version)
+            : imageUrl(s3Key, "640", "webp", version)
         }
-        alt={photo.filename}
+        alt={alt}
         className={`h-full w-full object-cover transition-opacity duration-150 ease-out ${
           loaded ? "opacity-100" : "opacity-0"
         }`}

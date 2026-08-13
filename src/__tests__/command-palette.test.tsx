@@ -10,6 +10,7 @@ import { MemoryRouter } from "react-router-dom";
 import { CommandPalette } from "@/components/command-palette";
 import { ThemeProvider } from "@/lib/theme";
 import { listFolders, listTagCounts } from "@/lib/api";
+import { makeFolder } from "@/__tests__/fixtures";
 
 const mockNavigate = vi.fn();
 
@@ -31,8 +32,8 @@ beforeEach(() => {
   localStorage.clear();
   document.documentElement.classList.remove("dark");
   mockListFolders.mockResolvedValue([
-    { folder: "vacation", count: 12 },
-    { folder: "barcelona", count: 1 },
+    makeFolder({ folder: "vacation", count: 12 }),
+    makeFolder({ folder: "barcelona", count: 1 }),
   ]);
   mockListTagCounts.mockResolvedValue([
     { id: "t1", name: "portrait", count: 5 },
@@ -90,8 +91,8 @@ describe("CommandPalette", () => {
 
   it("filters folders by the typed query, accent-insensitively", async () => {
     mockListFolders.mockResolvedValue([
-      { folder: "Café", count: 3 },
-      { folder: "vacation", count: 12 },
+      makeFolder({ folder: "Café", count: 3 }),
+      makeFolder({ folder: "vacation", count: 12 }),
     ]);
     renderPalette();
     pressCmdK();

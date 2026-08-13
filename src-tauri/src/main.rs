@@ -78,6 +78,9 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::list_folders,
+            commands::get_folder_cover,
+            commands::set_folder_cover,
+            commands::clear_folder_cover,
             commands::list_photos,
             commands::search_photos,
             commands::search_photo_ids,

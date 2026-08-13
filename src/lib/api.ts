@@ -22,6 +22,23 @@ export function listPhotos(folder: string): Promise<Photo[]> {
   return invoke("list_photos", { folder });
 }
 
+/** The photo the user picked as this folder's cover, or null when they never
+ * picked one (or the pick no longer holds — the photo was moved or deleted). */
+export function getFolderCover(folder: string): Promise<string | null> {
+  return invoke("get_folder_cover", { folder });
+}
+
+/** Pick the thumbnail this folder shows on the home page. Rejects if the photo
+ * belongs to another folder. */
+export function setFolderCover(folder: string, photoId: string): Promise<void> {
+  return invoke("set_folder_cover", { folder, photoId });
+}
+
+/** Drop the folder's cover pick; it falls back to its newest photo. */
+export function clearFolderCover(folder: string): Promise<void> {
+  return invoke("clear_folder_cover", { folder });
+}
+
 export function searchPhotos(params: {
   q?: string;
   tag?: string;

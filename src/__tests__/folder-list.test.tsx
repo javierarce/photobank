@@ -15,6 +15,7 @@ import {
 } from "react-router-dom";
 import { FolderList } from "@/components/folder-list";
 import { listFolders } from "@/lib/api";
+import { makeFolder } from "@/__tests__/fixtures";
 
 vi.mock("@/lib/api", () => ({
   listFolders: vi.fn(),
@@ -94,7 +95,7 @@ describe("FolderList", () => {
   });
 
   it("navigates to a newly named folder's page", async () => {
-    mockListFolders.mockResolvedValueOnce([{ folder: "vacation", count: 3 }]);
+    mockListFolders.mockResolvedValueOnce([makeFolder({ folder: "vacation", count: 3 })]);
 
     renderFolderList();
 
@@ -109,7 +110,7 @@ describe("FolderList", () => {
   });
 
   it("opens the existing folder when the name matches (case-insensitively)", async () => {
-    mockListFolders.mockResolvedValueOnce([{ folder: "Vacation", count: 3 }]);
+    mockListFolders.mockResolvedValueOnce([makeFolder({ folder: "Vacation", count: 3 })]);
 
     renderFolderList();
 
@@ -124,7 +125,7 @@ describe("FolderList", () => {
   });
 
   it("dismisses the new-folder input on blur without navigating", async () => {
-    mockListFolders.mockResolvedValueOnce([{ folder: "vacation", count: 3 }]);
+    mockListFolders.mockResolvedValueOnce([makeFolder({ folder: "vacation", count: 3 })]);
 
     renderFolderList();
 
@@ -139,7 +140,7 @@ describe("FolderList", () => {
   });
 
   it("cancels the new-folder input on Escape without navigating", async () => {
-    mockListFolders.mockResolvedValueOnce([{ folder: "vacation", count: 3 }]);
+    mockListFolders.mockResolvedValueOnce([makeFolder({ folder: "vacation", count: 3 })]);
 
     renderFolderList();
 
@@ -155,8 +156,8 @@ describe("FolderList", () => {
 
   it("renders folders with counts", async () => {
     mockListFolders.mockResolvedValueOnce([
-      { folder: "vacation", count: 12 },
-      { folder: "barcelona", count: 1 },
+      makeFolder({ folder: "vacation", count: 12 }),
+      makeFolder({ folder: "barcelona", count: 1 }),
     ]);
 
     renderFolderList();
@@ -169,8 +170,42 @@ describe("FolderList", () => {
     expect(screen.getByText("1 photo")).toBeInTheDocument();
   });
 
+  it("shows each folder's cover thumbnail", async () => {
+    mockListFolders.mockResolvedValueOnce([
+      makeFolder({
+        folder: "vacation",
+        count: 12,
+        coverKey: "vacation/sunset.jpg",
+        coverVersion: "2026-02-01T00:00:00Z",
+      }),
+    ]);
+
+    renderFolderList();
+
+    const card = await screen.findByText("vacation");
+    const cover = card.closest("a")?.querySelector("img");
+    // The 640px variant, cache-busted with the cover photo's updatedAt.
+    expect(cover?.getAttribute("src")).toBe(
+      "photo://localhost/vacation/sunset_640.webp?v=2026-02-01T00%3A00%3A00Z"
+    );
+    // The folder name right below is the label; the picture is decoration.
+    expect(cover?.getAttribute("alt")).toBe("");
+  });
+
+  it("falls back to the placeholder for a folder with no cover", async () => {
+    mockListFolders.mockResolvedValueOnce([
+      makeFolder({ folder: "vacation", count: 12 }),
+    ]);
+
+    renderFolderList();
+
+    await screen.findByText("vacation");
+    expect(screen.getByTestId("thumbnail-fallback")).toBeInTheDocument();
+    expect(document.querySelector("img")).toBeNull();
+  });
+
   it("links each folder to its page, encoding the name", async () => {
-    mockListFolders.mockResolvedValueOnce([{ folder: "my photos", count: 3 }]);
+    mockListFolders.mockResolvedValueOnce([makeFolder({ folder: "my photos", count: 3 })]);
 
     renderFolderList();
 
@@ -191,9 +226,9 @@ describe("FolderList", () => {
 
     async function renderNavList() {
       mockListFolders.mockResolvedValueOnce([
-        { folder: "vacation", count: 3 },
-        { folder: "barcelona", count: 1 },
-        { folder: "berlin", count: 8 },
+        makeFolder({ folder: "vacation", count: 3 }),
+        makeFolder({ folder: "barcelona", count: 1 }),
+        makeFolder({ folder: "berlin", count: 8 }),
       ]);
       renderFolderList();
       await screen.findByText("vacation");

@@ -371,6 +371,16 @@ fn commit_folder_rename(
             rusqlite::params![new, now, photo.id, photo.s3_key],
         )?;
     }
+    // The cover pick is keyed by folder name, so it has to travel with the
+    // rename or the folder would quietly fall back to its default thumbnail.
+    // OR REPLACE because the target name can still hold a stale pick — one
+    // whose photo was moved elsewhere, leaving the row behind.
+    if let Some(old) = snapshot.first().map(|photo| photo.folder.as_str()) {
+        tx.execute(
+            "UPDATE OR REPLACE folder_covers SET folder = ?1 WHERE folder = ?2",
+            rusqlite::params![new, old],
+        )?;
+    }
     tx.commit()?;
     Ok(moved)
 }
@@ -861,6 +871,30 @@ mod tests {
             .unwrap();
         assert_eq!(folder, "trips");
         assert_eq!(s3_key, "trips/late.jpg");
+    }
+
+    #[test]
+    fn commit_folder_rename_carries_the_cover_pick_across() {
+        let mut conn = db::open_in_memory();
+        insert_photo(&conn, "a", "trips", "a.jpg");
+        insert_photo(&conn, "b", "trips", "b.jpg");
+        conn.execute(
+            "INSERT INTO folder_covers (folder, photo_id, updated_at) VALUES ('trips', 'b', ?1)",
+            rusqlite::params![db::now()],
+        )
+        .unwrap();
+
+        let snapshot = plan_folder_rename(&conn, "trips", "voyages").unwrap();
+        commit_folder_rename(&mut conn, "voyages", &snapshot).unwrap();
+
+        let cover: Vec<(String, String)> = conn
+            .prepare("SELECT folder, photo_id FROM folder_covers")
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(cover, vec![("voyages".to_string(), "b".to_string())]);
     }
 
     #[test]

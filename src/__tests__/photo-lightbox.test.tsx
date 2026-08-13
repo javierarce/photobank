@@ -46,6 +46,11 @@ vi.mock("@tauri-apps/api/event", () => ({
 const exportPhotos = vi.fn().mockResolvedValue(null);
 vi.mock("@/lib/api", () => ({
   exportPhotos: (...args: unknown[]) => exportPhotos(...args),
+  // The sidebar's folder-cover toggle reads the folder's current pick on
+  // mount; these tests are about everything else, so keep it quiet.
+  getFolderCover: () => Promise.resolve(null),
+  setFolderCover: () => Promise.resolve(),
+  clearFolderCover: () => Promise.resolve(),
 }));
 
 const photo: Photo = makePhoto({

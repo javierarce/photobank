@@ -46,6 +46,11 @@ export type TagCount = {
 export type FolderCount = {
   folder: string;
   count: number;
+  /** Key of the photo representing the folder on the home page — the user's
+   * pick when they set one, otherwise its newest displayable photo. */
+  coverKey: string | null;
+  /** The cover photo's `updatedAt`, the cache-buster its URL carries. */
+  coverVersion: string | null;
 };
 
 /** Distinct EXIF values for search autocomplete (mirrors Rust `SearchFacets`). */
