@@ -36,6 +36,7 @@ export function makeFolder(overrides: Partial<FolderCount> = {}): FolderCount {
     count: 1,
     coverKey: null,
     coverVersion: null,
+    lastAddedAt: "2026-01-01T00:00:00Z",
     ...overrides,
   };
 }

@@ -14,8 +14,16 @@ use crate::error::{Error, Result};
 #[tauri::command]
 pub fn list_folders(db: State<Db>) -> Result<Vec<FolderCount>> {
     let conn = db.0.lock().unwrap();
+    folder_counts(&conn)
+}
+
+/// Every folder with its photo count, cover and recency. The rows come back in
+/// name order; the home page re-sorts them client-side (see lib/folder-sort.ts),
+/// so `last_added_at` — when the folder's newest photo entered the catalog —
+/// travels with each row for the "Recently updated" order.
+fn folder_counts(conn: &Connection) -> Result<Vec<FolderCount>> {
     let mut stmt = conn.prepare(
-        "SELECT folder, COUNT(*) FROM photos GROUP BY folder ORDER BY folder",
+        "SELECT folder, COUNT(*), MAX(created_at) FROM photos GROUP BY folder ORDER BY folder",
     )?;
     let mut folders = stmt
         .query_map([], |row| {
@@ -24,12 +32,13 @@ pub fn list_folders(db: State<Db>) -> Result<Vec<FolderCount>> {
                 count: row.get(1)?,
                 cover_key: None,
                 cover_version: None,
+                last_added_at: row.get(2)?,
             })
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     drop(stmt);
     for folder in &mut folders {
-        if let Some((key, version)) = folder_cover(&conn, &folder.folder)? {
+        if let Some((key, version)) = folder_cover(conn, &folder.folder)? {
             folder.cover_key = Some(key);
             folder.cover_version = Some(version);
         }
@@ -1100,8 +1109,9 @@ pub async fn export_photos(
 #[cfg(test)]
 mod tests {
     use super::{
-        add_tags, badge_label, build_query, chosen_cover_id, folder_cover, like_pattern,
-        remove_tags, rename_tag_inner, set_cover, split_terms, tag_counts, tags_for_photos,
+        add_tags, badge_label, build_query, chosen_cover_id, folder_counts, folder_cover,
+        like_pattern, remove_tags, rename_tag_inner, set_cover, split_terms, tag_counts,
+        tags_for_photos,
     };
     use crate::db::{self, now, open_in_memory, PHOTO_COLUMNS};
     use rusqlite::{params, Connection};
@@ -1617,6 +1627,29 @@ mod tests {
             ],
         )
         .unwrap();
+    }
+
+    #[test]
+    fn the_folder_listing_carries_each_folder_s_newest_photo_time() {
+        let conn = open_in_memory();
+        insert_cover_candidate(&conn, "a", "trips", "2026-01-01T00:00:00Z", true);
+        insert_cover_candidate(&conn, "b", "trips", "2026-03-01T00:00:00Z", true);
+        insert_cover_candidate(&conn, "c", "berlin", "2026-02-01T00:00:00Z", true);
+
+        let folders = folder_counts(&conn).unwrap();
+        // Name order out of SQL; the home page re-sorts from there.
+        let names: Vec<_> = folders.iter().map(|f| f.folder.as_str()).collect();
+        assert_eq!(names, ["berlin", "trips"]);
+
+        let trips = &folders[1];
+        assert_eq!(trips.count, 2);
+        // The newest photo's created_at, not the oldest and not the cover's.
+        assert_eq!(trips.last_added_at.as_deref(), Some("2026-03-01T00:00:00Z"));
+        assert_eq!(trips.cover_key.as_deref(), Some("trips/b.jpg"));
+        assert_eq!(
+            folders[0].last_added_at.as_deref(),
+            Some("2026-02-01T00:00:00Z")
+        );
     }
 
     #[test]

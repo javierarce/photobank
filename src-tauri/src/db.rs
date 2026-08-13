@@ -73,6 +73,10 @@ pub struct FolderCount {
     /// The cover photo's `updated_at`, the cache-buster its URL carries (see
     /// src/lib/image-url.ts).
     pub cover_version: Option<String>,
+    /// When the folder's newest photo entered the catalog — the folder's own
+    /// recency, which the home page sorts by. None only for a folder with no
+    /// photos, which the listing can't produce.
+    pub last_added_at: Option<String>,
 }
 
 /// Distinct EXIF values for search autocomplete. Tags and folders already have

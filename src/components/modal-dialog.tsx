@@ -13,6 +13,9 @@ interface ModalDialogProps {
   children: ReactNode;
   /** Blocks the backdrop/Escape close and disables the footer while true. */
   busy?: boolean;
+  /** Marks the whole card as the app's file-drop sink, so a native drag can
+   * land anywhere on it (see `registerDropSink` in the upload provider). */
+  dropSink?: boolean;
   onClose: () => void;
   footer?: ModalFooter;
 }
@@ -27,6 +30,7 @@ export function ModalDialog({
   title,
   children,
   busy = false,
+  dropSink = false,
   onClose,
   footer,
 }: ModalDialogProps) {
@@ -53,6 +57,7 @@ export function ModalDialog({
       <div
         role="dialog"
         aria-modal="true"
+        data-drop-sink={dropSink || undefined}
         // No clipping overflow on the card or body: the tag field's
         // autocomplete is absolutely positioned and would otherwise be cut off.
         // Long content (e.g. the in-use tag checklist) scrolls in its own

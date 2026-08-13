@@ -1,6 +1,11 @@
-import { useEffect, useState, useCallback, useRef } from "react";
+import { useEffect, useState, useCallback, useMemo, useRef } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { listFolders } from "@/lib/api";
+import {
+  DEFAULT_FOLDER_SORT_MODE,
+  sortFolders,
+  type FolderSortMode,
+} from "@/lib/folder-sort";
 import { ThumbnailImage } from "@/components/thumbnail";
 import { ThumbnailFallback } from "@/components/thumbnail-fallback";
 import { useUpload } from "@/hooks/use-upload";
@@ -8,14 +13,28 @@ import type { UploadSummary } from "@/lib/upload-progress";
 import { useGridNavigation } from "@/hooks/use-grid-navigation";
 import type { FolderCount } from "@/lib/types";
 
-export function FolderList() {
-  const [folders, setFolders] = useState<FolderCount[]>([]);
+export function FolderList({
+  /** The order to show the cards in; owned by the home page, which renders the
+   * sort control next to the heading. */
+  sort = DEFAULT_FOLDER_SORT_MODE,
+  /** Reports the loaded folder names, which the header's New folder button
+   * matches a typed name against. */
+  onFoldersLoaded,
+}: {
+  sort?: FolderSortMode;
+  onFoldersLoaded?: (names: string[]) => void;
+} = {}) {
+  const [loaded, setLoaded] = useState<FolderCount[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const { isDragging, dropFolder, summarize, clearCompleted, onUploadComplete } =
     useUpload();
   const navigate = useNavigate();
   const gridRef = useRef<HTMLDivElement>(null);
+
+  // The cards, in the chosen order — the keyboard cursor walks this same list,
+  // so its index always names the card it lands on.
+  const folders = useMemo(() => sortFolders(loaded, sort), [loaded, sort]);
 
   // Keyboard cursor over the folder cards: arrows/hjkl move DOM focus between
   // cards (highlight = their :focus-visible style, shared with Tab) and Enter
@@ -42,7 +61,7 @@ export function FolderList() {
   const loadFolders = useCallback(() => {
     listFolders()
       .then((folders) => {
-        setFolders(folders);
+        setLoaded(folders);
         setError(null);
       })
       .catch(() => setError("Failed to load folders."))
@@ -52,6 +71,10 @@ export function FolderList() {
   useEffect(() => {
     loadFolders();
   }, [loadFolders]);
+
+  useEffect(() => {
+    onFoldersLoaded?.(loaded.map((f) => f.folder));
+  }, [loaded, onFoldersLoaded]);
 
   // Once an import batch settles, pick up the new counts and drop the finished
   // upload tiles so the card returns to its resting photo count.
@@ -76,7 +99,6 @@ export function FolderList() {
         ref={gridRef}
         className="fade-in grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4"
       >
-        <NewFolderCard existing={folders.map((f) => f.folder)} />
         {folders.map((f) => (
           <FolderCard
             key={f.folder}
@@ -93,75 +115,6 @@ export function FolderList() {
         </p>
       )}
     </>
-  );
-}
-
-// A folder is just the `folder` field on its photos — there's no empty-folder
-// record to create. So "new folder" names a destination and drops the user on
-// its (empty) page, where the first upload materializes it in the listing.
-function NewFolderCard({ existing }: { existing: string[] }) {
-  const [editing, setEditing] = useState(false);
-  const [value, setValue] = useState("");
-  const inputRef = useRef<HTMLInputElement>(null);
-  const navigate = useNavigate();
-
-  useEffect(() => {
-    if (editing) inputRef.current?.focus();
-  }, [editing]);
-
-  const cancel = () => {
-    setEditing(false);
-    setValue("");
-  };
-
-  const commit = () => {
-    // A slash would fracture the folder/filename key scheme, so fold it away.
-    const name = value.trim().replace(/\/+/g, " ").replace(/\s+/g, " ").trim();
-    if (!name) {
-      cancel();
-      return;
-    }
-    // Reuse the exact casing of an existing folder so we open it rather than
-    // spawn a case-variant sibling.
-    const match = existing.find((f) => f.toLowerCase() === name.toLowerCase());
-    navigate(`/folders/${encodeURIComponent(match ?? name)}`);
-  };
-
-  if (editing) {
-    return (
-      <div className="flex flex-col justify-center rounded-lg border border-accent bg-accent/5 p-4">
-        <input
-          ref={inputRef}
-          value={value}
-          onChange={(e) => setValue(e.target.value)}
-          onKeyDown={(e) => {
-            e.stopPropagation();
-            if (e.key === "Enter") commit();
-            else if (e.key === "Escape") cancel();
-          }}
-          // Navigating into a new folder is a heavier side effect than the
-          // rename input's in-place commit, so a stray click-away just dismisses
-          // the field — only Enter takes you there.
-          onBlur={cancel}
-          placeholder="Folder name"
-          aria-label="New folder name"
-          className="min-w-0 rounded border border-border bg-transparent px-1 py-0.5 text-sm font-medium text-foreground outline-none focus:border-foreground/30"
-          data-testid="new-folder-input"
-        />
-      </div>
-    );
-  }
-
-  return (
-    <button
-      type="button"
-      onClick={() => setEditing(true)}
-      className="flex min-h-[64px] flex-col items-center justify-center gap-1 rounded-lg border border-dashed border-border p-4 text-sm font-medium text-foreground/60 transition-colors hover:border-foreground/35 hover:text-foreground active:scale-[0.99]"
-      data-testid="new-folder-card"
-    >
-      <span aria-hidden>+</span>
-      New folder
-    </button>
   );
 }
 

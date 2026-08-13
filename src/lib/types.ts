@@ -51,6 +51,9 @@ export type FolderCount = {
   coverKey: string | null;
   /** The cover photo's `updatedAt`, the cache-buster its URL carries. */
   coverVersion: string | null;
+  /** When the folder's newest photo entered the catalog — its recency for the
+   * home page's sort. */
+  lastAddedAt: string | null;
 };
 
 /** Distinct EXIF values for search autocomplete (mirrors Rust `SearchFacets`). */

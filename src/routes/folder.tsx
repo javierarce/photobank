@@ -8,7 +8,12 @@ import {
   SelectionToolbar,
 } from "@/components/selection-toolbar";
 import { SortDropdown } from "@/components/sort-dropdown";
-import { loadSortMode, saveSortMode, type SortMode } from "@/lib/photo-sort";
+import {
+  loadSortMode,
+  saveSortMode,
+  SORT_OPTIONS,
+  type SortMode,
+} from "@/lib/photo-sort";
 import type { UploadSummary } from "@/lib/upload-progress";
 import { useUpload } from "@/hooks/use-upload";
 import { useBackgroundDeselect, useSelection } from "@/hooks/use-selection";
@@ -118,7 +123,12 @@ export default function FolderPage() {
                       }
                     />
                   )}
-                  <SortDropdown value={sortMode} onChange={handleSortChange} />
+                  <SortDropdown
+                    value={sortMode}
+                    options={SORT_OPTIONS}
+                    onChange={handleSortChange}
+                    label="Sort photos"
+                  />
                   {/* inbox is the import default — renaming it would only see
                       it reappear on the next upload (the backend refuses too) */}
                   {folder !== "inbox" && (
