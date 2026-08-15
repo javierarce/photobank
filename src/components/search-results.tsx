@@ -6,6 +6,7 @@ import { usesMetadataFilter } from "@/lib/search-query";
 import { PhotoLightbox } from "@/components/photo-lightbox";
 import { BulkTagDialog } from "@/components/bulk-tag-dialog";
 import { SelectionCheck } from "@/components/selection-check";
+import { PhotoContextMenu } from "@/components/photo-context-menu";
 import {
   SelectionActionBar,
   SelectionToolbar,
@@ -13,7 +14,11 @@ import {
 import { Thumbnail } from "@/components/thumbnail";
 import type { Photo } from "@/lib/types";
 import { usePhotoActions } from "@/hooks/use-photo-actions";
-import { useSelection, useThumbnailActivation } from "@/hooks/use-selection";
+import {
+  useSelection,
+  useThumbnailActivation,
+  useThumbnailContextMenu,
+} from "@/hooks/use-selection";
 import { useGridNavigation } from "@/hooks/use-grid-navigation";
 
 export function SearchResults() {
@@ -61,6 +66,7 @@ export function SearchResults() {
     setActions,
   } = useSelection();
   const { onClick, onDoubleClick } = useThumbnailActivation(setActive);
+  const { menu, onContextMenu, closeMenu } = useThumbnailContextMenu();
   const gridRef = useRef<HTMLDivElement>(null);
 
   // Keyboard cursor over the results, mirroring the folder photo grid: arrows/
@@ -75,7 +81,9 @@ export function SearchResults() {
     count: photos.length,
     getId: navGetId,
     containerRef: gridRef,
-    enabled: !active && !tagTargets,
+    // The lightbox, the bulk-tag editor and an open context menu each own the
+    // keyboard while they're up.
+    enabled: !active && !tagTargets && !menu,
     onOpen: (i) => {
       const photo = photos[i];
       if (photo) setActive(photo);
@@ -121,8 +129,9 @@ export function SearchResults() {
   // the lightbox and to text fields.
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      // The lightbox and the bulk-tag editor own the keyboard while open.
-      if (active || tagTargets) return;
+      // The lightbox, the bulk-tag editor and an open context menu own the
+      // keyboard while they're up — see the photo grid for why the menu counts.
+      if (active || tagTargets || menu) return;
       if (e.key === "Escape" && selected.length) {
         clear();
         return;
@@ -153,7 +162,7 @@ export function SearchResults() {
     };
     document.addEventListener("keydown", handleKeyDown);
     return () => document.removeEventListener("keydown", handleKeyDown);
-  }, [selected, active, tagTargets, clear, selectAll, photos]);
+  }, [selected, active, tagTargets, menu, clear, selectAll, photos]);
 
   useEffect(() => {
     if (!q && !tag) return;
@@ -229,6 +238,7 @@ export function SearchResults() {
             data-nav-id={photo.id}
             onClick={(e) => onClick(e, photo)}
             onDoubleClick={() => onDoubleClick(photo)}
+            onContextMenu={(e) => onContextMenu(e, photo)}
             className={`group relative aspect-square overflow-hidden rounded-md border-2 bg-foreground/0 dark:bg-foreground/5 ${
               isSelected(photo.id) ? "border-accent" : "border-transparent"
             }`}
@@ -252,6 +262,15 @@ export function SearchResults() {
           </button>
         ))}
       </div>
+
+      {menu && (
+        <PhotoContextMenu
+          photos={menu.photos}
+          x={menu.x}
+          y={menu.y}
+          onClose={closeMenu}
+        />
+      )}
 
       {active &&
         (() => {

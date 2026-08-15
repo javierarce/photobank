@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { displayName } from "@/lib/keys";
+import { displayName, splitDisplayName } from "@/lib/keys";
 
 describe("displayName", () => {
   it("strips the legacy _original marker but keeps the extension", () => {
@@ -38,5 +38,32 @@ describe("displayName", () => {
     expect(displayName("IMG_0640.jpg")).toBe("IMG_0640.jpg");
     expect(displayName("IMG_64.jpg")).toBe("IMG_64.jpg");
     expect(displayName("photo_6400.jpg")).toBe("photo_6400.jpg");
+  });
+});
+
+describe("splitDisplayName", () => {
+  it("splits the name from its extension", () => {
+    expect(splitDisplayName("R0012750.jpg")).toEqual(["R0012750", ".jpg"]);
+  });
+
+  it("splits on the LAST dot", () => {
+    expect(splitDisplayName("2025-07-01.berlin.jpg")).toEqual([
+      "2025-07-01.berlin",
+      ".jpg",
+    ]);
+  });
+
+  it("strips the legacy markers before splitting", () => {
+    expect(splitDisplayName("R0007098_original.png")).toEqual([
+      "R0007098",
+      ".png",
+    ]);
+    expect(splitDisplayName("P1160509_1280.jpg")).toEqual(["P1160509", ".jpg"]);
+  });
+
+  it("keeps everything in the stem when there's no extension to split off", () => {
+    expect(splitDisplayName("R0012750")).toEqual(["R0012750", ""]);
+    // A leading dot is part of the name, not an extension.
+    expect(splitDisplayName(".hidden")).toEqual([".hidden", ""]);
   });
 });

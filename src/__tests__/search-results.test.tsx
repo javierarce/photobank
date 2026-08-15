@@ -302,4 +302,24 @@ describe("SearchResults", () => {
     expect(screen.queryByText("2 results")).toBeNull();
     expect(screen.getByRole("button", { name: "Clear" })).toBeInTheDocument();
   });
+
+  it("opens the context menu on a right-clicked result", async () => {
+    mockSearchPhotos.mockResolvedValueOnce(mockPhotos);
+
+    renderSearch({ tag: "landscape" });
+    const tile = (id: string) =>
+      document.querySelector<HTMLElement>(`[data-nav-id="${id}"]`);
+
+    await screen.findByAltText("beach.jpg");
+    expect(screen.queryByTestId("photo-context-menu")).toBeNull();
+
+    fireEvent.contextMenu(tile("2")!);
+
+    expect(screen.getByTestId("photo-context-menu")).toBeInTheDocument();
+    // The menu acts on what's highlighted, so the right-click selects too.
+    expect(tile("2")).toHaveClass("border-accent");
+    expect(
+      screen.getByRole("menuitem", { name: "Copy filename" })
+    ).toBeInTheDocument();
+  });
 });

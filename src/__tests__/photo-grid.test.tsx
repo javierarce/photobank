@@ -81,6 +81,14 @@ vi.mock("@/components/bulk-tag-dialog", () => ({
   BulkTagDialog: () => <div data-testid="bulk-tag-dialog" />,
 }));
 
+// The right-click menu's own behaviour is covered in photo-context-menu.test;
+// here it only needs to report what the grid handed it.
+vi.mock("@/components/photo-context-menu", () => ({
+  PhotoContextMenu: ({ photos }: { photos: Photo[] }) => (
+    <div data-testid="context-menu">{photos.map((p) => p.id).join(",")}</div>
+  ),
+}));
+
 const mockListPhotos = vi.mocked(listPhotos);
 const mockSearchIds = vi.mocked(searchPhotoIds);
 
@@ -786,6 +794,64 @@ describe("PhotoGrid", () => {
       fireEvent.click(screen.getByAltText("b.jpg"), { metaKey: true });
       expect(tile("a")).toHaveClass("border-accent");
       expect(check("a")).toBeNull();
+    });
+
+    describe("context menu", () => {
+      it("opens on a right-click, targeting that photo", async () => {
+        await renderSelGrid();
+
+        fireEvent.contextMenu(tile("b")!);
+
+        expect(screen.getByTestId("context-menu")).toHaveTextContent("b");
+        // Finder behaviour: the menu's target is always what's highlighted.
+        expect(tile("b")).toHaveClass("border-accent");
+      });
+
+      it("acts on the whole selection when opened inside one", async () => {
+        await renderSelGrid();
+
+        fireEvent.click(screen.getByAltText("a.jpg"));
+        fireEvent.click(screen.getByAltText("b.jpg"), { metaKey: true });
+        fireEvent.contextMenu(tile("a")!);
+
+        expect(screen.getByTestId("context-menu")).toHaveTextContent("a,b");
+        expect(check("b")).not.toBeNull();
+      });
+
+      it("replaces the selection when opened outside it", async () => {
+        await renderSelGrid();
+
+        fireEvent.click(screen.getByAltText("a.jpg"));
+        fireEvent.click(screen.getByAltText("b.jpg"), { metaKey: true });
+        fireEvent.contextMenu(tile("c")!);
+
+        expect(screen.getByTestId("context-menu")).toHaveTextContent("c");
+        expect(tile("c")).toHaveClass("border-accent");
+        expect(tile("a")).not.toHaveClass("border-accent");
+        expect(tile("b")).not.toHaveClass("border-accent");
+      });
+
+      it("stays shut until a tile is right-clicked", async () => {
+        await renderSelGrid();
+
+        expect(screen.queryByTestId("context-menu")).toBeNull();
+      });
+
+      it("owns the keyboard while it's open", async () => {
+        await renderSelGrid();
+
+        fireEvent.contextMenu(tile("b")!);
+        fireEvent.keyDown(document, { key: "a", metaKey: true });
+        fireEvent.keyDown(document, { key: "t" });
+
+        // Select-all underneath the menu would leave it acting on one photo
+        // while the whole folder highlights; T would open the tag editor below
+        // a menu that's still on top of it.
+        expect(tile("a")).not.toHaveClass("border-accent");
+        expect(tile("c")).not.toHaveClass("border-accent");
+        expect(screen.queryByTestId("bulk-tag-dialog")).toBeNull();
+        expect(screen.getByTestId("context-menu")).toHaveTextContent("b");
+      });
     });
   });
 

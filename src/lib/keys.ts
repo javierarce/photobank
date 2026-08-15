@@ -62,6 +62,19 @@ export function displayName(filename: string) {
   return filename.replace(/_(?:original|128|640|1280|2880)(\.[^.]+)?$/, "$1");
 }
 
+/**
+ * The user-facing filename split into its stem and extension:
+ * "DSC_1234.jpg" -> ["DSC_1234", ".jpg"]. A name with no extension (or a
+ * leading-dot name like ".hidden") keeps everything in the stem. Built on
+ * `displayName`, so the legacy markers are stripped here too.
+ */
+export function splitDisplayName(filename: string): [string, string] {
+  const name = displayName(filename);
+  const dot = name.lastIndexOf(".");
+  if (dot <= 0) return [name, ""];
+  return [name.slice(0, dot), name.slice(dot)];
+}
+
 /** "folder/photo.jpg" -> "folder/photo_640.webp" */
 export function variantKey(
   s3Key: string,

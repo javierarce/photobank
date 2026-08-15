@@ -2,7 +2,9 @@ import {
   createContext,
   useCallback,
   useContext,
+  useEffect,
   useRef,
+  useState,
   type MouseEvent,
 } from "react";
 import type { Photo } from "@/lib/types";
@@ -102,6 +104,54 @@ export function useThumbnailActivation(onOpen: (photo: Photo) => void) {
   );
 
   return { onClick, onDoubleClick };
+}
+
+/** An open thumbnail context menu: what it acts on, and where it opened. */
+export type ContextMenuTarget = {
+  photos: Photo[];
+  /** Viewport coordinates of the click that opened it. */
+  x: number;
+  y: number;
+};
+
+/**
+ * Right-click on a thumbnail, following the OS file manager: right-clicking a
+ * photo that's already in the selection keeps the selection and acts on all of
+ * it; right-clicking anywhere else makes that photo the selection first, so the
+ * menu's target is always what's highlighted.
+ */
+export function useThumbnailContextMenu() {
+  const { selected, selectOnly } = useSelection();
+  const [menu, setMenu] = useState<ContextMenuTarget | null>(null);
+
+  // Read the selection through a ref (same reason as `snapshot` in
+  // selection-provider): it keeps onContextMenu's identity stable, so the
+  // memoized tiles don't all re-render whenever the selection changes.
+  const selectedRef = useRef(selected);
+  useEffect(() => {
+    selectedRef.current = selected;
+  }, [selected]);
+
+  const onContextMenu = useCallback(
+    (e: MouseEvent, photo: Photo) => {
+      // Suppress WKWebView's own menu ("Save Image As…", "Reload") and keep the
+      // click off the page's background-deselect handler.
+      e.preventDefault();
+      e.stopPropagation();
+      const inSelection = selectedRef.current.some((p) => p.id === photo.id);
+      if (!inSelection) selectOnly(photo);
+      setMenu({
+        photos: inSelection ? selectedRef.current : [photo],
+        x: e.clientX,
+        y: e.clientY,
+      });
+    },
+    [selectOnly]
+  );
+
+  const closeMenu = useCallback(() => setMenu(null), []);
+
+  return { menu, onContextMenu, closeMenu };
 }
 
 /**

@@ -21,9 +21,14 @@ import { usesMetadataFilter } from "@/lib/search-query";
 import { PhotoLightbox } from "@/components/photo-lightbox";
 import { BulkTagDialog } from "@/components/bulk-tag-dialog";
 import { SelectionCheck } from "@/components/selection-check";
+import { PhotoContextMenu } from "@/components/photo-context-menu";
 import { Thumbnail } from "@/components/thumbnail";
 import { usePhotoActions } from "@/hooks/use-photo-actions";
-import { useSelection, useThumbnailActivation } from "@/hooks/use-selection";
+import {
+  useSelection,
+  useThumbnailActivation,
+  useThumbnailContextMenu,
+} from "@/hooks/use-selection";
 import { useGridNavigation } from "@/hooks/use-grid-navigation";
 import { usePresence, type PresenceState } from "@/hooks/use-presence";
 import { sortPhotos, DEFAULT_SORT_MODE, type SortMode } from "@/lib/photo-sort";
@@ -102,6 +107,7 @@ export const PhotoGrid = forwardRef<PhotoGridRef, Props>(function PhotoGrid(
     setActions,
   } = useSelection();
   const { onClick, onDoubleClick } = useThumbnailActivation(setActive);
+  const { menu, onContextMenu, closeMenu } = useThumbnailContextMenu();
   const gridRef = useRef<HTMLDivElement>(null);
 
   // Keep showing the local preview while the photo is pending/processing —
@@ -246,7 +252,9 @@ export const PhotoGrid = forwardRef<PhotoGridRef, Props>(function PhotoGrid(
     count: visiblePhotos.length,
     getId: navGetId,
     containerRef: gridRef,
-    enabled: !active && !tagTargets,
+    // The lightbox, the bulk-tag editor and an open context menu each own the
+    // keyboard while they're up.
+    enabled: !active && !tagTargets && !menu,
     onOpen: (i) => {
       const photo = visiblePhotos[i];
       if (photo) setActive(photo);
@@ -305,8 +313,11 @@ export const PhotoGrid = forwardRef<PhotoGridRef, Props>(function PhotoGrid(
   // the lightbox and to text fields.
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      // The lightbox and the bulk-tag editor own the keyboard while open.
-      if (active || tagTargets) return;
+      // The lightbox, the bulk-tag editor and an open context menu own the
+      // keyboard while they're up. The menu especially: Cmd+A underneath it
+      // would leave it acting on one photo while the whole folder highlights,
+      // and T would open the tag editor beneath a menu that's still on top.
+      if (active || tagTargets || menu) return;
       if (e.key === "Escape" && selected.length) {
         clear();
         return;
@@ -337,7 +348,7 @@ export const PhotoGrid = forwardRef<PhotoGridRef, Props>(function PhotoGrid(
     };
     document.addEventListener("keydown", handleKeyDown);
     return () => document.removeEventListener("keydown", handleKeyDown);
-  }, [selected, active, tagTargets, clear, selectAll, visiblePhotos]);
+  }, [selected, active, tagTargets, menu, clear, selectAll, visiblePhotos]);
 
   const loadPhotos = useCallback(() => {
     return listPhotos(folder)
@@ -517,9 +528,19 @@ export const PhotoGrid = forwardRef<PhotoGridRef, Props>(function PhotoGrid(
             showCheck={isSelected(entry.item.id) && selected.length > 1}
             onClick={onClick}
             onDoubleClick={onDoubleClick}
+            onContextMenu={onContextMenu}
           />
         ))}
       </div>
+
+      {menu && (
+        <PhotoContextMenu
+          photos={menu.photos}
+          x={menu.x}
+          y={menu.y}
+          onClose={closeMenu}
+        />
+      )}
 
       {active &&
         (() => {
@@ -576,6 +597,7 @@ const PhotoTile = memo(function PhotoTile({
   showCheck,
   onClick,
   onDoubleClick,
+  onContextMenu,
 }: {
   photo: Photo;
   presenceState: PresenceState;
@@ -585,6 +607,7 @@ const PhotoTile = memo(function PhotoTile({
   showCheck: boolean;
   onClick: (e: MouseEvent, photo: Photo) => void;
   onDoubleClick: (photo: Photo) => void;
+  onContextMenu: (e: MouseEvent, photo: Photo) => void;
 }) {
   return (
     <button
@@ -594,6 +617,7 @@ const PhotoTile = memo(function PhotoTile({
       data-presence={presenceState}
       onClick={(e) => onClick(e, photo)}
       onDoubleClick={() => onDoubleClick(photo)}
+      onContextMenu={(e) => onContextMenu(e, photo)}
       className={`photo-tile group relative aspect-square overflow-hidden rounded-md border-2 bg-foreground/0 dark:bg-foreground/5 ${
         selected ? "border-accent" : "border-transparent"
       }`}
