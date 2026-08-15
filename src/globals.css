@@ -151,6 +151,15 @@ summary {
   animation: modal-in 150ms var(--ease-snappy);
 }
 
+/* The thumbnail right-click menu: the same entrance as a modal, quicker, and
+   growing from the pointer rather than from its own centre — it's anchored to
+   where the click landed. (Near the right or bottom edge the menu is nudged
+   back inside the window, so the origin can sit slightly off the pointer.) */
+.menu-in {
+  animation: modal-in 120ms var(--ease-snappy);
+  transform-origin: top left;
+}
+
 /* Indeterminate download bar: a short segment sweeping across the track, used
    when the total size is unknown (no Content-Length) so it reads as "working"
    rather than a full/complete bar. The segment is a third of the track wide;
@@ -196,7 +205,8 @@ summary {
    comprehension, drop the scale/position movement that can cause discomfort. */
 @media (prefers-reduced-motion: reduce) {
   .modal-in,
-  .badge-in {
+  .badge-in,
+  .menu-in {
     animation: fade-in 150ms ease-out;
   }
 

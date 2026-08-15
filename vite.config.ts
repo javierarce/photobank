@@ -18,6 +18,7 @@ export default defineConfig({
       "@tauri-apps/api/core",
       "@tauri-apps/api/event",
       "@tauri-apps/api/window",
+      "@tauri-apps/plugin-clipboard-manager",
       "@tauri-apps/plugin-dialog",
       "@tauri-apps/plugin-updater",
       "@tauri-apps/plugin-process",

@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { listen } from "@tauri-apps/api/event";
 import { imageUrl, originalUrl } from "@/lib/image-url";
-import { displayName } from "@/lib/keys";
+import { splitDisplayName } from "@/lib/keys";
 import { exportPhotos } from "@/lib/api";
 import { ExportButton } from "@/components/export-button";
 import { FolderCoverButton } from "@/components/folder-cover-button";
@@ -28,12 +28,6 @@ type Props = {
   onPrev?: () => void;
   onNext?: () => void;
 };
-
-function splitFilename(filename: string): [string, string] {
-  const dotIndex = filename.lastIndexOf(".");
-  if (dotIndex <= 0) return [filename, ""];
-  return [filename.slice(0, dotIndex), filename.slice(dotIndex)];
-}
 
 export function PhotoLightbox({
   photo,
@@ -61,7 +55,7 @@ export function PhotoLightbox({
   const [infoError, setInfoError] = useState<string | null>(null);
   // Show and edit the user-facing name (legacy "_original" marker stripped),
   // never the raw stored filename.
-  const [name, ext] = splitFilename(displayName(photo.filename));
+  const [name, ext] = splitDisplayName(photo.filename);
   const [editValue, setEditValue] = useState(name);
   const [error, setError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -83,7 +77,7 @@ export function PhotoLightbox({
   const [prevFilename, setPrevFilename] = useState(photo.filename);
   if (prevFilename !== photo.filename) {
     setPrevFilename(photo.filename);
-    setEditValue(splitFilename(displayName(photo.filename))[0]);
+    setEditValue(splitDisplayName(photo.filename)[0]);
     setEditing(false);
   }
 
