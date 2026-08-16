@@ -9,14 +9,19 @@ const linkClass = ({ isActive }: { isActive: boolean }) =>
 export function Header() {
   return (
     // data-tauri-drag-region: the window uses an overlay title bar, so the
-    // header doubles as the draggable region. pl-24 clears the traffic lights.
+    // header doubles as the draggable region. .app-header/.app-row (globals.css)
+    // keep the nav on the content's left edge and only push it clear of the
+    // traffic lights when the window is too narrow for both. The row's height
+    // (py-4 around a 20px text line = 52px) is what trafficLightPosition y: 28
+    // in tauri.conf.json is set against, so the buttons and the nav share a
+    // baseline — change one and the other needs adjusting.
     <header
       data-tauri-drag-region
-      className="border-b border-border bg-background"
+      className="app-header border-b border-border bg-background"
     >
       <div
         data-tauri-drag-region
-        className="mx-auto flex max-w-[1600px] items-center gap-6 py-4 pl-24 pr-6"
+        className="app-row flex items-center gap-6 py-4"
       >
         <nav className="flex items-center gap-5">
           {/* `end` so Folders only lights up on "/", not on nested routes. */}

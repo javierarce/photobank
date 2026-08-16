@@ -70,6 +70,31 @@ summary {
   cursor: pointer;
 }
 
+/* In @layer components so Tailwind's utilities (a later layer) still win: a row
+   that needs a different cap can just add `max-w-2xl` and have it apply. */
+@layer components {
+  /* Shared horizontal layout for the header and the page rows: a centered
+     column capped at 100rem with 1.5rem side padding, so the nav and the
+     content beneath it share one left edge. Pages with their own narrower cap
+     (settings, tags) override max-width with a utility. */
+  .app-row {
+    width: 100%;
+    margin-inline: auto;
+    max-width: 100rem;
+    padding-inline: 1.5rem;
+  }
+
+  /* The window uses an overlay title bar, so the header shares its row with the
+     macOS traffic lights. Rather than permanently insetting the nav, the header
+     row keeps the content's 1.5rem padding whenever the centered column's left
+     edge already clears the buttons, and only shifts right on windows too
+     narrow for both. 5.75rem (92px) is the clearance needed for the cluster at
+     trafficLightPosition x: 19; 100rem / 1.5rem mirror .app-row above. */
+  .app-header .app-row {
+    padding-left: max(1.5rem, calc(5.75rem - max(0px, (100vw - 100rem) / 2)));
+  }
+}
+
 /* The keyboard cursor for the folder and thumbnail grids IS the tile's own
    focus, so Tab and the arrow/hjkl keys share one highlight: a blue border plus
    a soft blue outline halo, shown only for keyboard focus (:focus-visible), not

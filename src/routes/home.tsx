@@ -24,7 +24,7 @@ export default function HomePage() {
 
   return (
     <div className="relative min-h-screen font-sans">
-      <main className="mx-auto max-w-[1600px] px-6 py-8">
+      <main className="app-row py-8">
         <section>
           <div className="mb-4 flex min-h-[34px] items-center justify-between gap-4">
             <h2 className="text-lg font-semibold text-foreground">Folders</h2>
