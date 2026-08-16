@@ -16,16 +16,28 @@ import { PhotoGrid } from "@/components/photo-grid";
 function render(ui: Parameters<typeof rtlRender>[0]) {
   return rtlRender(ui, { wrapper: SelectionProvider });
 }
-import { listPhotos, searchPhotoIds, updatePhoto } from "@/lib/api";
+import {
+  addPhotosToCollection,
+  listCollections,
+  listPhotos,
+  searchPhotoIds,
+  updatePhoto,
+} from "@/lib/api";
 import type { Photo } from "@/lib/types";
 import type { UploadFile } from "@/hooks/use-upload";
-import { makePhoto } from "./fixtures";
+import { makeCollection, makePhoto } from "./fixtures";
 
 vi.mock("@/lib/api", () => ({
   listPhotos: vi.fn(),
   searchPhotoIds: vi.fn(),
   deletePhoto: vi.fn(),
   updatePhoto: vi.fn(),
+  listCollections: vi.fn(),
+  createCollection: vi.fn(),
+  renameCollection: vi.fn(),
+  deleteCollection: vi.fn(),
+  addPhotosToCollection: vi.fn(),
+  removePhotosFromCollections: vi.fn(),
   REFRESH_PROGRESS_EVENT: "refresh://progress",
 }));
 
@@ -84,8 +96,19 @@ vi.mock("@/components/bulk-tag-dialog", () => ({
 // The right-click menu's own behaviour is covered in photo-context-menu.test;
 // here it only needs to report what the grid handed it.
 vi.mock("@/components/photo-context-menu", () => ({
-  PhotoContextMenu: ({ photos }: { photos: Photo[] }) => (
-    <div data-testid="context-menu">{photos.map((p) => p.id).join(",")}</div>
+  PhotoContextMenu: ({
+    photos,
+    onCollect,
+  }: {
+    photos: Photo[];
+    onCollect?: (photos: Photo[]) => void;
+  }) => (
+    <div data-testid="context-menu">
+      {photos.map((p) => p.id).join(",")}
+      {onCollect && (
+        <button onClick={() => onCollect(photos)}>menu-collect</button>
+      )}
+    </div>
   ),
 }));
 
@@ -135,6 +158,9 @@ const mockPhotos: Photo[] = [
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // Most tests are about the tiles, not the cards: a folder with no
+  // collections is the default, and the collection tests below override it.
+  vi.mocked(listCollections).mockResolvedValue([]);
 });
 
 afterEach(() => {
@@ -1091,5 +1117,350 @@ describe("PhotoGrid", () => {
       expect(screen.getByText("Processing…")).toBeInTheDocument();
     });
     expect(screen.queryByText("Cancel")).not.toBeInTheDocument();
+  });
+
+  describe("collections", () => {
+    // Three completed tiles, name-sorted so the plain order is a, b, c.
+    const folderPhotos: Photo[] = ["a", "b", "c"].map((n) =>
+      makePhoto({
+        id: n,
+        filename: `${n}.jpg`,
+        s3Key: `vacation/${n}.jpg`,
+        folder: "vacation",
+      })
+    );
+    const tileOrder = () =>
+      [...document.querySelectorAll("[data-nav-id]")].map((el) =>
+        el.getAttribute("data-nav-id")
+      );
+    const tile = (id: string) =>
+      document.querySelector<HTMLElement>(`[data-nav-id="${id}"]`)!;
+
+    const dayOne = makeCollection({
+      id: "c1",
+      folder: "vacation",
+      title: "Day one",
+      photoIds: ["c", "a"],
+    });
+
+    /** The folder page's grid: cards plus the folder's loose photos. */
+    async function renderFolder(
+      collections = [dayOne],
+      props: Partial<Parameters<typeof PhotoGrid>[0]> = {}
+    ) {
+      mockListPhotos.mockResolvedValue(folderPhotos);
+      vi.mocked(listCollections).mockResolvedValue(collections);
+      const view = render(
+        <PhotoGrid folder="vacation" sortMode="name-asc" {...props} />
+      );
+      // The cards and the tiles arrive from two separate fetches, and presence
+      // deals the tiles out in an effect — wait for the grid to settle so no
+      // test asserts on a half-populated one.
+      if (collections.length) await screen.findByTestId("collection-card");
+      await waitFor(() =>
+        expect(document.querySelectorAll("[data-nav-id]")).toHaveLength(
+          folderPhotos.length - collections.flatMap((c) => c.photoIds).length
+        )
+      );
+      return view;
+    }
+
+    it("shows a collection as a card and keeps its photos out of the grid", async () => {
+      await renderFolder();
+
+      const card = screen.getByTestId("collection-card");
+      expect(card).toHaveTextContent("Day one");
+      expect(card).toHaveTextContent("2 photos");
+      // "a" and "c" live inside the collection now — like a sub-folder, they
+      // aren't loose in the folder as well.
+      expect(tileOrder()).toEqual(["b"]);
+    });
+
+    it("leaves a folder without collections exactly as it was", async () => {
+      await renderFolder([]);
+
+      expect(screen.queryByTestId("collection-card")).toBeNull();
+      expect(tileOrder()).toEqual(["a", "b", "c"]);
+    });
+
+    it("waits for the collections before painting the first frame", async () => {
+      // Two independent IPC calls with no guaranteed order. If the photos win
+      // the race, painting on them alone would flash the collection's members
+      // loose in the folder before the card arrived to take them back.
+      let revealCollections: (c: ReturnType<typeof makeCollection>[]) => void;
+      mockListPhotos.mockResolvedValue(folderPhotos);
+      vi.mocked(listCollections).mockReturnValue(
+        new Promise((resolve) => {
+          revealCollections = resolve;
+        })
+      );
+
+      render(<PhotoGrid folder="vacation" sortMode="name-asc" />);
+
+      await waitFor(() =>
+        expect(screen.getByText("Loading photos...")).toBeInTheDocument()
+      );
+      expect(tileOrder()).toEqual([]);
+
+      revealCollections!([dayOne]);
+
+      await screen.findByTestId("collection-card");
+      // The folder's own photo is all that was ever drawn loose. Had the
+      // members been painted first, they'd still be here now: presence keeps a
+      // removed tile in the DOM, fading, for 150ms after it goes.
+      await waitFor(() => expect(tileOrder()).toEqual(["b"]));
+    });
+
+    it("opens the collection when its card is clicked", async () => {
+      const onOpenCollection = vi.fn();
+      await renderFolder([dayOne], { onOpenCollection });
+
+      fireEvent.click(screen.getByTestId("collection-card"));
+
+      expect(onOpenCollection).toHaveBeenCalledWith(
+        expect.objectContaining({ id: "c1" })
+      );
+    });
+
+    it("shows only the collection's photos when it is the view", async () => {
+      mockListPhotos.mockResolvedValue(folderPhotos);
+      vi.mocked(listCollections).mockResolvedValue([dayOne]);
+
+      render(
+        <PhotoGrid folder="vacation" collectionId="c1" sortMode="name-asc" />
+      );
+
+      // Inside the collection: its photos, in the grid's sort order, and no
+      // card (there's nothing left to nest).
+      await waitFor(() => expect(tileOrder()).toEqual(["a", "c"]));
+      expect(screen.queryByTestId("collection-card")).toBeNull();
+    });
+
+    it("searches the whole folder, collections included", async () => {
+      mockListPhotos.mockResolvedValue(folderPhotos);
+      vi.mocked(listCollections).mockResolvedValue([dayOne]);
+      // "a" is filed inside Day one; the backend still matches it.
+      mockSearchIds.mockResolvedValue(["a"]);
+
+      render(
+        <PhotoGrid folder="vacation" sortMode="name-asc" query="sunset" />
+      );
+
+      // Holding a collection's photos back is right for browsing, but it would
+      // make a filed photo unfindable — so a search flattens the view, and the
+      // cards (whose counts speak for the whole collection) step aside.
+      await waitFor(() => expect(tileOrder()).toEqual(["a"]));
+      expect(screen.queryByTestId("collection-card")).toBeNull();
+    });
+
+    it("says an empty collection is empty, and how to fill it", async () => {
+      mockListPhotos.mockResolvedValue(folderPhotos);
+      vi.mocked(listCollections).mockResolvedValue([
+        makeCollection({ id: "c1", folder: "vacation", photoIds: [] }),
+      ]);
+
+      render(<PhotoGrid folder="vacation" collectionId="c1" />);
+
+      expect(
+        await screen.findByText(/No photos in this collection yet/)
+      ).toBeInTheDocument();
+    });
+
+    describe("dragging photos onto a card", () => {
+      // The webview hands drags to Tauri and never runs the DOM's own
+      // dragover/drop (see the DragTracker note in use-upload), so the grid is
+      // driven by native cursor positions instead — which is what this fake
+      // tracker feeds it. jsdom has no layout, so the hit-test is answered
+      // directly.
+      function trackerHarness() {
+        let tracker: import("@/hooks/use-upload").DragTracker | null = null;
+        return {
+          register: (t: import("@/hooks/use-upload").DragTracker) => {
+            tracker = t;
+            return () => {
+              tracker = null;
+            };
+          },
+          /** Drag `id`'s tile and drop it on whatever `aimAt` points to. */
+          drag(id: string, target: Element | null) {
+            fireEvent.dragStart(tile(id), {
+              dataTransfer: { setData: vi.fn() },
+            });
+            document.elementFromPoint = () => target;
+            act(() => tracker?.onMove({ x: 1, y: 1 }));
+            act(() => tracker?.onDrop({ x: 1, y: 1 }));
+          },
+          hover(id: string, target: Element | null) {
+            fireEvent.dragStart(tile(id), {
+              dataTransfer: { setData: vi.fn() },
+            });
+            document.elementFromPoint = () => target;
+            act(() => tracker?.onMove({ x: 1, y: 1 }));
+          },
+        };
+      }
+
+      it("files the dragged photo into the card it lands on", async () => {
+        const harness = trackerHarness();
+        await renderFolder([dayOne], { registerDragTracker: harness.register });
+        vi.mocked(addPhotosToCollection).mockResolvedValue(dayOne);
+
+        harness.drag("b", screen.getByTestId("collection-card"));
+
+        await waitFor(() =>
+          expect(addPhotosToCollection).toHaveBeenCalledWith("c1", ["b"])
+        );
+      });
+
+      it("drags the whole selection when the dragged tile is part of it", async () => {
+        const loose = makeCollection({
+          id: "c1",
+          folder: "vacation",
+          title: "Day one",
+          photoIds: [],
+        });
+        const harness = trackerHarness();
+        await renderFolder([loose], { registerDragTracker: harness.register });
+        vi.mocked(addPhotosToCollection).mockResolvedValue(loose);
+
+        // Select b, then Cmd-click c: dragging either takes both, Finder-style.
+        fireEvent.click(tile("b"));
+        fireEvent.click(tile("c"), { metaKey: true });
+        harness.drag("b", screen.getByTestId("collection-card"));
+
+        await waitFor(() =>
+          expect(addPhotosToCollection).toHaveBeenCalledWith("c1", ["b", "c"])
+        );
+      });
+
+      it("drops filed photos from the selection so bulk actions can't reach them", async () => {
+        // Filing takes the photos off this grid — they live inside the card
+        // now — so leaving them selected would let Delete/Move/Export act on
+        // photos the user can no longer see.
+        function Probe() {
+          const { selected } = useSelection();
+          return (
+            <span data-testid="sel">{selected.map((p) => p.id).join(",")}</span>
+          );
+        }
+        const empty = makeCollection({
+          id: "c1",
+          folder: "vacation",
+          title: "Day one",
+          photoIds: [],
+        });
+        const harness = trackerHarness();
+        mockListPhotos.mockResolvedValue(folderPhotos);
+        vi.mocked(listCollections).mockResolvedValue([empty]);
+        rtlRender(
+          <SelectionProvider>
+            <PhotoGrid
+              folder="vacation"
+              sortMode="name-asc"
+              registerDragTracker={harness.register}
+            />
+            <Probe />
+          </SelectionProvider>
+        );
+        await screen.findByTestId("collection-card");
+        await waitFor(() => expect(tileOrder()).toEqual(["a", "b", "c"]));
+
+        fireEvent.click(tile("b"));
+        fireEvent.click(tile("c"), { metaKey: true });
+        expect(screen.getByTestId("sel")).toHaveTextContent("b,c");
+
+        // The reload after the drop reports them inside the collection.
+        vi.mocked(addPhotosToCollection).mockResolvedValue(empty);
+        vi.mocked(listCollections).mockResolvedValue([
+          { ...empty, photoIds: ["c", "b"] },
+        ]);
+        harness.drag("b", screen.getByTestId("collection-card"));
+
+        await waitFor(() => expect(tileOrder()).toEqual(["a"]));
+        expect(screen.getByTestId("sel")).toHaveTextContent("");
+      });
+
+      it("does nothing when the drop lands away from a card", async () => {
+        const harness = trackerHarness();
+        await renderFolder([dayOne], { registerDragTracker: harness.register });
+
+        harness.drag("b", document.body);
+
+        expect(addPhotosToCollection).not.toHaveBeenCalled();
+      });
+
+      it("marks the card under the cursor mid-drag", async () => {
+        const harness = trackerHarness();
+        await renderFolder([dayOne], { registerDragTracker: harness.register });
+
+        const card = screen.getByTestId("collection-card");
+        harness.hover("b", card);
+        expect(card.className).toContain("border-accent");
+
+        // Off the card again: it goes back to advertising itself as droppable.
+        harness.hover("b", document.body);
+        expect(card.className).not.toContain("border-accent");
+      });
+
+      it("leaves the tiles undraggable when there's nowhere to drop them", async () => {
+        const harness = trackerHarness();
+        await renderFolder([], { registerDragTracker: harness.register });
+
+        expect(tile("a")).toHaveAttribute("draggable", "false");
+      });
+
+      it("leaves them undraggable during a search, which draws no cards", async () => {
+        // The flag follows the cards on screen, not the folder's collections:
+        // a search flattens the view, so there's nothing to aim at.
+        const harness = trackerHarness();
+        mockListPhotos.mockResolvedValue(folderPhotos);
+        vi.mocked(listCollections).mockResolvedValue([dayOne]);
+        mockSearchIds.mockResolvedValue(["a"]);
+
+        render(
+          <PhotoGrid
+            folder="vacation"
+            sortMode="name-asc"
+            query="sunset"
+            registerDragTracker={harness.register}
+          />
+        );
+
+        await waitFor(() => expect(tileOrder()).toEqual(["a"]));
+        expect(screen.queryByTestId("collection-card")).toBeNull();
+        expect(tile("a")).toHaveAttribute("draggable", "false");
+      });
+    });
+
+    it("opens the collection dialog from the right-click menu", async () => {
+      await renderFolder();
+
+      fireEvent.contextMenu(tile("b"));
+      fireEvent.click(screen.getByText("menu-collect"));
+
+      // The third way into the same dialog, beside Collect and the C key.
+      expect(await screen.findByText(/Add to collection/)).toBeInTheDocument();
+    });
+
+    it("opens the collection dialog for the selection with c", async () => {
+      await renderFolder();
+
+      fireEvent.click(tile("b"));
+      fireEvent.keyDown(document.body, { key: "c" });
+
+      expect(await screen.findByText(/Add to collection/)).toBeInTheDocument();
+    });
+
+    it("leaves c alone while a text field has the focus", async () => {
+      await renderFolder();
+
+      fireEvent.click(tile("b"));
+      const field = document.createElement("input");
+      document.body.appendChild(field);
+      fireEvent.keyDown(field, { key: "c" });
+
+      expect(screen.queryByText(/Add to collection/)).toBeNull();
+      field.remove();
+    });
   });
 });

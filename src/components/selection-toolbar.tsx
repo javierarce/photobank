@@ -64,6 +64,15 @@ export function SelectionActionBar() {
       className="flex shrink-0 items-center gap-2"
     >
       <ExportButton onExport={handleDownload} />
+      {actions?.onCollect && (
+        <button
+          type="button"
+          onClick={() => actions.onCollect?.(selected)}
+          className={action}
+        >
+          Collect
+        </button>
+      )}
       <button
         type="button"
         onClick={() => actions?.onTag(selected)}

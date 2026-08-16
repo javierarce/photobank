@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
-import { useParams } from "react-router-dom";
+import { useNavigate, useParams } from "react-router-dom";
 import { FolderTitle } from "@/components/folder-title";
+import { NewCollectionDialog } from "@/components/new-collection-dialog";
 import { SearchField } from "@/components/search-field";
 import { PhotoGrid, PhotoGridRef } from "@/components/photo-grid";
 import {
@@ -34,9 +35,13 @@ export default function FolderPage() {
   const [renamingFolder, setRenamingFolder] = useState(false);
   // Sort order is a global preference, persisted across folders and launches.
   const [sortMode, setSortMode] = useState<SortMode>(loadSortMode);
+  // Naming a collection before it has any photos — the counterpart to New
+  // folder on the home page. Photos are dragged onto its card afterwards.
+  const [naming, setNaming] = useState(false);
   const photoGridRef = useRef<PhotoGridRef>(null);
   const { selected } = useSelection();
   const handleBackgroundClick = useBackgroundDeselect();
+  const navigate = useNavigate();
   const {
     files,
     dropFolder,
@@ -45,6 +50,7 @@ export default function FolderPage() {
     removeUpload,
     cancelUpload,
     onUploadComplete,
+    registerDragTracker,
   } = useUpload();
 
   // The folder page stays mounted across folder navigation (only the grid is
@@ -143,6 +149,13 @@ export default function FolderPage() {
                   )}
                   <button
                     type="button"
+                    onClick={() => setNaming(true)}
+                    className="rounded-md border border-border px-3 py-1.5 text-sm font-medium text-foreground/70 transition hover:border-foreground/35 hover:text-foreground active:scale-[0.97] disabled:pointer-events-none disabled:opacity-50"
+                  >
+                    New collection
+                  </button>
+                  <button
+                    type="button"
                     onClick={() => openFilePicker(folder)}
                     disabled={renamingFolder}
                     className="rounded-md border border-border px-3 py-1.5 text-sm font-medium text-foreground/70 transition hover:border-foreground/35 hover:text-foreground active:scale-[0.97] disabled:pointer-events-none disabled:opacity-50"
@@ -185,9 +198,27 @@ export default function FolderPage() {
             uploads={folderUploads}
             onDismissUpload={removeUpload}
             onCancelUpload={cancelUpload}
+            onOpenCollection={(collection) =>
+              navigate(
+                `/folders/${encodeURIComponent(folder)}/collections/${collection.id}`
+              )
+            }
+            registerDragTracker={registerDragTracker}
           />
         </section>
       </main>
+
+      {naming && (
+        <NewCollectionDialog
+          folder={folder}
+          onClose={() => setNaming(false)}
+          onCreated={() => {
+            setNaming(false);
+            // The new (empty) card comes from the grid's own collection list.
+            photoGridRef.current?.refresh();
+          }}
+        />
+      )}
 
       {dropFolder === folder && (
         <div className="pointer-events-none fixed inset-0 z-50 flex items-center justify-center bg-black/50">

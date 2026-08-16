@@ -9,7 +9,7 @@ import {
   act,
 } from "@testing-library/react";
 import { UploadProvider } from "@/hooks/upload-provider";
-import { useUpload } from "@/hooks/use-upload";
+import { useUpload, type DragPosition } from "@/hooks/use-upload";
 import {
   cancelImport,
   checkImportCollisions,
@@ -487,6 +487,144 @@ describe("UploadProvider drop sink", () => {
       expect(mockImportPhotos).toHaveBeenCalledWith(["/tmp/a.jpg"], "vacation")
     );
     expect(staged).not.toHaveBeenCalled();
+  });
+
+  it("keeps the import overlay down for a drag that started inside the page", () => {
+    render(
+      <UploadProvider>
+        <SinkConsumer onDrop={vi.fn()} />
+      </UploadProvider>
+    );
+
+    // Dragging a photo tile onto a collection is reported to the native
+    // handler too, carrying no files — the import overlay must stay down.
+    act(() => {
+      fireEvent.dragStart(screen.getByTestId("card"));
+    });
+    aimAt("sink");
+    fireDrag({ type: "enter", paths: [] });
+    expect(screen.getByTestId("sink")).toHaveTextContent("away");
+    fireDrag({ type: "drop", paths: [] });
+    expect(mockImportPhotos).not.toHaveBeenCalled();
+
+    // Once that drag is over, a real file drag lights the overlay again.
+    act(() => {
+      fireEvent.dragEnd(screen.getByTestId("card"));
+    });
+    fireDrag({ type: "enter", paths: ["/tmp/a.jpg"] });
+    expect(screen.getByTestId("sink")).toHaveTextContent("over");
+  });
+
+  it("forwards an in-page drag to the registered tracker", () => {
+    const moves: (DragPosition | null)[] = [];
+    const drops: DragPosition[] = [];
+    function TrackerConsumer() {
+      const { registerDragTracker } = useUpload();
+      useEffect(
+        () =>
+          registerDragTracker({
+            onMove: (p) => moves.push(p),
+            onDrop: (p) => drops.push(p),
+          }),
+        [registerDragTracker]
+      );
+      return <div data-drop-folder="vacation" data-testid="card" />;
+    }
+    render(
+      <UploadProvider>
+        <TrackerConsumer />
+      </UploadProvider>
+    );
+
+    // wry hands the whole drag to Tauri and never lets WebKit run its own
+    // dragover/drop, so these native positions are all the grid gets.
+    act(() => {
+      fireEvent.dragStart(screen.getByTestId("card"));
+    });
+    fireDrag({ type: "enter", paths: [], position: { x: 5, y: 6 } });
+    fireDrag({ type: "over", position: { x: 7, y: 8 } });
+    fireDrag({ type: "drop", paths: [], position: { x: 9, y: 10 } });
+
+    expect(moves).toEqual([
+      { x: 5, y: 6 },
+      { x: 7, y: 8 },
+    ]);
+    expect(drops).toEqual([{ x: 9, y: 10 }]);
+    expect(mockImportPhotos).not.toHaveBeenCalled();
+  });
+
+  it("tells the tracker when the drag leaves the window or is abandoned", () => {
+    const moves: (DragPosition | null)[] = [];
+    function TrackerConsumer() {
+      const { registerDragTracker } = useUpload();
+      useEffect(
+        () =>
+          registerDragTracker({
+            onMove: (p) => moves.push(p),
+            onDrop: () => {},
+          }),
+        [registerDragTracker]
+      );
+      return <div data-testid="card" />;
+    }
+    render(
+      <UploadProvider>
+        <TrackerConsumer />
+      </UploadProvider>
+    );
+
+    act(() => {
+      fireEvent.dragStart(screen.getByTestId("card"));
+    });
+    fireDrag({ type: "leave" });
+    // And a drag that ends without ever being dropped (Escape, or dropped
+    // outside) clears it too, so no card is left highlighted.
+    act(() => {
+      fireEvent.dragEnd(screen.getByTestId("card"));
+    });
+
+    expect(moves).toEqual([null, null]);
+  });
+
+  it("still imports a file drop if the in-page drag never ended", async () => {
+    render(
+      <UploadProvider>
+        <SinkConsumer onDrop={vi.fn()} />
+      </UploadProvider>
+    );
+
+    // No dragend (the drag left the window, say): the flag is stale, but a
+    // drop carrying real paths is unmistakably an import.
+    act(() => {
+      fireEvent.dragStart(screen.getByTestId("card"));
+    });
+    aimAt("card");
+    fireDrag({ type: "drop", paths: ["/tmp/a.jpg"] });
+
+    await waitFor(() =>
+      expect(mockImportPhotos).toHaveBeenCalledWith(["/tmp/a.jpg"], "vacation")
+    );
+  });
+
+  it("lets a file drag take over from a stale in-page flag", () => {
+    render(
+      <UploadProvider>
+        <SinkConsumer onDrop={vi.fn()} />
+      </UploadProvider>
+    );
+
+    // Same stale flag, but this time the file drag announces itself on enter —
+    // the overlay must come back rather than stay suppressed all session.
+    act(() => {
+      fireEvent.dragStart(screen.getByTestId("card"));
+    });
+    aimAt("sink");
+    fireDrag({ type: "enter", paths: ["/tmp/a.jpg"] });
+    expect(screen.getByTestId("sink")).toHaveTextContent("over");
+
+    // And it stays a file drag through the position-only `over` events.
+    fireDrag({ type: "over" });
+    expect(screen.getByTestId("sink")).toHaveTextContent("over");
   });
 
   it("goes back to importing once the dialog unregisters", () => {

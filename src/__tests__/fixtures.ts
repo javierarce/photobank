@@ -1,4 +1,4 @@
-import type { FolderCount, Photo } from "@/lib/types";
+import type { Collection, FolderCount, Photo } from "@/lib/types";
 
 export function makePhoto(overrides: Partial<Photo> = {}): Photo {
   return {
@@ -22,6 +22,21 @@ export function makePhoto(overrides: Partial<Photo> = {}): Photo {
     gpsLatitude: null,
     gpsLongitude: null,
     variantsOk: true,
+    createdAt: "2026-01-01T00:00:00Z",
+    updatedAt: "2026-01-01T00:00:00Z",
+    ...overrides,
+  };
+}
+
+/** A collection, empty unless the test files photos into it. */
+export function makeCollection(
+  overrides: Partial<Collection> = {}
+): Collection {
+  return {
+    id: "c1",
+    folder: "inbox",
+    title: "Day one",
+    photoIds: [],
     createdAt: "2026-01-01T00:00:00Z",
     updatedAt: "2026-01-01T00:00:00Z",
     ...overrides,

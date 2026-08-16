@@ -14,6 +14,10 @@ export type SelectionActions = {
   onDelete: (photos: Photo[]) => void | Promise<void>;
   onMove: (photos: Photo[]) => void | Promise<void>;
   onTag: (photos: Photo[]) => void | Promise<void>;
+  /** File the selection into a collection. Only the folder grid offers this —
+   * a collection groups one folder's photos, so search results (which span
+   * folders) leave it unset and the toolbar drops the button. */
+  onCollect?: (photos: Photo[]) => void | Promise<void>;
 };
 
 export type SelectionContextValue = {

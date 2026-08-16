@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
+  Collection,
   FolderCount,
   FolderFacets,
   Photo,
@@ -60,6 +61,49 @@ export function searchPhotos(params: {
  * row in the folder: a truncated set would silently hide matching photos. */
 export function searchPhotoIds(q: string, folder: string): Promise<string[]> {
   return invoke("search_photo_ids", { q, folder });
+}
+
+/** The folder's collections, newest first — the cards the grid draws ahead of
+ * the folder's own photos. */
+export function listCollections(folder: string): Promise<Collection[]> {
+  return invoke("list_collections", { folder });
+}
+
+/** Create a collection in `folder` holding `photoIds`. Rejects when the folder
+ * already has a collection with that title. */
+export function createCollection(
+  folder: string,
+  title: string,
+  photoIds: string[]
+): Promise<Collection> {
+  return invoke("create_collection", { folder, title, photoIds });
+}
+
+/** Retitle a collection; its photos are untouched. */
+export function renameCollection(
+  id: string,
+  title: string
+): Promise<Collection> {
+  return invoke("rename_collection", { id, title });
+}
+
+/** Dissolve a collection. Its photos stay in the folder, ungrouped. */
+export function deleteCollection(id: string): Promise<void> {
+  return invoke("delete_collection", { id });
+}
+
+/** Move photos into a collection, out of any they were already in. */
+export function addPhotosToCollection(
+  collectionId: string,
+  photoIds: string[]
+): Promise<Collection> {
+  return invoke("add_photos_to_collection", { collectionId, photoIds });
+}
+
+/** Take photos out of whatever collection they're in; they stay in the
+ * folder. Photos that weren't in one are skipped. */
+export function removePhotosFromCollections(photoIds: string[]): Promise<void> {
+  return invoke("remove_photos_from_collections", { photoIds });
 }
 
 export function listTags(): Promise<Tag[]> {

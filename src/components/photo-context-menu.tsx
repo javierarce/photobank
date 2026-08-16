@@ -22,6 +22,10 @@ type Props = {
   /** Viewport coordinates of the click that opened it. */
   x: number;
   y: number;
+  /** Offers "Add to collection…", handing these photos to the caller's
+   * dialog. Left out where there's no one folder to file into — the search
+   * results span folders, and a collection groups one folder's photos. */
+  onCollect?: (photos: Photo[]) => void;
   onClose: () => void;
 };
 
@@ -30,7 +34,7 @@ type Props = {
  * rest of the app can't do — everything here otherwise mirrors an action the
  * lightbox or the selection toolbar already offers, so the menu stays short.
  */
-export function PhotoContextMenu({ photos, x, y, onClose }: Props) {
+export function PhotoContextMenu({ photos, x, y, onCollect, onClose }: Props) {
   const ref = useRef<HTMLDivElement>(null);
   const [pos, setPos] = useState({ x, y });
 
@@ -131,6 +135,21 @@ export function PhotoContextMenu({ photos, x, y, onClose }: Props) {
       <MenuItem onClick={handleDownload}>
         {count === 1 ? "Download" : `Download ${count} photos`}
       </MenuItem>
+      {onCollect && (
+        // The dialog owns what happens next (pick a collection, name a new
+        // one, or take these out of the one they're in), so this only hands
+        // the photos over — hence the ellipsis.
+        <MenuItem
+          onClick={() => {
+            onClose();
+            onCollect(photos);
+          }}
+        >
+          {count === 1
+            ? "Add to collection…"
+            : `Add ${count} photos to a collection…`}
+        </MenuItem>
+      )}
     </div>
   );
 }

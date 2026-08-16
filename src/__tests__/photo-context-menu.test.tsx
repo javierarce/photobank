@@ -132,6 +132,56 @@ describe("PhotoContextMenu", () => {
     expect(onClose).toHaveBeenCalled();
   });
 
+  it("offers Add to collection only when a caller can file the photos", () => {
+    // The search results span folders, and a collection groups one folder's
+    // photos — so there the item simply isn't there.
+    open();
+    expect(
+      screen.queryByRole("menuitem", { name: /Add to collection/ })
+    ).toBeNull();
+
+    cleanup();
+    const collect = vi.fn();
+    const photos = [makePhoto({ id: "1" })];
+    render(
+      <PhotoContextMenu
+        photos={photos}
+        x={10}
+        y={10}
+        onCollect={collect}
+        onClose={vi.fn()}
+      />
+    );
+
+    fireEvent.click(
+      screen.getByRole("menuitem", { name: "Add to collection…" })
+    );
+    expect(collect).toHaveBeenCalledWith(photos);
+  });
+
+  it("hands the whole right-clicked selection to the dialog", () => {
+    const collect = vi.fn();
+    const onClose = vi.fn();
+    const photos = [makePhoto({ id: "1" }), makePhoto({ id: "2" })];
+    render(
+      <PhotoContextMenu
+        photos={photos}
+        x={10}
+        y={10}
+        onCollect={collect}
+        onClose={onClose}
+      />
+    );
+
+    fireEvent.click(
+      screen.getByRole("menuitem", { name: "Add 2 photos to a collection…" })
+    );
+
+    expect(collect).toHaveBeenCalledWith(photos);
+    // The menu gets out of the way of the dialog it just opened.
+    expect(onClose).toHaveBeenCalled();
+  });
+
   it("pulls itself back inside the window when opened near an edge", () => {
     const onClose = vi.fn();
     // jsdom reports a zero-sized rect by default; give the menu a real one so
