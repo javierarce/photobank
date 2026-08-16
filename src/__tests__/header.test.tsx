@@ -34,6 +34,18 @@ describe("Header", () => {
     expect(screen.queryByPlaceholderText(/search/i)).not.toBeInTheDocument();
   });
 
+  it("shares the .app-row layout with the page content below", () => {
+    renderHeader();
+
+    const row = screen.getByText("Folders").closest("div");
+    // .app-row gives the header the same centered column and side padding as
+    // the pages; .app-header is what shifts it clear of the traffic lights on
+    // narrow windows, instead of a hardcoded left inset.
+    expect(row?.className).toContain("app-row");
+    expect(row?.className).not.toContain("pl-24");
+    expect(row?.closest("header")?.className).toContain("app-header");
+  });
+
   it("marks the active route", () => {
     renderHeader("/tags");
     // NavLink sets aria-current="page" on the active link.

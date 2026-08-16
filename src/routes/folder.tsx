@@ -92,7 +92,7 @@ export default function FolderPage() {
       data-drop-folder={renamingFolder ? undefined : folder}
       onClick={handleBackgroundClick}
     >
-      <main className="mx-auto max-w-[1600px] px-6 py-8">
+      <main className="app-row py-8">
         {/* The folder title bar turns into a bulk-action toolbar once SEVERAL
             photos are selected. A single selection keeps the folder name in
             place and only swaps the right-hand controls for the actions, so
