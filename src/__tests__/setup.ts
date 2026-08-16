@@ -1,4 +1,13 @@
 import "@testing-library/jest-dom/vitest";
+import { configure } from "@testing-library/react";
+
+// Testing Library gives waitFor/findBy one second by default, which is plenty
+// on an idle machine and not nearly enough on a busy one: a release runs these
+// beside a cargo build, and a starved worker can stall a poll for longer than
+// that — surfacing as "expected 1 call, got 0" in whichever file happened to be
+// running. The timeout is a ceiling, not a delay; a passing assertion still
+// resolves on its first poll.
+configure({ asyncUtilTimeout: 5000 });
 
 // jsdom doesn't implement scrollIntoView; components that keep a highlighted
 // row in view (e.g. the command palette) call it, so stub it to a no-op.
