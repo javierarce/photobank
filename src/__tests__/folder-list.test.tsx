@@ -5,6 +5,7 @@ import {
   cleanup,
   waitFor,
   fireEvent,
+  act,
 } from "@testing-library/react";
 import {
   MemoryRouter,
@@ -219,6 +220,12 @@ describe("FolderList", () => {
       ]);
       renderFolderList();
       await screen.findByText("vacation");
+      // The cursor hook mirrors the folder list into a ref in a passive effect
+      // (see use-grid-navigation), and fireEvent's act() flushes effects AFTER
+      // dispatching. So give the effect its turn first: a key that arrives
+      // while the mirror still reads "empty grid" is dropped, not queued, and
+      // no amount of waiting afterwards brings it back.
+      await act(async () => {});
     }
 
     it("moves the focus cursor across folders with arrows and vim keys", async () => {
