@@ -126,7 +126,7 @@ export function CollectionDialog({
               spellCheck={false}
               disabled={busy}
               className="mt-1.5 w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm text-foreground outline-none placeholder:text-foreground/40 focus:border-foreground/30"
-              data-testid="collection-title-input"
+              data-testid="collect-new-title-input"
             />
           </span>
         </label>

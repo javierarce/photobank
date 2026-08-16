@@ -73,10 +73,10 @@ type Props = {
    * comes from the upload provider, which owns the native drag events (see
    * DragTracker). Without it the tiles simply aren't draggable. */
   registerDragTracker?: (tracker: DragTracker) => () => void;
-  /** Fires whenever the grid reloads the folder's collections, so a page
-   * showing one of them (the collection page) can pick up the change. Must be
-   * stable across renders. */
-  onCollectionsChange?: () => void;
+  /** Fires with the folder's collections whenever the grid reloads them, so a
+   * page showing one of them (the collection page) can pick up the change
+   * without fetching the same list again. Must be stable across renders. */
+  onCollectionsChange?: (collections: Collection[]) => void;
   /** How to order the tiles; defaults to newest-first by filename date. */
   sortMode?: SortMode;
   /** Ankitron-style typed query (tag:, camera:, iso:>=800, …) run backend-side
@@ -441,7 +441,7 @@ export const PhotoGrid = forwardRef<PhotoGridRef, Props>(function PhotoGrid(
     return listCollections(folder)
       .then((loaded) => {
         setCollections(loaded);
-        onCollectionsChange?.();
+        onCollectionsChange?.(loaded);
       })
       .catch(() => {});
   }, [folder, onCollectionsChange]);
@@ -462,7 +462,7 @@ export const PhotoGrid = forwardRef<PhotoGridRef, Props>(function PhotoGrid(
       .then(([loaded, photos]) => {
         if (loaded) {
           setCollections(loaded);
-          onCollectionsChange?.();
+          onCollectionsChange?.(loaded);
         }
         setPhotos(photos);
         setError(null);

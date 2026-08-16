@@ -1252,13 +1252,34 @@ pub fn remove_photos_from_collections(
     {
         let conn = db.0.lock().unwrap();
         for photo_id in &photo_ids {
-            conn.execute(
-                "DELETE FROM collection_photos WHERE photo_id = ?1",
-                params![photo_id],
-            )?;
+            unfile_photo(&conn, photo_id)?;
         }
     }
     crate::manifest::schedule_upload(&app);
+    Ok(())
+}
+
+/// Take one photo out of its collection, touching that collection's
+/// `updated_at` on the way — losing a photo changes a collection just as
+/// gaining one does (see `assign_photos`), and the column travels to the
+/// manifest. A photo that wasn't in one is a no-op.
+fn unfile_photo(conn: &Connection, photo_id: &str) -> Result<()> {
+    let former: Option<String> = conn
+        .query_row(
+            "SELECT collection_id FROM collection_photos WHERE photo_id = ?1",
+            params![photo_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let Some(former) = former else { return Ok(()) };
+    conn.execute(
+        "DELETE FROM collection_photos WHERE photo_id = ?1",
+        params![photo_id],
+    )?;
+    conn.execute(
+        "UPDATE collections SET updated_at = ?1 WHERE id = ?2",
+        params![db::now(), former],
+    )?;
     Ok(())
 }
 
@@ -1381,6 +1402,7 @@ mod tests {
     use super::{
         add_tags, assign_photos, badge_label, build_query, chosen_cover_id, collections_in_folder,
         ensure_photos_in_folder, folder_counts, folder_cover, get_collection, like_pattern,
+        unfile_photo,
         normalize_title, remove_tags, rename_tag_inner, set_cover, split_terms, tag_counts,
         tags_for_photos,
     };
@@ -2096,6 +2118,43 @@ mod tests {
         assert!(err.to_string().contains("no longer in this folder"), "{err}");
         let gone = ensure_photos_in_folder(&conn, "trips", &["nope".into()]).unwrap_err();
         assert!(gone.to_string().contains("no longer exist"), "{gone}");
+    }
+
+    #[test]
+    fn unfiling_a_photo_touches_the_collection_that_lost_it() {
+        let conn = open_in_memory();
+        insert_cover_candidate(&conn, "a", "trips", "2026-01-01T00:00:00Z", true);
+        insert_collection(&conn, "c1", "trips", "Day one", "2026-01-01T00:00:00Z");
+        assign_photos(&conn, "c1", &["a".into()]).unwrap();
+
+        // Pin updated_at back to a known value: assign_photos has just moved it.
+        conn.execute(
+            "UPDATE collections SET updated_at = '2026-01-01T00:00:00Z' WHERE id = 'c1'",
+            [],
+        )
+        .unwrap();
+
+        unfile_photo(&conn, "a").unwrap();
+
+        let touched: String = conn
+            .query_row("SELECT updated_at FROM collections WHERE id = 'c1'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        // Losing a photo changes a collection just as gaining one does, and
+        // the column ships to the manifest.
+        assert_ne!(touched, "2026-01-01T00:00:00Z");
+        assert!(get_collection(&conn, "c1").unwrap().photo_ids.is_empty());
+
+        // A photo that was never filed leaves every collection alone.
+        insert_cover_candidate(&conn, "b", "trips", "2026-01-01T00:00:00Z", true);
+        unfile_photo(&conn, "b").unwrap();
+        let after: String = conn
+            .query_row("SELECT updated_at FROM collections WHERE id = 'c1'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(after, touched);
     }
 
     #[test]

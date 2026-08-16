@@ -5,6 +5,7 @@ import {
   cleanup,
   waitFor,
   fireEvent,
+  act,
 } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import CollectionPage from "@/routes/collection";
@@ -19,15 +20,24 @@ vi.mock("@/lib/api", () => ({
 }));
 
 // The grid has its own tests; here it only needs to report which collection it
-// was pointed at.
+// was pointed at, and to hand back a reloaded list on demand.
+const handOver = vi.hoisted(() => ({
+  fire: null as null | ((collections: unknown[]) => void),
+}));
+
 vi.mock("@/components/photo-grid", () => ({
   PhotoGrid: ({
     folder,
     collectionId,
+    onCollectionsChange,
   }: {
     folder: string;
     collectionId?: string;
-  }) => <div data-testid="grid">{`${folder}/${collectionId}`}</div>,
+    onCollectionsChange?: (collections: unknown[]) => void;
+  }) => {
+    handOver.fire = (collections) => onCollectionsChange?.(collections);
+    return <div data-testid="grid">{`${folder}/${collectionId}`}</div>;
+  },
 }));
 
 // The search field talks to the backend for its autocomplete pools.
@@ -133,6 +143,37 @@ describe("CollectionPage", () => {
     await waitFor(() => expect(deleteCollection).toHaveBeenCalledWith("c1"));
     // The page it was showing is gone, so it lands back on the folder.
     expect(await screen.findByTestId("folder-page")).toBeInTheDocument();
+  });
+
+  it("takes the grid's collections instead of fetching them again", async () => {
+    renderPage();
+    await screen.findByTestId("collection-title");
+    expect(listCollections).toHaveBeenCalledTimes(1);
+
+    // The grid reloads the list for its own filtering (on every tick of the
+    // import poll, among other things) and hands it over — the page reads it
+    // rather than asking for the same rows a second time.
+    act(() => {
+      handOver.fire!([{ ...collection, title: "Day two" }]);
+    });
+
+    expect(screen.getByTestId("collection-title")).toHaveTextContent("Day two");
+    expect(listCollections).toHaveBeenCalledTimes(1);
+  });
+
+  it("notices when the handed-over list no longer holds it", async () => {
+    renderPage();
+    await screen.findByTestId("collection-title");
+
+    // Dissolved in another window: the grid's next reload simply doesn't
+    // include it.
+    act(() => {
+      handOver.fire!([]);
+    });
+
+    expect(
+      screen.getByText(/This collection no longer exists/)
+    ).toBeInTheDocument();
   });
 
   it("says so when the collection is gone", async () => {

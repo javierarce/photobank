@@ -39,20 +39,25 @@ export default function CollectionPage() {
 
   const folderHref = `/folders/${encodeURIComponent(folder)}`;
 
-  // There's no get-one command: the folder's collections are a short list, and
-  // reading them all keeps the page working off the same data the folder page
-  // has (one less thing that can disagree).
-  const load = useCallback(() => {
-    listCollections(folder)
-      .then((all) => {
-        const found = all.find((c) => c.id === id) ?? null;
-        setCollection(found);
-        setState(found ? "ready" : "missing");
-      })
-      .catch(() => setState("missing"));
-  }, [folder, id]);
+  // Pick this page's collection out of the folder's list. There's no get-one
+  // command: the list is short, and working off the same data the grid holds
+  // is one less thing that can disagree.
+  const adopt = useCallback(
+    (all: Collection[]) => {
+      const found = all.find((c) => c.id === id) ?? null;
+      setCollection(found);
+      // Not in the list means it was dissolved (here or in another window).
+      setState(found ? "ready" : "missing");
+    },
+    [id]
+  );
 
-  useEffect(load, [load]);
+  // Only for the first paint. After that the grid reloads the collections for
+  // its own filtering and hands them over, so the page never fetches the same
+  // list a second time — including on every tick of the 3s import poll.
+  useEffect(() => {
+    listCollections(folder).then(adopt).catch(() => setState("missing"));
+  }, [folder, adopt]);
 
   const handleSortChange = (mode: SortMode) => {
     setSortMode(mode);
@@ -134,7 +139,7 @@ export default function CollectionPage() {
                 collectionId={collection.id}
                 sortMode={sortMode}
                 query={query}
-                onCollectionsChange={load}
+                onCollectionsChange={adopt}
               />
             )
           )}

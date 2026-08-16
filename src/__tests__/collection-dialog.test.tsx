@@ -47,7 +47,7 @@ describe("CollectionDialog", () => {
   it("creates a collection from the selection", async () => {
     const { onApplied } = open();
 
-    fireEvent.change(screen.getByTestId("collection-title-input"), {
+    fireEvent.change(screen.getByTestId("collect-new-title-input"), {
       target: { value: "  Day one  " },
     });
     fireEvent.click(screen.getByRole("button", { name: "Create" }));
@@ -120,7 +120,7 @@ describe("CollectionDialog", () => {
     );
     const { onApplied } = open();
 
-    fireEvent.change(screen.getByTestId("collection-title-input"), {
+    fireEvent.change(screen.getByTestId("collect-new-title-input"), {
       target: { value: "Day one" },
     });
     fireEvent.click(screen.getByRole("button", { name: "Create" }));
@@ -130,6 +130,6 @@ describe("CollectionDialog", () => {
     ).toBeInTheDocument();
     // The dialog stays open on failure so the title can be corrected.
     expect(onApplied).not.toHaveBeenCalled();
-    expect(screen.getByTestId("collection-title-input")).toBeInTheDocument();
+    expect(screen.getByTestId("collect-new-title-input")).toBeInTheDocument();
   });
 });
