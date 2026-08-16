@@ -36,6 +36,20 @@ export type Tag = {
   name: string;
 };
 
+/** A titled group of photos inside one folder (mirrors Rust `Collection`).
+ * Membership is exclusive: a photo is in at most one collection, which the
+ * folder grid shows as a card the way a file manager shows a sub-folder. */
+export type Collection = {
+  id: string;
+  folder: string;
+  title: string;
+  /** The photos in it, newest first. Always photos of `folder` — a move out
+   * drops the membership. */
+  photoIds: string[];
+  createdAt: string;
+  updatedAt: string;
+};
+
 /** A tag plus how many photos carry it — drives the Tags management page. */
 export type TagCount = {
   id: string;

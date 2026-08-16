@@ -255,14 +255,24 @@ pub async fn update_photo(
     let updated = {
         let db = app.state::<Db>();
         let conn = db.0.lock().unwrap();
-        conn.query_row(
+        let updated = conn.query_row(
             &format!(
                 "UPDATE photos SET folder = ?1, filename = ?2, s3_key = ?3, updated_at = ?4
                  WHERE id = ?5 RETURNING {PHOTO_COLUMNS}"
             ),
             rusqlite::params![new_folder, new_filename, new_s3_key, db::now(), id],
             db::photo_from_row,
-        )?
+        )?;
+        // A collection groups one folder's photos, so leaving the folder
+        // leaves the collection too — otherwise it would keep listing a
+        // photo that is no longer anywhere near it.
+        if new_folder != photo.folder {
+            conn.execute(
+                "DELETE FROM collection_photos WHERE photo_id = ?1",
+                rusqlite::params![id],
+            )?;
+        }
+        updated
     };
 
     // Delete the old original and only the variants we actually copied
@@ -378,6 +388,15 @@ fn commit_folder_rename(
     if let Some(old) = snapshot.first().map(|photo| photo.folder.as_str()) {
         tx.execute(
             "UPDATE OR REPLACE folder_covers SET folder = ?1 WHERE folder = ?2",
+            rusqlite::params![new, old],
+        )?;
+        // Collections are keyed by folder name too, so they ride along with
+        // the rename or the folder's cards would vanish. OR REPLACE for the
+        // same reason as the cover: the target name can hold leftover
+        // collections (the folder has no photos — that was checked above — so
+        // anything still filed under it is empty).
+        tx.execute(
+            "UPDATE OR REPLACE collections SET folder = ?1 WHERE folder = ?2",
             rusqlite::params![new, old],
         )?;
     }
@@ -895,6 +914,44 @@ mod tests {
             .collect::<rusqlite::Result<_>>()
             .unwrap();
         assert_eq!(cover, vec![("voyages".to_string(), "b".to_string())]);
+    }
+
+    #[test]
+    fn commit_folder_rename_carries_the_collections_across() {
+        let mut conn = db::open_in_memory();
+        insert_photo(&conn, "a", "trips", "a.jpg");
+        insert_photo(&conn, "b", "trips", "b.jpg");
+        conn.execute(
+            "INSERT INTO collections (id, folder, title, created_at, updated_at)
+             VALUES ('c1', 'trips', 'Day one', ?1, ?1)",
+            rusqlite::params![db::now()],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO collection_photos (photo_id, collection_id) VALUES ('b', 'c1')",
+            [],
+        )
+        .unwrap();
+
+        let snapshot = plan_folder_rename(&conn, "trips", "voyages").unwrap();
+        commit_folder_rename(&mut conn, "voyages", &snapshot).unwrap();
+
+        // The collection follows the folder, memberships and all — one left
+        // under the old name would simply vanish from the renamed folder.
+        let (folder, title): (String, String) = conn
+            .query_row("SELECT folder, title FROM collections WHERE id = 'c1'", [], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+            .unwrap();
+        assert_eq!((folder.as_str(), title.as_str()), ("voyages", "Day one"));
+        let member: String = conn
+            .query_row(
+                "SELECT photo_id FROM collection_photos WHERE collection_id = 'c1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(member, "b");
     }
 
     #[test]

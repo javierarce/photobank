@@ -7,7 +7,8 @@ use tauri::State;
 use uuid::Uuid;
 
 use crate::db::{
-    self, Db, FolderCount, FolderFacets, Photo, SearchFacets, Tag, TagCount, PHOTO_COLUMNS,
+    self, Collection, Db, FolderCount, FolderFacets, Photo, SearchFacets, Tag, TagCount,
+    PHOTO_COLUMNS,
 };
 use crate::error::{Error, Result};
 
@@ -992,6 +993,275 @@ pub fn delete_tag(app: tauri::AppHandle, db: State<Db>, id: String) -> Result<()
     Ok(())
 }
 
+// --- Collections ------------------------------------------------------------
+//
+// A collection is a title over some of a folder's photos. It owns no objects
+// in the bucket — the photos keep their keys and their folder — so every
+// operation here is catalog-only, and dissolving a collection is lossless.
+// Membership is exclusive (see the `collection_photos` primary key), which is
+// what lets a collection hold its photos out of the folder's own grid.
+
+/// The stored form of a collection title: trimmed, with internal whitespace
+/// runs folded, so "Day  one " and "Day one" can't sit side by side looking
+/// identical. Rejects a title that's empty once trimmed.
+fn normalize_title(title: &str) -> Result<String> {
+    let title = title.split_whitespace().collect::<Vec<_>>().join(" ");
+    if title.is_empty() {
+        return Err(Error::msg("A collection needs a title"));
+    }
+    Ok(title)
+}
+
+/// The photo ids in one collection, newest first (matching `list_photos`).
+/// Photos are matched against the collection's own folder, so a membership
+/// that outlived a move — a rebuild can restore one, having taken the photo's
+/// folder from the bucket and the collection's from the manifest — doesn't
+/// show a foreign photo inside the collection.
+fn collection_photo_ids(conn: &Connection, collection_id: &str) -> rusqlite::Result<Vec<String>> {
+    let mut stmt = conn.prepare(
+        "SELECT photos.id FROM collection_photos
+         INNER JOIN photos ON photos.id = collection_photos.photo_id
+         INNER JOIN collections ON collections.id = collection_photos.collection_id
+         WHERE collection_photos.collection_id = ?1 AND photos.folder = collections.folder
+         ORDER BY photos.created_at DESC",
+    )?;
+    let ids = stmt
+        .query_map(params![collection_id], |row| row.get(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(ids)
+}
+
+fn get_collection(conn: &Connection, id: &str) -> Result<Collection> {
+    let mut collection = conn
+        .query_row(
+            "SELECT id, folder, title, created_at, updated_at FROM collections WHERE id = ?1",
+            params![id],
+            |row| {
+                Ok(Collection {
+                    id: row.get(0)?,
+                    folder: row.get(1)?,
+                    title: row.get(2)?,
+                    photo_ids: Vec::new(),
+                    created_at: row.get(3)?,
+                    updated_at: row.get(4)?,
+                })
+            },
+        )
+        .optional()?
+        .ok_or_else(|| Error::msg("That collection no longer exists"))?;
+    collection.photo_ids = collection_photo_ids(conn, id)?;
+    Ok(collection)
+}
+
+/// Every collection in a folder, newest first — the order the grid lays the
+/// cards out in, so one you just made is where you left it.
+fn collections_in_folder(conn: &Connection, folder: &str) -> Result<Vec<Collection>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, folder, title, created_at, updated_at FROM collections
+         WHERE folder = ?1 ORDER BY created_at DESC, id",
+    )?;
+    let mut collections = stmt
+        .query_map(params![folder], |row| {
+            Ok(Collection {
+                id: row.get(0)?,
+                folder: row.get(1)?,
+                title: row.get(2)?,
+                photo_ids: Vec::new(),
+                created_at: row.get(3)?,
+                updated_at: row.get(4)?,
+            })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    drop(stmt);
+    for collection in &mut collections {
+        collection.photo_ids = collection_photo_ids(conn, &collection.id)?;
+    }
+    Ok(collections)
+}
+
+/// Refuse photos that aren't in `folder`. A collection groups a folder's own
+/// photos, so a stale selection (the photo was moved in another window) must
+/// not smuggle a foreign photo into the collection.
+fn ensure_photos_in_folder(conn: &Connection, folder: &str, photo_ids: &[String]) -> Result<()> {
+    for id in photo_ids {
+        let owner: Option<String> = conn
+            .query_row("SELECT folder FROM photos WHERE id = ?1", params![id], |row| {
+                row.get(0)
+            })
+            .optional()?;
+        match owner {
+            Some(owner) if owner == folder => {}
+            Some(_) => {
+                return Err(Error::msg(
+                    "Some of those photos are no longer in this folder",
+                ))
+            }
+            None => return Err(Error::msg("Some of those photos no longer exist")),
+        }
+    }
+    Ok(())
+}
+
+/// Put `photo_ids` in the collection, taking them out of whatever collection
+/// they were in — membership is exclusive, so the upsert is the whole move.
+fn assign_photos(conn: &Connection, collection_id: &str, photo_ids: &[String]) -> Result<()> {
+    for photo_id in photo_ids {
+        conn.execute(
+            "INSERT INTO collection_photos (photo_id, collection_id) VALUES (?1, ?2)
+             ON CONFLICT (photo_id) DO UPDATE SET collection_id = excluded.collection_id",
+            params![photo_id, collection_id],
+        )?;
+    }
+    conn.execute(
+        "UPDATE collections SET updated_at = ?1 WHERE id = ?2",
+        params![db::now(), collection_id],
+    )?;
+    Ok(())
+}
+
+/// A folder's collections with their photos — the grid's cards.
+#[tauri::command]
+pub fn list_collections(db: State<Db>, folder: String) -> Result<Vec<Collection>> {
+    let conn = db.0.lock().unwrap();
+    collections_in_folder(&conn, &folder)
+}
+
+/// Create a collection in `folder` holding `photo_ids` (which may be empty).
+/// Rejects a title already used in the folder rather than merging into it —
+/// silently pouring a selection into a same-named collection made elsewhere
+/// is the kind of thing you only notice much later.
+#[tauri::command]
+pub fn create_collection(
+    app: tauri::AppHandle,
+    db: State<Db>,
+    folder: String,
+    title: String,
+    photo_ids: Vec<String>,
+) -> Result<Collection> {
+    let title = normalize_title(&title)?;
+    let collection = {
+        let mut conn = db.0.lock().unwrap();
+        let tx = conn.transaction()?;
+        ensure_photos_in_folder(&tx, &folder, &photo_ids)?;
+        let taken: i64 = tx.query_row(
+            "SELECT COUNT(*) FROM collections WHERE folder = ?1 AND title = ?2 COLLATE NOCASE",
+            params![folder, title],
+            |row| row.get(0),
+        )?;
+        if taken > 0 {
+            return Err(Error::msg(format!(
+                "This folder already has a collection called \u{201c}{title}\u{201d}"
+            )));
+        }
+        let id = Uuid::new_v4().to_string();
+        let now = db::now();
+        tx.execute(
+            "INSERT INTO collections (id, folder, title, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?4)",
+            params![id, folder, title, now],
+        )?;
+        assign_photos(&tx, &id, &photo_ids)?;
+        let collection = get_collection(&tx, &id)?;
+        tx.commit()?;
+        collection
+    };
+    crate::manifest::schedule_upload(&app);
+    Ok(collection)
+}
+
+/// Retitle a collection. Its photos are untouched.
+#[tauri::command]
+pub fn rename_collection(
+    app: tauri::AppHandle,
+    db: State<Db>,
+    id: String,
+    title: String,
+) -> Result<Collection> {
+    let title = normalize_title(&title)?;
+    let collection = {
+        let conn = db.0.lock().unwrap();
+        let current = get_collection(&conn, &id)?;
+        if current.title != title {
+            let taken: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM collections
+                 WHERE folder = ?1 AND title = ?2 COLLATE NOCASE AND id != ?3",
+                params![current.folder, title, id],
+                |row| row.get(0),
+            )?;
+            if taken > 0 {
+                return Err(Error::msg(format!(
+                    "This folder already has a collection called \u{201c}{title}\u{201d}"
+                )));
+            }
+            conn.execute(
+                "UPDATE collections SET title = ?1, updated_at = ?2 WHERE id = ?3",
+                params![title, db::now(), id],
+            )?;
+        }
+        get_collection(&conn, &id)?
+    };
+    crate::manifest::schedule_upload(&app);
+    Ok(collection)
+}
+
+/// Dissolve a collection: the title goes, the photos stay in the folder as
+/// ungrouped. Nothing in the bucket moves, so this is always undoable by hand.
+#[tauri::command]
+pub fn delete_collection(app: tauri::AppHandle, db: State<Db>, id: String) -> Result<()> {
+    {
+        let conn = db.0.lock().unwrap();
+        conn.execute("DELETE FROM collections WHERE id = ?1", params![id])?;
+    }
+    crate::manifest::schedule_upload(&app);
+    Ok(())
+}
+
+/// Move photos into an existing collection, out of any they were in.
+#[tauri::command]
+pub fn add_photos_to_collection(
+    app: tauri::AppHandle,
+    db: State<Db>,
+    collection_id: String,
+    photo_ids: Vec<String>,
+) -> Result<Collection> {
+    let collection = {
+        let mut conn = db.0.lock().unwrap();
+        let tx = conn.transaction()?;
+        let collection = get_collection(&tx, &collection_id)?;
+        ensure_photos_in_folder(&tx, &collection.folder, &photo_ids)?;
+        assign_photos(&tx, &collection_id, &photo_ids)?;
+        let updated = get_collection(&tx, &collection_id)?;
+        tx.commit()?;
+        updated
+    };
+    crate::manifest::schedule_upload(&app);
+    Ok(collection)
+}
+
+/// Take photos out of whatever collection they're in; they stay in the folder.
+/// Photos that weren't in one are silently skipped.
+#[tauri::command]
+pub fn remove_photos_from_collections(
+    app: tauri::AppHandle,
+    db: State<Db>,
+    photo_ids: Vec<String>,
+) -> Result<()> {
+    if photo_ids.is_empty() {
+        return Ok(());
+    }
+    {
+        let conn = db.0.lock().unwrap();
+        for photo_id in &photo_ids {
+            conn.execute(
+                "DELETE FROM collection_photos WHERE photo_id = ?1",
+                params![photo_id],
+            )?;
+        }
+    }
+    crate::manifest::schedule_upload(&app);
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn update_photo(
     app: tauri::AppHandle,
@@ -1109,8 +1379,9 @@ pub async fn export_photos(
 #[cfg(test)]
 mod tests {
     use super::{
-        add_tags, badge_label, build_query, chosen_cover_id, folder_counts, folder_cover,
-        like_pattern, remove_tags, rename_tag_inner, set_cover, split_terms, tag_counts,
+        add_tags, assign_photos, badge_label, build_query, chosen_cover_id, collections_in_folder,
+        ensure_photos_in_folder, folder_counts, folder_cover, get_collection, like_pattern,
+        normalize_title, remove_tags, rename_tag_inner, set_cover, split_terms, tag_counts,
         tags_for_photos,
     };
     use crate::db::{self, now, open_in_memory, PHOTO_COLUMNS};
@@ -1736,5 +2007,101 @@ mod tests {
         assert!(err.to_string().contains("not in this folder"), "{err}");
         assert!(set_cover(&conn, "trips", "nope").is_err());
         assert_eq!(chosen_cover_id(&conn, "trips").unwrap(), None);
+    }
+
+    // --- Collections ---
+
+    /// A collection row, created at an explicit time so card order (newest
+    /// first) is deterministic rather than depending on clock resolution.
+    fn insert_collection(conn: &Connection, id: &str, folder: &str, title: &str, created_at: &str) {
+        conn.execute(
+            "INSERT INTO collections (id, folder, title, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?4)",
+            params![id, folder, title, created_at],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn collection_titles_are_trimmed_and_whitespace_folded() {
+        assert_eq!(normalize_title("  Day one  ").unwrap(), "Day one");
+        assert_eq!(normalize_title("Day\t one").unwrap(), "Day one");
+        // A title of nothing but spaces is no title at all.
+        assert!(normalize_title("   ").is_err());
+        assert!(normalize_title("").is_err());
+    }
+
+    #[test]
+    fn a_folder_lists_its_collections_newest_first_with_their_photos() {
+        let conn = open_in_memory();
+        insert_cover_candidate(&conn, "a", "trips", "2026-01-01T00:00:00Z", true);
+        insert_cover_candidate(&conn, "b", "trips", "2026-02-01T00:00:00Z", true);
+        insert_cover_candidate(&conn, "c", "beach", "2026-01-01T00:00:00Z", true);
+        insert_collection(&conn, "old", "trips", "Day one", "2026-01-01T00:00:00Z");
+        insert_collection(&conn, "new", "trips", "Day two", "2026-02-01T00:00:00Z");
+        insert_collection(&conn, "other", "beach", "Swims", "2026-01-01T00:00:00Z");
+        assign_photos(&conn, "old", &["a".into(), "b".into()]).unwrap();
+
+        let collections = collections_in_folder(&conn, "trips").unwrap();
+        let titles: Vec<_> = collections.iter().map(|c| c.title.as_str()).collect();
+        assert_eq!(titles, vec!["Day two", "Day one"]);
+        // Newest photo first, like the folder listing itself.
+        assert_eq!(collections[1].photo_ids, vec!["b", "a"]);
+        // An empty collection still lists — its card is how you get at it.
+        assert!(collections[0].photo_ids.is_empty());
+        // Another folder's collection stays out of it.
+        assert_eq!(collections_in_folder(&conn, "beach").unwrap().len(), 1);
+    }
+
+    #[test]
+    fn adding_a_photo_to_a_collection_takes_it_out_of_its_old_one() {
+        let conn = open_in_memory();
+        insert_cover_candidate(&conn, "a", "trips", "2026-01-01T00:00:00Z", true);
+        insert_collection(&conn, "c1", "trips", "Day one", "2026-01-01T00:00:00Z");
+        insert_collection(&conn, "c2", "trips", "Day two", "2026-02-01T00:00:00Z");
+
+        assign_photos(&conn, "c1", &["a".into()]).unwrap();
+        assign_photos(&conn, "c2", &["a".into()]).unwrap();
+
+        assert!(get_collection(&conn, "c1").unwrap().photo_ids.is_empty());
+        assert_eq!(get_collection(&conn, "c2").unwrap().photo_ids, vec!["a"]);
+    }
+
+    #[test]
+    fn a_membership_that_outlived_a_move_is_not_listed_in_the_collection() {
+        let conn = open_in_memory();
+        insert_cover_candidate(&conn, "a", "trips", "2026-01-01T00:00:00Z", true);
+        insert_collection(&conn, "c1", "trips", "Day one", "2026-01-01T00:00:00Z");
+        assign_photos(&conn, "c1", &["a".into()]).unwrap();
+
+        // A rebuild can restore a membership whose photo the bucket says is
+        // somewhere else; the collection must not show it.
+        conn.execute(
+            "UPDATE photos SET folder = 'beach', s3_key = 'beach/a.jpg' WHERE id = 'a'",
+            [],
+        )
+        .unwrap();
+
+        assert!(get_collection(&conn, "c1").unwrap().photo_ids.is_empty());
+    }
+
+    #[test]
+    fn only_the_folders_own_photos_can_join_a_collection() {
+        let conn = open_in_memory();
+        insert_cover_candidate(&conn, "a", "trips", "2026-01-01T00:00:00Z", true);
+        insert_cover_candidate(&conn, "b", "beach", "2026-01-01T00:00:00Z", true);
+
+        ensure_photos_in_folder(&conn, "trips", &["a".into()]).unwrap();
+        let err = ensure_photos_in_folder(&conn, "trips", &["a".into(), "b".into()]).unwrap_err();
+        assert!(err.to_string().contains("no longer in this folder"), "{err}");
+        let gone = ensure_photos_in_folder(&conn, "trips", &["nope".into()]).unwrap_err();
+        assert!(gone.to_string().contains("no longer exist"), "{gone}");
+    }
+
+    #[test]
+    fn a_missing_collection_is_a_friendly_error() {
+        let conn = open_in_memory();
+        let err = get_collection(&conn, "nope").unwrap_err();
+        assert!(err.to_string().contains("no longer exists"), "{err}");
     }
 }

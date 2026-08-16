@@ -7,11 +7,15 @@ import {
   useImperativeHandle,
   forwardRef,
   memo,
+  type DragEvent,
   type MouseEvent,
 } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { imageUrl, previewUrl } from "@/lib/image-url";
+import { message } from "@tauri-apps/plugin-dialog";
 import {
+  addPhotosToCollection,
+  listCollections,
   listPhotos,
   searchPhotoIds,
   REFRESH_PROGRESS_EVENT,
@@ -20,6 +24,8 @@ import {
 import { usesMetadataFilter } from "@/lib/search-query";
 import { PhotoLightbox } from "@/components/photo-lightbox";
 import { BulkTagDialog } from "@/components/bulk-tag-dialog";
+import { CollectionCard } from "@/components/collection-card";
+import { CollectionDialog } from "@/components/collection-dialog";
 import { SelectionCheck } from "@/components/selection-check";
 import { PhotoContextMenu } from "@/components/photo-context-menu";
 import { Thumbnail } from "@/components/thumbnail";
@@ -31,9 +37,15 @@ import {
 } from "@/hooks/use-selection";
 import { useGridNavigation } from "@/hooks/use-grid-navigation";
 import { usePresence, type PresenceState } from "@/hooks/use-presence";
+import {
+  collectionCover,
+  loosePhotos,
+  membershipMap,
+  photosInCollection,
+} from "@/lib/collections";
 import { sortPhotos, DEFAULT_SORT_MODE, type SortMode } from "@/lib/photo-sort";
-import type { Photo } from "@/lib/types";
-import type { UploadFile } from "@/hooks/use-upload";
+import type { Collection, Photo } from "@/lib/types";
+import type { DragTracker, UploadFile } from "@/hooks/use-upload";
 
 export type PhotoGridRef = {
   refresh: () => Promise<void>;
@@ -50,6 +62,21 @@ const NO_UPLOADS: UploadFile[] = [];
 
 type Props = {
   folder: string;
+  /** Show one collection's photos instead of the folder's own: the collection
+   * page. Its card is not drawn (you're inside it) and nothing else in the
+   * folder shows. */
+  collectionId?: string;
+  /** Opens a collection card. Omitted on the collection page, which draws no
+   * cards. */
+  onOpenCollection?: (collection: Collection) => void;
+  /** Follows a drag of the tiles so they can be dropped on a collection card;
+   * comes from the upload provider, which owns the native drag events (see
+   * DragTracker). Without it the tiles simply aren't draggable. */
+  registerDragTracker?: (tracker: DragTracker) => () => void;
+  /** Fires whenever the grid reloads the folder's collections, so a page
+   * showing one of them (the collection page) can pick up the change. Must be
+   * stable across renders. */
+  onCollectionsChange?: () => void;
   /** How to order the tiles; defaults to newest-first by filename date. */
   sortMode?: SortMode;
   /** Ankitron-style typed query (tag:, camera:, iso:>=800, …) run backend-side
@@ -67,6 +94,10 @@ type Props = {
 export const PhotoGrid = forwardRef<PhotoGridRef, Props>(function PhotoGrid(
   {
     folder,
+    collectionId,
+    onOpenCollection,
+    registerDragTracker,
+    onCollectionsChange,
     sortMode = DEFAULT_SORT_MODE,
     query = "",
     onHasPhotosChange,
@@ -94,6 +125,11 @@ export const PhotoGrid = forwardRef<PhotoGridRef, Props>(function PhotoGrid(
   // Photos being bulk-tagged, captured when the editor opens so it keeps
   // working on that set even if the selection later changes.
   const [tagTargets, setTagTargets] = useState<Photo[] | null>(null);
+  // Same, for the "add to collection" dialog.
+  const [collectTargets, setCollectTargets] = useState<Photo[] | null>(null);
+  // The folder's collections, newest first — each one draws a card ahead of
+  // the folder's own photos, and holds its photos out of that grid.
+  const [collections, setCollections] = useState<Collection[]>([]);
 
   const {
     selected,
@@ -223,7 +259,7 @@ export const PhotoGrid = forwardRef<PhotoGridRef, Props>(function PhotoGrid(
   // the tiles shown belong to the previous query.
   const searchSettled = search?.query === trimmedQuery;
 
-  const visiblePhotos = useMemo(
+  const matchingPhotos = useMemo(
     () =>
       sortedPhotos.filter(
         (p) =>
@@ -237,6 +273,26 @@ export const PhotoGrid = forwardRef<PhotoGridRef, Props>(function PhotoGrid(
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [sortedPhotos, activeUploadKey, trimmedQuery, search]
   );
+
+  // A collection holds its photos the way a folder does: on the folder page
+  // they're inside their card, not loose in the grid; on a collection page
+  // they're all there is.
+  const collection = collectionId
+    ? collections.find((c) => c.id === collectionId)
+    : undefined;
+  const visiblePhotos = useMemo(() => {
+    // Inside a collection, a search narrows what's in there.
+    if (collectionId) {
+      return collection ? photosInCollection(matchingPhotos, collection) : [];
+    }
+    // In the folder, a search reaches into its collections: holding their
+    // photos back is right for browsing, but it would make a filed photo
+    // unfindable — the backend matches it and the folder would drop it on the
+    // floor. So a query flattens the view; the cards step aside with it (their
+    // counts speak for the whole collection, not the search).
+    if (trimmedQuery) return matchingPhotos;
+    return loosePhotos(matchingPhotos, collections);
+  }, [matchingPhotos, collections, collection, collectionId, trimmedQuery]);
 
   // Keyboard cursor over the tiles: arrows/hjkl move DOM focus between tiles
   // (so the highlight is their own :focus-visible style, shared with Tab),
@@ -252,9 +308,9 @@ export const PhotoGrid = forwardRef<PhotoGridRef, Props>(function PhotoGrid(
     count: visiblePhotos.length,
     getId: navGetId,
     containerRef: gridRef,
-    // The lightbox, the bulk-tag editor and an open context menu each own the
+    // The lightbox, the dialogs and an open context menu each own the
     // keyboard while they're up.
-    enabled: !active && !tagTargets && !menu,
+    enabled: !active && !tagTargets && !collectTargets && !menu,
     onOpen: (i) => {
       const photo = visiblePhotos[i];
       if (photo) setActive(photo);
@@ -282,6 +338,9 @@ export const PhotoGrid = forwardRef<PhotoGridRef, Props>(function PhotoGrid(
         if (await handleBulkMove(targets)) clear();
       },
       onTag: (targets) => setTagTargets(targets),
+      // Collections are folder-scoped, so only this grid offers the action;
+      // the search results leave it unset and the toolbar hides the button.
+      onCollect: (targets) => setCollectTargets(targets),
     });
     return () => setActions(null);
   }, [setActions, handleBulkDelete, handleBulkMove, clear]);
@@ -293,13 +352,14 @@ export const PhotoGrid = forwardRef<PhotoGridRef, Props>(function PhotoGrid(
     return () => setPool([]);
   }, [visiblePhotos, setPool]);
 
-  // A search hides tiles, so confine the selection to what's still on screen:
-  // otherwise the toolbar would count photos the user can't see and a bulk
-  // delete would destroy them. Only prune once the search has caught up with
-  // what's typed, so the in-flight window doesn't drop photos the new query
-  // will keep.
+  // Confine the selection to what's on screen: otherwise the toolbar would
+  // count photos the user can't see and a bulk delete would destroy them. A
+  // search hides tiles, and so does filing photos into a collection — they
+  // move inside its card — so this guards both. While a search is catching up
+  // with what's typed it holds off, so the in-flight window doesn't drop
+  // photos the new query will keep.
   useEffect(() => {
-    if (!trimmedQuery || !searchSettled) return;
+    if (trimmedQuery && !searchSettled) return;
     retain(new Set(visiblePhotos.map((p) => p.id)));
   }, [trimmedQuery, searchSettled, visiblePhotos, retain]);
 
@@ -313,11 +373,11 @@ export const PhotoGrid = forwardRef<PhotoGridRef, Props>(function PhotoGrid(
   // the lightbox and to text fields.
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      // The lightbox, the bulk-tag editor and an open context menu own the
-      // keyboard while they're up. The menu especially: Cmd+A underneath it
-      // would leave it acting on one photo while the whole folder highlights,
-      // and T would open the tag editor beneath a menu that's still on top.
-      if (active || tagTargets || menu) return;
+      // The lightbox, the dialogs and an open context menu own the keyboard
+      // while they're up. The menu especially: Cmd+A underneath it would leave
+      // it acting on one photo while the whole folder highlights, and T (or C)
+      // would open an editor beneath a menu that's still on top.
+      if (active || tagTargets || collectTargets || menu) return;
       if (e.key === "Escape" && selected.length) {
         clear();
         return;
@@ -345,24 +405,169 @@ export const PhotoGrid = forwardRef<PhotoGridRef, Props>(function PhotoGrid(
         e.preventDefault();
         setTagTargets(selected);
       }
+      // C files the selection into a collection — the keyboard twin of the
+      // toolbar's Collect and of dragging the tiles onto a card.
+      if (
+        (e.key === "c" || e.key === "C") &&
+        !e.metaKey &&
+        !e.ctrlKey &&
+        !e.altKey &&
+        selected.length
+      ) {
+        if (inField) return;
+        e.preventDefault();
+        setCollectTargets(selected);
+      }
     };
     document.addEventListener("keydown", handleKeyDown);
     return () => document.removeEventListener("keydown", handleKeyDown);
-  }, [selected, active, tagTargets, menu, clear, selectAll, visiblePhotos]);
+  }, [
+    selected,
+    active,
+    tagTargets,
+    collectTargets,
+    menu,
+    clear,
+    selectAll,
+    visiblePhotos,
+  ]);
 
+  // Picks up a membership change on its own — filing photos moves them between
+  // the cards and the grid without touching a photo row. Everything that
+  // changes the ROWS (an import, a delete, a move out of the folder) goes
+  // through loadPhotos below instead, which reloads both together. Failures
+  // are quiet here for the same reason they are there.
+  const loadCollections = useCallback(() => {
+    return listCollections(folder)
+      .then((loaded) => {
+        setCollections(loaded);
+        onCollectionsChange?.();
+      })
+      .catch(() => {});
+  }, [folder, onCollectionsChange]);
+
+  // Which photos are loose in the folder is a fact about the collections, so
+  // the two are fetched together and applied in ONE update. Applying them as
+  // they arrive would paint a frame with the photos but not the cards (they're
+  // independent IPC calls, in no guaranteed order) — flashing a collection's
+  // members loose in the folder grid, or "nothing in here yet" on a collection
+  // page, before the other call corrected it.
   const loadPhotos = useCallback(() => {
-    return listPhotos(folder)
-      .then((photos) => {
+    return Promise.all([
+      // A collections failure is quiet: the photos are what the page is for,
+      // and they have their own error state. null means "keep what we have".
+      listCollections(folder).catch(() => null),
+      listPhotos(folder),
+    ])
+      .then(([loaded, photos]) => {
+        if (loaded) {
+          setCollections(loaded);
+          onCollectionsChange?.();
+        }
         setPhotos(photos);
         setError(null);
       })
       .catch(() => setError("Failed to load photos."))
       .finally(() => setLoading(false));
-  }, [folder, setPhotos]);
+  }, [folder, setPhotos, onCollectionsChange]);
 
   useEffect(() => {
     loadPhotos();
   }, [loadPhotos]);
+
+  // --- Dragging photos onto a collection card ---
+  //
+  // The tiles start a normal HTML5 drag, but nothing downstream of that is
+  // normal: wry claims every drag over the webview for Tauri and never lets
+  // WebKit run its own dragover/drop, so the card under the cursor has to be
+  // found by hit-testing the native positions the provider forwards here (see
+  // DragTracker in use-upload). The dragged ids ride in a ref for the same
+  // reason — there's no DOM drop event to read a payload from.
+  const dragIdsRef = useRef<string[]>([]);
+  const [dragging, setDragging] = useState(false);
+  // The card under the cursor mid-drag.
+  const [dropCollection, setDropCollection] = useState<string | null>(null);
+  // Read through refs so the tile handlers below keep a stable identity (the
+  // tiles are memoized on them) and the tracker sees fresh data without
+  // re-registering mid-drag.
+  const selectedRef = useRef(selected);
+  const collectionsRef = useRef(collections);
+  useEffect(() => {
+    selectedRef.current = selected;
+    collectionsRef.current = collections;
+  }, [selected, collections]);
+
+  const handleDragStart = useCallback((e: DragEvent, photo: Photo) => {
+    // Dragging one of several selected photos takes the whole selection,
+    // Finder-style; dragging an unselected tile takes just that photo and
+    // leaves the selection alone (a drag fires no click).
+    const current = selectedRef.current;
+    const ids = current.some((p) => p.id === photo.id)
+      ? current.map((p) => p.id)
+      : [photo.id];
+    dragIdsRef.current = ids;
+    setDragging(true);
+    if (e.dataTransfer) {
+      e.dataTransfer.effectAllowed = "move";
+      // Nothing reads this back — it's here so the webview treats the gesture
+      // as a real drag with a payload.
+      e.dataTransfer.setData?.("text/plain", ids.join(","));
+    }
+  }, []);
+
+  const handleDragEnd = useCallback(() => {
+    dragIdsRef.current = [];
+    setDragging(false);
+    setDropCollection(null);
+  }, []);
+
+  /** File the dragged photos into `id`'s collection. A drop onto the
+   * collection they're already in is skipped rather than round-tripped. */
+  const fileIntoCollection = useCallback(
+    (id: string) => {
+      const ids = dragIdsRef.current;
+      handleDragEnd();
+      if (!ids.length) return;
+      const membership = membershipMap(collectionsRef.current);
+      if (ids.every((photoId) => membership.get(photoId)?.id === id)) return;
+
+      void addPhotosToCollection(id, ids)
+        .then(loadCollections)
+        .catch(async (err) => {
+          await loadCollections();
+          // The webview has no working window.alert; the native dialog is how
+          // the app reports a failure it can't show inline.
+          await message(
+            typeof err === "string" ? err : "Failed to move those photos",
+            { title: "Collection", kind: "error" }
+          );
+        });
+    },
+    [loadCollections, handleDragEnd]
+  );
+
+  /** The collection card under a native cursor position, hit-tested through
+   * the DOM exactly as the importer resolves a folder card (folderAtPoint). */
+  const cardAtPoint = (position: { x: number; y: number } | null) => {
+    if (!position) return null;
+    const el = document.elementFromPoint(position.x, position.y);
+    return (
+      el?.closest<HTMLElement>("[data-drop-collection]")?.dataset
+        .dropCollection ?? null
+    );
+  };
+
+  useEffect(() => {
+    if (!registerDragTracker) return;
+    return registerDragTracker({
+      onMove: (position) => setDropCollection(cardAtPoint(position)),
+      onDrop: (position) => {
+        const id = cardAtPoint(position);
+        if (id) fileIntoCollection(id);
+        else handleDragEnd();
+      },
+    });
+  }, [registerDragTracker, fileIntoCollection, handleDragEnd]);
 
   // Poll while any photos are still processing
   useEffect(() => {
@@ -414,6 +619,12 @@ export const PhotoGrid = forwardRef<PhotoGridRef, Props>(function PhotoGrid(
   // ones. Nav/selection still read the live `visiblePhotos` below.
   const tiles = usePresence(visiblePhotos, photoKey);
 
+  // The cards drawn ahead of the tiles, each with the newest photo it can
+  // show. Only on the folder page (inside a collection there's nothing left to
+  // nest) and only while browsing — see visiblePhotos on why a search flattens
+  // the view.
+  const cards = collectionId || trimmedQuery ? [] : collections;
+
   // Failed processing hands off to the photo tile, which owns the error state.
   // Only when this upload is the one that failed, though: a retry reuses the
   // failed row, so dismissing on the row alone would drop a live import out of
@@ -436,9 +647,25 @@ export const PhotoGrid = forwardRef<PhotoGridRef, Props>(function PhotoGrid(
     return <p className="text-sm text-red-600 dark:text-red-400">{error}</p>;
   }
 
-  if (!photos.length && !activeUploads.length) {
+  // Nothing in the folder at all — not even a collection to show a card for.
+  if (!photos.length && !activeUploads.length && !cards.length) {
     return (
       <p className="text-sm text-foreground/60">No photos in this folder.</p>
+    );
+  }
+
+  // The folder has photos; this collection just doesn't hold any yet.
+  if (
+    collectionId &&
+    !trimmedQuery &&
+    !visiblePhotos.length &&
+    !activeUploads.length
+  ) {
+    return (
+      <p className="text-sm text-foreground/60">
+        No photos in this collection yet. Drag photos onto its card to add
+        them.
+      </p>
     );
   }
 
@@ -456,7 +683,8 @@ export const PhotoGrid = forwardRef<PhotoGridRef, Props>(function PhotoGrid(
     !visiblePhotos.length &&
     !activeUploads.length &&
     !active &&
-    !tagTargets
+    !tagTargets &&
+    !collectTargets
   ) {
     // A failed search filters everything out too, but saying "no matches" would
     // be a lie — report the failure instead, matching the global search page.
@@ -505,10 +733,23 @@ export const PhotoGrid = forwardRef<PhotoGridRef, Props>(function PhotoGrid(
           Metadata filters only match photos whose info has been loaded.
         </p>
       )}
+      {/* Collections lead the grid, the way folders sit above files in a file
+          manager; the folder's own photos follow. Inside a collection there
+          are no cards, so this is the plain grid it has always been. */}
       <div
         ref={gridRef}
         className="fade-in grid select-none gap-2 grid-cols-[repeat(auto-fill,minmax(min(200px,100%),1fr))]"
       >
+        {cards.map((c) => (
+          <CollectionCard
+            key={c.id}
+            collection={c}
+            cover={collectionCover(c, photoById)}
+            isDragging={dragging}
+            isDropTarget={dropCollection === c.id}
+            onOpen={(opened) => onOpenCollection?.(opened)}
+          />
+        ))}
         {activeUploads.map((upload) => (
           <UploadTile
             key={upload.key}
@@ -526,9 +767,15 @@ export const PhotoGrid = forwardRef<PhotoGridRef, Props>(function PhotoGrid(
             // The corner check is the multi-select cue; a lone selected photo
             // says so with its accent border alone (see PhotoTile).
             showCheck={isSelected(entry.item.id) && selected.length > 1}
+            // Tiles are only draggable where there's a card to drop them on —
+            // which rules out a folder with no collections, and a search,
+            // whose flattened view draws no cards.
+            draggable={!!registerDragTracker && !!cards.length}
             onClick={onClick}
             onDoubleClick={onDoubleClick}
             onContextMenu={onContextMenu}
+            onDragStart={handleDragStart}
+            onDragEnd={handleDragEnd}
           />
         ))}
       </div>
@@ -579,6 +826,24 @@ export const PhotoGrid = forwardRef<PhotoGridRef, Props>(function PhotoGrid(
           }}
         />
       )}
+
+      {collectTargets && (
+        <CollectionDialog
+          photos={collectTargets}
+          folder={folder}
+          collections={collections}
+          onClose={() => setCollectTargets(null)}
+          // Unlike a tag edit, filing photos takes them off this grid — they
+          // live inside the card now — so there's nothing left to keep
+          // selected. (The retain effect above would prune them anyway once
+          // the reload lands; clearing says so immediately.)
+          onApplied={() => {
+            setCollectTargets(null);
+            clear();
+            void loadCollections();
+          }}
+        />
+      )}
     </>
   );
 });
@@ -595,9 +860,12 @@ const PhotoTile = memo(function PhotoTile({
   presenceState,
   selected,
   showCheck,
+  draggable,
   onClick,
   onDoubleClick,
   onContextMenu,
+  onDragStart,
+  onDragEnd,
 }: {
   photo: Photo;
   presenceState: PresenceState;
@@ -605,9 +873,14 @@ const PhotoTile = memo(function PhotoTile({
   /** Whether to show the corner check — only while several photos are
    * selected; a single selection is marked by the border alone. */
   showCheck: boolean;
+  /** Whether the tile can be picked up (there's a collection to drop it on). */
+  draggable: boolean;
   onClick: (e: MouseEvent, photo: Photo) => void;
   onDoubleClick: (photo: Photo) => void;
   onContextMenu: (e: MouseEvent, photo: Photo) => void;
+  /** Picks the tile up to drop on a collection card. */
+  onDragStart: (e: DragEvent, photo: Photo) => void;
+  onDragEnd: () => void;
 }) {
   return (
     <button
@@ -615,6 +888,12 @@ const PhotoTile = memo(function PhotoTile({
       // globals.css under [data-nav-id]:focus-visible.
       data-nav-id={photo.id}
       data-presence={presenceState}
+      // Tiles are dragged onto a collection card to file them. Only the
+      // gesture's start is a DOM event: the webview hands the rest to Tauri
+      // (see the drag tracker in the grid above).
+      draggable={draggable}
+      onDragStart={(e) => onDragStart(e, photo)}
+      onDragEnd={onDragEnd}
       onClick={(e) => onClick(e, photo)}
       onDoubleClick={() => onDoubleClick(photo)}
       onContextMenu={(e) => onContextMenu(e, photo)}

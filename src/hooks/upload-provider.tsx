@@ -24,6 +24,7 @@ import {
 import {
   UploadContext,
   type CompleteListener,
+  type DragTracker,
   type UploadFile,
 } from "@/hooks/use-upload";
 
@@ -379,12 +380,67 @@ export function UploadProvider({ children }: { children: ReactNode }) {
     };
   }, []);
 
+  // Whether the drag currently over the webview started inside the page —
+  // photo tiles being dragged onto a collection. The webview hands those to
+  // the native drag-drop handler as well (it can't tell them from a Finder
+  // drag), which would otherwise raise the "Drop images to upload" overlay for
+  // a drag carrying no files at all. Tracked from the DOM's own
+  // dragstart/dragend in the capture phase, so it's set before the native
+  // enter arrives and no component has to opt in.
+  const internalDrag = useRef(false);
+  const dragTracker = useRef<DragTracker | null>(null);
+  const registerDragTracker = useCallback((tracker: DragTracker) => {
+    dragTracker.current = tracker;
+    return () => {
+      if (dragTracker.current === tracker) dragTracker.current = null;
+    };
+  }, []);
+
+  useEffect(() => {
+    const start = () => {
+      internalDrag.current = true;
+      // A native enter may already have landed and lit the overlay.
+      setIsDragging(false);
+      setDropFolder(null);
+      setOverDropSink(false);
+    };
+    const end = () => {
+      internalDrag.current = false;
+      dragTracker.current?.onMove(null);
+    };
+    document.addEventListener("dragstart", start, true);
+    document.addEventListener("dragend", end, true);
+    return () => {
+      document.removeEventListener("dragstart", start, true);
+      document.removeEventListener("dragend", end, true);
+    };
+  }, []);
+
   // Native file drops. Tauri intercepts OS drags, so HTML5 drop events never
   // fire; this also means we get real filesystem paths and a cursor position
   // we can hit-test to pick the destination folder.
   useEffect(() => {
     const unlisten = getCurrentWebview().onDragDropEvent((event) => {
       const p = event.payload;
+      // Files on the pasteboard mean this is unmistakably a Finder drag, so it
+      // takes over even if the in-page flag is still set — that's the way back
+      // from a stale flag (an in-page drag whose dragend we never saw), which
+      // would otherwise swallow imports for the rest of the session.
+      const carriesFiles =
+        (p.type === "enter" || p.type === "drop") && p.paths.length > 0;
+      if (carriesFiles) internalDrag.current = false;
+
+      // An in-page drag goes to the tracker, not the importer.
+      if (internalDrag.current) {
+        const tracker = dragTracker.current;
+        if (p.type === "enter" || p.type === "over") tracker?.onMove(p.position);
+        else if (p.type === "leave") tracker?.onMove(null);
+        else if (p.type === "drop") {
+          internalDrag.current = false;
+          tracker?.onDrop(p.position);
+        }
+        return;
+      }
       const onSink = (position: { x: number; y: number }) =>
         !!dropSink.current && sinkAtPoint(position);
       if (p.type === "enter" || p.type === "over") {
@@ -452,6 +508,7 @@ export function UploadProvider({ children }: { children: ReactNode }) {
         pickImages,
         importPaths,
         registerDropSink,
+        registerDragTracker,
         onUploadComplete,
       }}
     >

@@ -55,6 +55,23 @@ struct FolderCoverRow {
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct CollectionRow {
+    id: String,
+    folder: String,
+    title: String,
+    created_at: String,
+    updated_at: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CollectionPhotoRow {
+    photo_id: String,
+    collection_id: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct Manifest {
     version: u32,
     exported_at: String,
@@ -65,6 +82,12 @@ struct Manifest {
     /// restores — it simply carries no picks.
     #[serde(default)]
     folder_covers: Vec<FolderCoverRow>,
+    /// Same story as the covers: older manifests know no collections, and a
+    /// catalog restored from one simply has none.
+    #[serde(default)]
+    collections: Vec<CollectionRow>,
+    #[serde(default)]
+    collection_photos: Vec<CollectionPhotoRow>,
 }
 
 /// Debounced manifest upload: consecutive mutations within the window
@@ -187,6 +210,38 @@ fn build(app: &AppHandle) -> Result<Manifest> {
         rows
     };
 
+    let collections = {
+        let mut stmt = conn.prepare(
+            "SELECT id, folder, title, created_at, updated_at FROM collections
+             ORDER BY folder, created_at",
+        )?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok(CollectionRow {
+                    id: row.get(0)?,
+                    folder: row.get(1)?,
+                    title: row.get(2)?,
+                    created_at: row.get(3)?,
+                    updated_at: row.get(4)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        rows
+    };
+
+    let collection_photos = {
+        let mut stmt = conn.prepare("SELECT photo_id, collection_id FROM collection_photos")?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok(CollectionPhotoRow {
+                    photo_id: row.get(0)?,
+                    collection_id: row.get(1)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        rows
+    };
+
     Ok(Manifest {
         version: 1,
         exported_at: db::now(),
@@ -194,6 +249,8 @@ fn build(app: &AppHandle) -> Result<Manifest> {
         tags,
         photo_tags,
         folder_covers,
+        collections,
+        collection_photos,
     })
 }
 
@@ -326,6 +383,8 @@ fn replace_catalog(
         tags: Vec::new(),
         photo_tags: Vec::new(),
         folder_covers: Vec::new(),
+        collections: Vec::new(),
+        collection_photos: Vec::new(),
     });
     let by_key: std::collections::HashMap<&str, &Photo> = manifest
         .photos
@@ -337,6 +396,8 @@ fn replace_catalog(
     let mut guard = db.0.lock().unwrap();
     let tx = guard.transaction()?;
 
+    tx.execute("DELETE FROM collection_photos", [])?;
+    tx.execute("DELETE FROM collections", [])?;
     tx.execute("DELETE FROM folder_covers", [])?;
     tx.execute("DELETE FROM photo_tags", [])?;
     tx.execute("DELETE FROM tags", [])?;
@@ -435,6 +496,35 @@ fn replace_catalog(
             "INSERT OR IGNORE INTO folder_covers (folder, photo_id, updated_at)
              VALUES (?1, ?2, ?3)",
             rusqlite::params![cover.folder, cover.photo_id, cover.updated_at],
+        )?;
+    }
+
+    for collection in &manifest.collections {
+        // Collections are restored whole, even ones whose photos all dropped
+        // out of the bucket: the title is the part that took thought, and an
+        // empty card is visible in the folder, so it can be renamed or
+        // dissolved rather than quietly disappearing.
+        tx.execute(
+            "INSERT OR IGNORE INTO collections (id, folder, title, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            rusqlite::params![
+                collection.id,
+                collection.folder,
+                collection.title,
+                collection.created_at,
+                collection.updated_at,
+            ],
+        )?;
+    }
+    for membership in &manifest.collection_photos {
+        // Same rule as tags and covers: only photos whose object is still in
+        // the bucket keep their membership.
+        if !kept_ids.contains(membership.photo_id.as_str()) {
+            continue;
+        }
+        tx.execute(
+            "INSERT OR IGNORE INTO collection_photos (photo_id, collection_id) VALUES (?1, ?2)",
+            rusqlite::params![membership.photo_id, membership.collection_id],
         )?;
     }
 

@@ -3,12 +3,13 @@ import { render, screen, cleanup, fireEvent, waitFor } from "@testing-library/re
 import { forwardRef, useEffect } from "react";
 import { MemoryRouter, Route, Routes, useNavigate } from "react-router-dom";
 import FolderPage from "@/routes/folder";
-import { listFolderFacets, renameFolder } from "@/lib/api";
+import { createCollection, listFolderFacets, renameFolder } from "@/lib/api";
 import { summarizeUploads } from "@/lib/upload-progress";
 import type { UploadFile } from "@/hooks/use-upload";
 
 vi.mock("@/lib/api", () => ({
   renameFolder: vi.fn(),
+  createCollection: vi.fn(),
   // The in-folder SearchField loads its folder-scoped autocomplete pool on
   // mount (the global-pool loaders are unused in folder mode).
   listFolderFacets: vi.fn(() =>
@@ -22,17 +23,24 @@ vi.mock("@/lib/api", () => ({
 }));
 
 // The real grid reports whether the folder has photos, which gates the search
-// field. Report "has photos" so the field renders in these tests.
+// field. Report "has photos" so the field renders in these tests, and expose a
+// way to fire the "card opened" callback the page turns into navigation.
 vi.mock("@/components/photo-grid", () => ({
   PhotoGrid: forwardRef(function PhotoGrid({
     onHasPhotosChange,
+    onOpenCollection,
   }: {
     onHasPhotosChange?: (has: boolean) => void;
+    onOpenCollection?: (collection: { id: string }) => void;
   }) {
     useEffect(() => {
       onHasPhotosChange?.(true);
     }, [onHasPhotosChange]);
-    return null;
+    return (
+      <button onClick={() => onOpenCollection?.({ id: "c1" })}>
+        open-collection
+      </button>
+    );
   }),
 }));
 
@@ -344,5 +352,53 @@ describe("FolderPage — rename", () => {
     expect(
       container.querySelector('[data-drop-folder="voyages"]')
     ).toBeInTheDocument();
+  });
+});
+
+describe("FolderPage — collections", () => {
+  it("opens a collection card on its own page", async () => {
+    render(
+      <MemoryRouter initialEntries={["/folders/trips"]}>
+        <Routes>
+          <Route path="/folders/:folder" element={<FolderPage />} />
+          <Route
+            path="/folders/:folder/collections/:id"
+            element={<div data-testid="collection-page" />}
+          />
+        </Routes>
+      </MemoryRouter>
+    );
+
+    fireEvent.click(screen.getByText("open-collection"));
+
+    expect(
+      await screen.findByTestId("collection-page")
+    ).toBeInTheDocument();
+  });
+
+  it("names a new, empty collection from the header", async () => {
+    vi.mocked(createCollection).mockResolvedValue({
+      id: "c1",
+      folder: "trips",
+      title: "Day one",
+      photoIds: [],
+      createdAt: "2026-01-01T00:00:00Z",
+      updatedAt: "2026-01-01T00:00:00Z",
+    });
+    renderPage("trips");
+
+    fireEvent.click(screen.getByRole("button", { name: "New collection" }));
+    fireEvent.change(screen.getByTestId("new-collection-input"), {
+      target: { value: "Day one" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Create" }));
+
+    // Empty by design — its card is what photos get dragged onto.
+    await waitFor(() =>
+      expect(createCollection).toHaveBeenCalledWith("trips", "Day one", [])
+    );
+    await waitFor(() =>
+      expect(screen.queryByTestId("new-collection-input")).toBeNull()
+    );
   });
 });

@@ -19,6 +19,24 @@ export type UploadFile = {
 /** Called with the target folder once an import batch settles. */
 export type CompleteListener = (folder: string) => void;
 
+/** A cursor position in CSS pixels, as the native drag events report it. */
+export type DragPosition = { x: number; y: number };
+
+/**
+ * Follows a drag that started *inside* the app (photo tiles being filed into a
+ * collection). Those can't be tracked with the DOM's own dragover/drop: wry
+ * hands every drag over the webview to Tauri and, having claimed it, never
+ * lets WebKit run its drop handling (see wry's wkwebview/drag_drop.rs). So the
+ * native events are the only ones that arrive, and the position has to be
+ * hit-tested against the DOM to find what's under the cursor.
+ */
+export type DragTracker = {
+  /** The cursor moved over the window; null when it left it. */
+  onMove: (position: DragPosition | null) => void;
+  /** Dropped at this position. */
+  onDrop: (position: DragPosition) => void;
+};
+
 export type UploadContextValue = {
   files: UploadFile[];
   /** True while a native file drag is anywhere over the window. */
@@ -51,6 +69,13 @@ export type UploadContextValue = {
    * active at a time (a modal); returns an unsubscribe.
    */
   registerDropSink: (fn: (paths: string[]) => void) => () => void;
+  /**
+   * Follow an in-app drag (see [`DragTracker`]) instead of raising the import
+   * overlay for it. Only one tracker is active at a time — the visible grid —
+   * and it only hears about drags that began inside the page; returns an
+   * unsubscribe.
+   */
+  registerDragTracker: (tracker: DragTracker) => () => void;
   /** Subscribe to import-batch completion; returns an unsubscribe fn. */
   onUploadComplete: (fn: CompleteListener) => () => void;
 };

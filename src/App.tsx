@@ -10,6 +10,7 @@ import { UpdatePrompt } from "@/components/update-prompt";
 import { getSettings } from "@/lib/api";
 import HomePage from "@/routes/home";
 import FolderPage from "@/routes/folder";
+import CollectionPage from "@/routes/collection";
 import SearchPage from "@/routes/search";
 import SettingsPage from "@/routes/settings";
 import TagsPage from "@/routes/tags";
@@ -44,6 +45,10 @@ export default function App() {
           <Routes>
             <Route path="/" element={<HomePage />} />
             <Route path="/folders/:folder" element={<FolderPage />} />
+            <Route
+              path="/folders/:folder/collections/:id"
+              element={<CollectionPage />}
+            />
             <Route path="/tags" element={<TagsPage />} />
             <Route path="/search" element={<SearchPage />} />
             <Route path="/settings" element={<SettingsPage />} />

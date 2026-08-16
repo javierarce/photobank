@@ -79,6 +79,24 @@ pub struct FolderCount {
     pub last_added_at: Option<String>,
 }
 
+/// A titled group of photos inside one folder. Membership is exclusive — a
+/// photo belongs to at most one collection, which the `collection_photos`
+/// primary key enforces — so the folder grid can show a collection as a card,
+/// the way a file manager shows a sub-folder.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Collection {
+    pub id: String,
+    pub folder: String,
+    pub title: String,
+    /// The photos in it, newest first. Only photos still in `folder` can be
+    /// members (a move out drops the membership), so this is always a subset
+    /// of what `list_photos` returns for the folder.
+    pub photo_ids: Vec<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
 /// Distinct EXIF values for search autocomplete. Tags and folders already have
 /// their own list commands; these are the camera/lens facets. Only reflects
 /// photos whose metadata has been loaded (see the lazy-metadata note).
@@ -218,6 +236,33 @@ PRAGMA user_version = 4;
 COMMIT;
 ";
 
+/// Collections: a title over a group of photos within one folder. The folder
+/// is stored by name for the same reason folder_covers is (folders aren't
+/// rows), so a folder rename carries its collections along.
+///
+/// `collection_photos` is keyed by photo id alone, which is what makes
+/// membership exclusive: adding a photo to a collection replaces whatever it
+/// was in. Deleting the collection leaves its photos in the folder, ungrouped.
+const SCHEMA_V5: &str = "
+BEGIN;
+CREATE TABLE collections (
+    id TEXT PRIMARY KEY,
+    folder TEXT NOT NULL,
+    title TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE UNIQUE INDEX collections_folder_title_idx
+    ON collections (folder, title COLLATE NOCASE);
+CREATE TABLE collection_photos (
+    photo_id TEXT PRIMARY KEY REFERENCES photos (id) ON DELETE CASCADE,
+    collection_id TEXT NOT NULL REFERENCES collections (id) ON DELETE CASCADE
+);
+CREATE INDEX collection_photos_collection_idx ON collection_photos (collection_id);
+PRAGMA user_version = 5;
+COMMIT;
+";
+
 /// meta key: the bucket identity this catalog was built from.
 pub const META_CATALOG_BUCKET: &str = "catalog_bucket";
 
@@ -348,6 +393,9 @@ fn migrate(conn: &Connection) -> Result<()> {
     }
     if version < 4 {
         conn.execute_batch(SCHEMA_V4)?;
+    }
+    if version < 5 {
+        conn.execute_batch(SCHEMA_V5)?;
     }
     Ok(())
 }
@@ -480,8 +528,113 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 4);
+        assert_eq!(version, 5);
         assert_eq!(get_meta(&conn, "anything").unwrap(), None);
+    }
+
+    fn insert_collection(conn: &Connection, id: &str, folder: &str, title: &str) {
+        conn.execute(
+            "INSERT INTO collections (id, folder, title, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?4)",
+            params![id, folder, title, now()],
+        )
+        .unwrap();
+    }
+
+    fn collection_of(conn: &Connection, photo_id: &str) -> Option<String> {
+        conn.query_row(
+            "SELECT collection_id FROM collection_photos WHERE photo_id = ?1",
+            [photo_id],
+            |r| r.get(0),
+        )
+        .ok()
+    }
+
+    #[test]
+    fn a_photo_belongs_to_at_most_one_collection() {
+        let conn = open_in_memory();
+        insert_photo(&conn, "p1", "trips", "photo.jpg");
+        insert_collection(&conn, "c1", "trips", "Day one");
+        insert_collection(&conn, "c2", "trips", "Day two");
+        conn.execute(
+            "INSERT INTO collection_photos (photo_id, collection_id) VALUES ('p1', 'c1')",
+            [],
+        )
+        .unwrap();
+
+        // The photo_id primary key is what makes membership exclusive: moving
+        // the photo into another collection replaces the row rather than
+        // adding a second one.
+        conn.execute(
+            "INSERT INTO collection_photos (photo_id, collection_id) VALUES ('p1', 'c2')
+             ON CONFLICT (photo_id) DO UPDATE SET collection_id = excluded.collection_id",
+            [],
+        )
+        .unwrap();
+        assert_eq!(collection_of(&conn, "p1").as_deref(), Some("c2"));
+        let rows: i64 = conn
+            .query_row("SELECT COUNT(*) FROM collection_photos", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(rows, 1);
+    }
+
+    #[test]
+    fn two_collections_in_a_folder_cannot_share_a_title() {
+        let conn = open_in_memory();
+        insert_collection(&conn, "c1", "trips", "Day one");
+        // Same title in another folder is fine...
+        insert_collection(&conn, "c2", "inbox", "Day one");
+        // ...but not twice in the same one, whatever the casing.
+        let dup = conn.execute(
+            "INSERT INTO collections (id, folder, title, created_at, updated_at)
+             VALUES ('c3', 'trips', 'DAY ONE', '2026-01-01', '2026-01-01')",
+            [],
+        );
+        assert!(dup.is_err());
+    }
+
+    #[test]
+    fn deleting_a_collection_leaves_its_photos_in_the_folder() {
+        let conn = open_in_memory();
+        insert_photo(&conn, "p1", "trips", "photo.jpg");
+        insert_collection(&conn, "c1", "trips", "Day one");
+        conn.execute(
+            "INSERT INTO collection_photos (photo_id, collection_id) VALUES ('p1', 'c1')",
+            [],
+        )
+        .unwrap();
+
+        conn.execute("DELETE FROM collections WHERE id = 'c1'", []).unwrap();
+
+        assert_eq!(collection_of(&conn, "p1"), None);
+        let photos: i64 = conn
+            .query_row("SELECT COUNT(*) FROM photos", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(photos, 1);
+    }
+
+    #[test]
+    fn deleting_a_photo_drops_its_collection_membership() {
+        let conn = open_in_memory();
+        insert_photo(&conn, "p1", "trips", "photo.jpg");
+        insert_collection(&conn, "c1", "trips", "Day one");
+        conn.execute(
+            "INSERT INTO collection_photos (photo_id, collection_id) VALUES ('p1', 'c1')",
+            [],
+        )
+        .unwrap();
+
+        conn.execute("DELETE FROM photos WHERE id = 'p1'", []).unwrap();
+
+        let rows: i64 = conn
+            .query_row("SELECT COUNT(*) FROM collection_photos", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(rows, 0);
+        // The collection itself survives an emptied membership.
+        let collections: i64 = conn
+            .query_row("SELECT COUNT(*) FROM collections", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(collections, 1);
     }
 
     #[test]
