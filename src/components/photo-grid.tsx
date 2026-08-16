@@ -785,6 +785,9 @@ export const PhotoGrid = forwardRef<PhotoGridRef, Props>(function PhotoGrid(
           photos={menu.photos}
           x={menu.x}
           y={menu.y}
+          // Right-clicking is the third way into the same dialog, beside the
+          // toolbar's Collect and the C shortcut.
+          onCollect={setCollectTargets}
           onClose={closeMenu}
         />
       )}

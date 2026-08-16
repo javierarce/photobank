@@ -96,8 +96,19 @@ vi.mock("@/components/bulk-tag-dialog", () => ({
 // The right-click menu's own behaviour is covered in photo-context-menu.test;
 // here it only needs to report what the grid handed it.
 vi.mock("@/components/photo-context-menu", () => ({
-  PhotoContextMenu: ({ photos }: { photos: Photo[] }) => (
-    <div data-testid="context-menu">{photos.map((p) => p.id).join(",")}</div>
+  PhotoContextMenu: ({
+    photos,
+    onCollect,
+  }: {
+    photos: Photo[];
+    onCollect?: (photos: Photo[]) => void;
+  }) => (
+    <div data-testid="context-menu">
+      {photos.map((p) => p.id).join(",")}
+      {onCollect && (
+        <button onClick={() => onCollect(photos)}>menu-collect</button>
+      )}
+    </div>
   ),
 }));
 
@@ -1419,6 +1430,16 @@ describe("PhotoGrid", () => {
         expect(screen.queryByTestId("collection-card")).toBeNull();
         expect(tile("a")).toHaveAttribute("draggable", "false");
       });
+    });
+
+    it("opens the collection dialog from the right-click menu", async () => {
+      await renderFolder();
+
+      fireEvent.contextMenu(tile("b"));
+      fireEvent.click(screen.getByText("menu-collect"));
+
+      // The third way into the same dialog, beside Collect and the C key.
+      expect(await screen.findByText(/Add to collection/)).toBeInTheDocument();
     });
 
     it("opens the collection dialog for the selection with c", async () => {
