@@ -1,21 +1,28 @@
 import { useEffect, useRef, useState } from "react";
+import { Link } from "react-router-dom";
 import { deleteCollection, renameCollection } from "@/lib/api";
 import type { Collection } from "@/lib/types";
 
 /**
- * The collection page's title: the folder it lives in, then its own name,
- * which turns into an inline rename on click (the same interaction as the
- * folder title and the lightbox's filename). The ⋯ menu holds Rename and
- * Ungroup — that's what keeps Ungroup out of harm's way, one deliberate trip
- * through a menu that says what it will do rather than a button sitting next
- * to the photos.
+ * The collection page's title, read as one breadcrumb line — the folder it
+ * lives in, a slash, then its own name, which turns into an inline rename on
+ * click (the same interaction as the folder title and the lightbox's
+ * filename). The folder half is the way back, so there's no separate back
+ * link above it. The ⋯ menu holds Rename and Ungroup — that's what keeps
+ * Ungroup out of harm's way, one deliberate trip through a menu that says
+ * what it will do rather than a button sitting next to the photos.
  */
 export function CollectionHeader({
   collection,
+  folder,
+  folderHref,
   onRenamed,
   onUngrouped,
 }: {
   collection: Collection;
+  /** The folder that holds it — the first half of the breadcrumb. */
+  folder: string;
+  folderHref: string;
   /** The collection after a successful rename. */
   onRenamed: (collection: Collection) => void;
   /** Dissolved — the caller decides where to go (back to the folder). */
@@ -77,35 +84,48 @@ export function CollectionHeader({
 
   return (
     <div className="flex min-w-0 items-center gap-2">
-      {editing ? (
-        <input
-          ref={inputRef}
-          value={value}
-          onChange={(e) => setValue(e.target.value)}
-          onKeyDown={(e) => {
-            e.stopPropagation();
-            if (e.key === "Enter") e.currentTarget.blur();
-            else if (e.key === "Escape") {
-              setValue(collection.title);
-              setEditing(false);
-            }
-          }}
-          onBlur={commit}
-          aria-label="Collection title"
-          className="min-w-0 flex-1 rounded border border-border bg-transparent px-1 py-0.5 text-xl font-semibold text-foreground outline-none focus:border-foreground/30"
-          data-testid="collection-title-input"
-        />
-      ) : (
-        <button
-          type="button"
-          onClick={() => setEditing(true)}
-          title="Rename collection"
-          className="min-w-0 truncate rounded text-left text-xl font-semibold text-foreground transition-colors hover:text-foreground/70"
-          data-testid="collection-title"
+      <div className="flex min-w-0 items-baseline gap-1.5">
+        <Link
+          to={folderHref}
+          title={`Back to ${folder}`}
+          className="min-w-0 max-w-[40%] shrink-0 truncate text-xl text-foreground/40 transition-colors hover:text-foreground"
+          data-testid="collection-back"
         >
-          {collection.title}
-        </button>
-      )}
+          {folder}
+        </Link>
+        <span aria-hidden className="shrink-0 text-xl text-foreground/25">
+          /
+        </span>
+        {editing ? (
+          <input
+            ref={inputRef}
+            value={value}
+            onChange={(e) => setValue(e.target.value)}
+            onKeyDown={(e) => {
+              e.stopPropagation();
+              if (e.key === "Enter") e.currentTarget.blur();
+              else if (e.key === "Escape") {
+                setValue(collection.title);
+                setEditing(false);
+              }
+            }}
+            onBlur={commit}
+            aria-label="Collection title"
+            className="min-w-0 flex-1 rounded border border-border bg-transparent px-1 py-0.5 text-xl font-semibold text-foreground outline-none focus:border-foreground/30"
+            data-testid="collection-title-input"
+          />
+        ) : (
+          <button
+            type="button"
+            onClick={() => setEditing(true)}
+            title="Rename collection"
+            className="min-w-0 truncate rounded text-left text-xl font-semibold text-foreground transition-colors hover:text-foreground/70"
+            data-testid="collection-title"
+          >
+            {collection.title}
+          </button>
+        )}
+      </div>
       <CollectionMenu
         title={collection.title}
         busy={busy}

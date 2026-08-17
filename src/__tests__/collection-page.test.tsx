@@ -90,6 +90,29 @@ describe("CollectionPage", () => {
     expect(screen.getByTestId("collection-back")).toHaveTextContent("vacation");
   });
 
+  it("reads as one breadcrumb line: folder / collection", async () => {
+    renderPage();
+
+    const title = await screen.findByTestId("collection-title");
+    const back = screen.getByTestId("collection-back");
+    // One line, not a back link stacked above the title: they share a parent,
+    // with the slash between them and no arrow.
+    expect(back.parentElement).toBe(title.parentElement);
+    // (the visual spacing around the slash is flex gap, not whitespace)
+    expect(back.parentElement).toHaveTextContent("vacation/Day one");
+    expect(back).toHaveTextContent(/^vacation$/);
+    expect(back).toHaveAttribute("href", "/folders/vacation");
+  });
+
+  it("keeps the folder half of the breadcrumb while renaming", async () => {
+    renderPage();
+
+    fireEvent.click(await screen.findByTestId("collection-title"));
+
+    expect(screen.getByTestId("collection-title-input")).toBeInTheDocument();
+    expect(screen.getByTestId("collection-back")).toHaveTextContent("vacation");
+  });
+
   it("renames from the title", async () => {
     renderPage();
     vi.mocked(renameCollection).mockResolvedValue({

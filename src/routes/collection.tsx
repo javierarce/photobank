@@ -67,15 +67,7 @@ export default function CollectionPage() {
   return (
     <div className="relative min-h-screen font-sans" onClick={handleBackgroundClick}>
       <main className="mx-auto max-w-[1600px] px-6 py-8">
-        <Link
-          to={folderHref}
-          className="inline-flex items-center gap-1 text-sm text-foreground/50 transition-colors hover:text-foreground"
-          data-testid="collection-back"
-        >
-          ← {folder}
-        </Link>
-
-        <div className="mt-1 flex min-h-[34px] items-center justify-between gap-4">
+        <div className="flex min-h-[34px] items-center justify-between gap-4">
           {selected.length > 1 ? (
             <SelectionToolbar />
           ) : (
@@ -83,6 +75,8 @@ export default function CollectionPage() {
               {collection ? (
                 <CollectionHeader
                   collection={collection}
+                  folder={folder}
+                  folderHref={folderHref}
                   onRenamed={setCollection}
                   // The collection is gone; there's nothing left to show here.
                   onUngrouped={() => navigate(folderHref, { replace: true })}
