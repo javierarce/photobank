@@ -1397,6 +1397,11 @@ pub async fn export_photos(
     crate::photos::export_photos(app, photo_ids, resolution).await
 }
 
+#[tauri::command]
+pub async fn copy_photo_to_clipboard(app: tauri::AppHandle, photo_id: String) -> Result<()> {
+    crate::photos::copy_photo_to_clipboard(app, photo_id).await
+}
+
 #[cfg(test)]
 mod tests {
     use super::{

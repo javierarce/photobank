@@ -113,6 +113,7 @@ fn main() {
             commands::cancel_import,
             commands::set_upload_badge,
             commands::export_photos,
+            commands::copy_photo_to_clipboard,
             settings::get_settings,
             settings::save_settings,
             settings::test_connection,

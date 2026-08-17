@@ -7,7 +7,7 @@ import {
 } from "react";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { message } from "@tauri-apps/plugin-dialog";
-import { exportPhotos } from "@/lib/api";
+import { copyPhotoToClipboard, exportPhotos } from "@/lib/api";
 import { splitDisplayName } from "@/lib/keys";
 import { DEFAULT_EXPORT_RESOLUTION } from "@/components/export-button";
 import type { Photo } from "@/lib/types";
@@ -30,9 +30,10 @@ type Props = {
 };
 
 /**
- * The right-click menu on a thumbnail. Copying the name is the one thing the
- * rest of the app can't do — everything here otherwise mirrors an action the
- * lightbox or the selection toolbar already offers, so the menu stays short.
+ * The right-click menu on a thumbnail. Copying the name and copying the image
+ * are the two things the rest of the app can't do — everything else here
+ * mirrors an action the lightbox or the selection toolbar already offers, so
+ * the menu stays short.
  */
 export function PhotoContextMenu({ photos, x, y, onCollect, onClose }: Props) {
   const ref = useRef<HTMLDivElement>(null);
@@ -94,6 +95,22 @@ export function PhotoContextMenu({ photos, x, y, onCollect, onClose }: Props) {
     }
   };
 
+  // The pixels themselves, for pasting into another app. Single photo only —
+  // the system clipboard holds one image, so a selection has nothing sensible
+  // to put there.
+  const handleCopyImage = async () => {
+    onClose();
+    try {
+      await copyPhotoToClipboard(photos[0].id);
+    } catch (err) {
+      // Tauri commands reject with a plain message string (see src/lib/api.ts)
+      await message(typeof err === "string" ? err : "Failed to copy the image", {
+        title: "Copy failed",
+        kind: "error",
+      });
+    }
+  };
+
   // Same version a plain click of the Download split button exports; the
   // lightbox and the selection toolbar are where you go to pick another.
   const handleDownload = async () => {
@@ -132,6 +149,7 @@ export function PhotoContextMenu({ photos, x, y, onCollect, onClose }: Props) {
       <MenuItem onClick={handleCopyFilename}>
         {count === 1 ? "Copy filename" : `Copy ${count} filenames`}
       </MenuItem>
+      {count === 1 && <MenuItem onClick={handleCopyImage}>Copy image</MenuItem>}
       <MenuItem onClick={handleDownload}>
         {count === 1 ? "Download" : `Download ${count} photos`}
       </MenuItem>

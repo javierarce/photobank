@@ -1,13 +1,14 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { render, screen, cleanup, fireEvent, waitFor } from "@testing-library/react";
 import { PhotoContextMenu } from "@/components/photo-context-menu";
-import { exportPhotos } from "@/lib/api";
+import { copyPhotoToClipboard, exportPhotos } from "@/lib/api";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { message } from "@tauri-apps/plugin-dialog";
 import { makePhoto } from "./fixtures";
 
 vi.mock("@/lib/api", () => ({
   exportPhotos: vi.fn().mockResolvedValue(null),
+  copyPhotoToClipboard: vi.fn().mockResolvedValue(undefined),
 }));
 
 vi.mock("@tauri-apps/plugin-clipboard-manager", () => ({
@@ -58,6 +59,38 @@ describe("PhotoContextMenu", () => {
     fireEvent.click(screen.getByRole("menuitem", { name: "Copy 2 filenames" }));
 
     await waitFor(() => expect(writeText).toHaveBeenCalledWith("one\ntwo"));
+  });
+
+  it("copies the clicked photo's pixels to the clipboard", async () => {
+    open([makePhoto({ id: "abc" })]);
+
+    fireEvent.click(screen.getByRole("menuitem", { name: "Copy image" }));
+
+    await waitFor(() => expect(copyPhotoToClipboard).toHaveBeenCalledWith("abc"));
+  });
+
+  it("leaves Copy image out for a selection", () => {
+    // The system clipboard holds one image, so several photos have nothing
+    // sensible to put there.
+    open([makePhoto({ id: "1" }), makePhoto({ id: "2" })]);
+
+    expect(screen.queryByRole("menuitem", { name: "Copy image" })).toBeNull();
+  });
+
+  it("reports a failed image copy instead of failing silently", async () => {
+    vi.mocked(copyPhotoToClipboard).mockRejectedValueOnce(
+      "Could not read this photo's images — refresh the library and try again"
+    );
+    open();
+
+    fireEvent.click(screen.getByRole("menuitem", { name: "Copy image" }));
+
+    await waitFor(() =>
+      expect(message).toHaveBeenCalledWith(
+        "Could not read this photo's images — refresh the library and try again",
+        expect.objectContaining({ kind: "error" })
+      )
+    );
   });
 
   it("downloads the default version of the clicked photo", async () => {

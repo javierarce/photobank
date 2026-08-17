@@ -256,6 +256,12 @@ export function exportPhotos(
   return invoke("export_photos", { photoIds, resolution });
 }
 
+/** Put a photo on the system clipboard as an image, ready to paste elsewhere.
+ * Uses the largest stored variant, not the original (see photos.rs). */
+export function copyPhotoToClipboard(photoId: string): Promise<void> {
+  return invoke("copy_photo_to_clipboard", { photoId });
+}
+
 export type S3Settings = {
   endpoint: string | null;
   region: string;
