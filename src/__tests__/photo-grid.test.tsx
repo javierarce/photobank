@@ -700,6 +700,10 @@ describe("PhotoGrid", () => {
       mockListPhotos.mockResolvedValueOnce(navPhotos);
       const view = render(<PhotoGrid folder="vacation" sortMode="name-asc" />);
       await screen.findByAltText("a.jpg");
+      // Same reason as the folder list's nav helper: the cursor hook mirrors
+      // the tiles into a ref in a passive effect, and a key that lands before
+      // that effect has run is dropped rather than queued.
+      await act(async () => {});
       return view;
     }
 
