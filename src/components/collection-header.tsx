@@ -3,12 +3,12 @@ import { deleteCollection, renameCollection } from "@/lib/api";
 import type { Collection } from "@/lib/types";
 
 /**
- * The collection page's title: the folder it lives in, then its own name,
- * which turns into an inline rename on click (the same interaction as the
- * folder title and the lightbox's filename). The ⋯ menu holds Rename and
- * Ungroup — that's what keeps Ungroup out of harm's way, one deliberate trip
- * through a menu that says what it will do rather than a button sitting next
- * to the photos.
+ * The second half of the collection page's breadcrumb (the page renders the
+ * folder and the slash to its left): the collection's own name, which turns
+ * into an inline rename on click — the same interaction as the folder title
+ * and the lightbox's filename. The ⋯ menu holds Rename and Ungroup — that's
+ * what keeps Ungroup out of harm's way, one deliberate trip through a menu
+ * that says what it will do rather than a button sitting next to the photos.
  */
 export function CollectionHeader({
   collection,

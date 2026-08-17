@@ -10,8 +10,9 @@ import {
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import CollectionPage from "@/routes/collection";
 import { SelectionProvider } from "@/hooks/selection-provider";
+import { useSelection } from "@/hooks/use-selection";
 import { deleteCollection, listCollections, renameCollection } from "@/lib/api";
-import { makeCollection } from "./fixtures";
+import { makeCollection, makePhoto } from "./fixtures";
 
 vi.mock("@/lib/api", () => ({
   listCollections: vi.fn(),
@@ -52,10 +53,26 @@ const collection = makeCollection({
   photoIds: ["a", "b"],
 });
 
+/** Selects two photos from inside the provider, the way the grid would. */
+function SelectionDriver() {
+  const { toggle } = useSelection();
+  return (
+    <button
+      type="button"
+      data-testid="select-two"
+      onClick={() => {
+        toggle(makePhoto({ id: "a" }));
+        toggle(makePhoto({ id: "b" }));
+      }}
+    />
+  );
+}
+
 /** Render the page at its route, tracking where it navigates to. */
 function renderPage() {
   return render(
     <SelectionProvider>
+      <SelectionDriver />
       <MemoryRouter initialEntries={["/folders/vacation/collections/c1"]}>
         <Routes>
           <Route
@@ -87,6 +104,47 @@ describe("CollectionPage", () => {
       "Day one"
     );
     expect(screen.getByTestId("grid")).toHaveTextContent("vacation/c1");
+    expect(screen.getByTestId("collection-back")).toHaveTextContent("vacation");
+  });
+
+  it("reads as one breadcrumb line: folder / collection", async () => {
+    renderPage();
+
+    const title = await screen.findByTestId("collection-title");
+    const back = screen.getByTestId("collection-back");
+    // One line, not a back link stacked above the title: both sit in the same
+    // header row, joined by a slash and with no arrow. (The visual spacing
+    // around the slash is flex gap, not whitespace.)
+    const row = back.parentElement!;
+    expect(row).toContainElement(title);
+    expect(row).toHaveTextContent("vacation/Day one");
+    expect(back).toHaveTextContent(/^vacation$/);
+    expect(back).toHaveAttribute("href", "/folders/vacation");
+  });
+
+  it("keeps the way back while several photos are selected", async () => {
+    renderPage();
+    await screen.findByTestId("collection-title");
+
+    fireEvent.click(screen.getByTestId("select-two"));
+
+    // The selection toolbar takes over the rest of the row, so the folder
+    // crumb has to outlive it: it's the only way back to the folder (the
+    // header's Folders link goes to the root).
+    expect(screen.getByText("2 selected")).toBeInTheDocument();
+    expect(screen.queryByTestId("collection-title")).toBeNull();
+    expect(screen.getByTestId("collection-back")).toHaveAttribute(
+      "href",
+      "/folders/vacation"
+    );
+  });
+
+  it("keeps the folder half of the breadcrumb while renaming", async () => {
+    renderPage();
+
+    fireEvent.click(await screen.findByTestId("collection-title"));
+
+    expect(screen.getByTestId("collection-title-input")).toBeInTheDocument();
     expect(screen.getByTestId("collection-back")).toHaveTextContent("vacation");
   });
 
