@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { ask } from "@tauri-apps/plugin-dialog";
 import { deleteTag, listTagCounts, renameTag } from "@/lib/api";
@@ -137,7 +137,10 @@ export function TagList() {
       {visible.length === 0 ? (
         <p className="text-sm text-foreground/60">No tags match “{filter.trim()}”.</p>
       ) : (
-        <ul className="fade-in divide-y divide-border overflow-hidden rounded-lg border border-border">
+        // No overflow-hidden on the list: it would clip a row menu hanging
+        // past the last rows, and the rows have no background to bleed over
+        // the rounded corners anyway.
+        <ul className="fade-in divide-y divide-border rounded-lg border border-border">
           {visible.map((tag) => (
             <li key={tag.id}>
               {editingId === tag.id ? (
@@ -265,8 +268,28 @@ function TagRowMenu({
   onDelete: () => void;
 }) {
   const [open, setOpen] = useState(false);
+  // Rows near the bottom of the window open the menu upwards instead.
+  const [up, setUp] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
   useDismiss(open, () => setOpen(false), ref);
+
+  // Measure the menu itself once it's up rather than assuming a height, so
+  // this keeps working if the menu grows an item. Only ever down -> up, once
+  // per open, so the two placements can't ping-pong; a layout effect lands the
+  // flip before the browser paints. (Same approach as PhotoContextMenu.)
+  useLayoutEffect(() => {
+    // Closing resets the placement, so the next open measures from scratch
+    // (the row may have scrolled somewhere else in the window by then).
+    if (!open) {
+      setUp(false);
+      return;
+    }
+    if (!menuRef.current) return;
+    if (menuRef.current.getBoundingClientRect().bottom > window.innerHeight) {
+      setUp(true);
+    }
+  }, [open]);
 
   return (
     <div ref={ref} className="relative shrink-0">
@@ -286,8 +309,11 @@ function TagRowMenu({
       </button>
       {open && (
         <div
+          ref={menuRef}
           role="menu"
-          className="absolute right-0 top-full z-10 mt-1 min-w-36 overflow-hidden rounded-md border border-border bg-background shadow-lg"
+          className={`absolute right-0 z-10 min-w-36 overflow-hidden rounded-md border border-border bg-background shadow-lg ${
+            up ? "bottom-full mb-1" : "top-full mt-1"
+          }`}
         >
           <button
             type="button"
