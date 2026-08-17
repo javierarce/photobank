@@ -7,11 +7,15 @@ use std::path::PathBuf;
 
 use percent_encoding::{utf8_percent_encode, AsciiSet, NON_ALPHANUMERIC};
 use tauri::{AppHandle, Manager};
+use tauri_plugin_clipboard_manager::ClipboardExt;
 use tauri_plugin_dialog::DialogExt;
 
 use crate::db::{self, Db, Photo, PHOTO_COLUMNS};
 use crate::error::{friendly_s3_error, Error, Result};
-use crate::keys::{base_key, sanitize_filename, sanitize_folder, variant_base, variant_suffixes};
+use crate::keys::{
+    base_key, sanitize_filename, sanitize_folder, variant_base, variant_key, variant_suffixes,
+    VARIANT_FORMATS, VARIANT_WIDTHS,
+};
 use crate::protocol;
 use crate::settings::{S3Ctx, S3State};
 
@@ -692,6 +696,68 @@ pub async fn export_photos(
     Ok(Some(dir.display().to_string()))
 }
 
+/// The stored versions to try when putting a photo on the clipboard, in order:
+/// the widest variant, webp before jpg. Both decode to the same pixels, but
+/// the webp is the one the lightbox loads (photo-lightbox.tsx), so it's often
+/// already in the local cache and copies without a round trip; the jpg covers
+/// a set that's missing it.
+fn clipboard_variant_keys(s3_key: &str) -> Vec<String> {
+    let width = VARIANT_WIDTHS.into_iter().max().unwrap_or(2880);
+    let mut formats = VARIANT_FORMATS;
+    formats.reverse();
+    formats
+        .into_iter()
+        .map(|format| variant_key(s3_key, width, format))
+        .collect()
+}
+
+/// Decode an encoded image to the raw RGBA buffer the clipboard wants, with
+/// its dimensions. CPU-bound; call from spawn_blocking.
+fn decode_rgba(bytes: &[u8]) -> Result<(Vec<u8>, u32, u32)> {
+    let decoded = image::load_from_memory(bytes)
+        .map_err(|e| Error::msg(format!("could not read the image: {e}")))?
+        .into_rgba8();
+    let (width, height) = decoded.dimensions();
+    Ok((decoded.into_raw(), width, height))
+}
+
+/// Put a photo on the system clipboard as pixels, ready to paste into another
+/// app. Deliberately the largest *variant* rather than the original: the
+/// clipboard holds a decoded RGBA buffer (4 bytes a pixel), so an original's
+/// extra pixels cost memory in every paste target for a size nobody asked
+/// for — and 2880 is already what the lightbox shows and what Download
+/// exports by default.
+pub async fn copy_photo_to_clipboard(app: AppHandle, photo_id: String) -> Result<()> {
+    let photo = get_photo(&app, &photo_id)?;
+
+    // Fall through to the next format on a failed fetch *or* a failed decode,
+    // so a truncated cache entry or an unreadable object isn't the end of it.
+    let mut image = None;
+    for key in clipboard_variant_keys(&photo.s3_key) {
+        let Ok(bytes) = fetch_bytes(&app, &key).await else {
+            continue;
+        };
+        // Decoding a full-size variant is CPU-bound; keep it off the async
+        // runtime's worker threads like the import pipeline does.
+        let decoded = tauri::async_runtime::spawn_blocking(move || decode_rgba(&bytes))
+            .await
+            .map_err(|e| Error::msg(e.to_string()))?;
+        if let Ok(decoded) = decoded {
+            image = Some(decoded);
+            break;
+        }
+    }
+    let Some((rgba, width, height)) = image else {
+        return Err(Error::msg(
+            "Could not read this photo's images — refresh the library and try again",
+        ));
+    };
+
+    app.clipboard()
+        .write_image(&tauri::image::Image::new(&rgba, width, height))
+        .map_err(|e| Error::msg(format!("could not copy the image: {e}")))
+}
+
 /// Cache-first object read, warming the cache on a miss (same policy as the
 /// photo:// protocol). Also used by the refresh backfill to pull originals.
 pub(crate) async fn fetch_bytes(app: &AppHandle, key: &str) -> Result<Vec<u8>> {
@@ -710,11 +776,60 @@ pub(crate) async fn fetch_bytes(app: &AppHandle, key: &str) -> Result<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::{
-        commit_folder_rename, encode_key, keys_referenced_under, plan_folder_rename,
-        validate_folder_rename,
+        clipboard_variant_keys, commit_folder_rename, decode_rgba, encode_key,
+        keys_referenced_under, plan_folder_rename, validate_folder_rename,
     };
     use crate::db;
     use rusqlite::{params, Connection};
+
+    #[test]
+    fn the_clipboard_takes_the_widest_variant_never_the_original() {
+        // webp first: the lightbox loads that one, so it's the copy most
+        // likely to be served straight from the local cache.
+        assert_eq!(
+            clipboard_variant_keys("trips/photo.jpg"),
+            vec!["trips/photo_2880.webp", "trips/photo_2880.jpg"]
+        );
+        // Legacy originals live at "<base>_original.<ext>" with their variants
+        // under the bare base — copying must reach those, not "…_original_2880".
+        assert_eq!(
+            clipboard_variant_keys("trips/2025-07-01-Berlin_original.jpg")[0],
+            "trips/2025-07-01-Berlin_2880.webp"
+        );
+    }
+
+    /// The clipboard reaches for the webp variant first, so the decoder has to
+    /// handle what the pipeline's libwebp encoder writes — not just jpeg.
+    #[test]
+    fn decode_rgba_reads_the_webp_the_pipeline_writes() {
+        let source = {
+            let img = image::RgbImage::from_fn(100, 50, |x, y| {
+                image::Rgb([(x % 256) as u8, (y % 256) as u8, 128])
+            });
+            let mut out = Vec::new();
+            let encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, 90);
+            image::ImageEncoder::write_image(
+                encoder,
+                img.as_raw(),
+                100,
+                50,
+                image::ExtendedColorType::Rgb8,
+            )
+            .unwrap();
+            out
+        };
+        let processed = crate::pipeline::process(&source, "inbox/copy.jpg").unwrap();
+        let webp = processed
+            .variants
+            .iter()
+            .find(|v| v.key == "inbox/copy_2880.webp")
+            .expect("pipeline writes a widest-width webp");
+
+        // Small sources are never enlarged, so the 2880 variant is 100px here.
+        let (rgba, width, height) = decode_rgba(&webp.bytes).unwrap();
+        assert_eq!((width, height), (100, 50));
+        assert_eq!(rgba.len(), (100 * 50 * 4) as usize);
+    }
 
     #[test]
     fn encode_key_matches_encode_uri_component() {
