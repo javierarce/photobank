@@ -67,39 +67,66 @@ export default function CollectionPage() {
   return (
     <div className="relative min-h-screen font-sans" onClick={handleBackgroundClick}>
       <main className="mx-auto max-w-[1600px] px-6 py-8">
-        <div className="flex min-h-[34px] items-center justify-between gap-4">
-          {selected.length > 1 ? (
-            <SelectionToolbar />
-          ) : (
-            <>
-              {collection ? (
-                <CollectionHeader
-                  collection={collection}
-                  folder={folder}
-                  folderHref={folderHref}
-                  onRenamed={setCollection}
-                  // The collection is gone; there's nothing left to show here.
-                  onUngrouped={() => navigate(folderHref, { replace: true })}
-                />
-              ) : (
-                <h1 className="truncate text-xl font-semibold text-foreground">
-                  {state === "loading" ? "" : "Collection not found"}
-                </h1>
-              )}
-              {selected.length === 1 ? (
-                <SelectionActionBar />
-              ) : (
-                <div className="flex shrink-0 items-center gap-2">
-                  <SortDropdown
-                    value={sortMode}
-                    options={SORT_OPTIONS}
-                    onChange={handleSortChange}
-                    label="Sort photos"
-                  />
+        {/* One breadcrumb line: the folder, a slash, then the collection. The
+            folder half is the only way back to it (the header's Folders link
+            goes to the root), so it sits outside the branch below — with
+            several photos selected the toolbar takes over the rest of the
+            row, and before, a back link on its own line survived that. */}
+        <div className="flex min-h-[34px] items-center gap-1.5">
+          <Link
+            to={folderHref}
+            title={`Back to ${folder}`}
+            className="max-w-[40%] shrink-0 truncate text-xl text-foreground/40 transition-colors hover:text-foreground"
+            data-testid="collection-back"
+          >
+            {folder}
+          </Link>
+
+          <div className="flex min-w-0 flex-1 items-center justify-between gap-4">
+            {selected.length > 1 ? (
+              <SelectionToolbar />
+            ) : (
+              <>
+                <div className="flex min-w-0 items-center gap-1.5">
+                  {/* Nothing to join it to until the collection has loaded. */}
+                  {state !== "loading" && (
+                    <span
+                      aria-hidden
+                      className="shrink-0 text-xl text-foreground/25"
+                    >
+                      /
+                    </span>
+                  )}
+                  {collection ? (
+                    <CollectionHeader
+                      collection={collection}
+                      onRenamed={setCollection}
+                      // The collection is gone; there's nothing left to show.
+                      onUngrouped={() => navigate(folderHref, { replace: true })}
+                    />
+                  ) : (
+                    state === "missing" && (
+                      <h1 className="truncate text-xl font-semibold text-foreground">
+                        Collection not found
+                      </h1>
+                    )
+                  )}
                 </div>
-              )}
-            </>
-          )}
+                {selected.length === 1 ? (
+                  <SelectionActionBar />
+                ) : (
+                  <div className="flex shrink-0 items-center gap-2">
+                    <SortDropdown
+                      value={sortMode}
+                      options={SORT_OPTIONS}
+                      onChange={handleSortChange}
+                      label="Sort photos"
+                    />
+                  </div>
+                )}
+              </>
+            )}
+          </div>
         </div>
 
         {collection && collection.photoIds.length > 0 && (
