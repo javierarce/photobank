@@ -37,7 +37,11 @@ beforeEach(() => {
   mockDeleteTag.mockResolvedValue(undefined);
 });
 
-afterEach(() => cleanup());
+afterEach(() => {
+  cleanup();
+  // The placement tests spy on HTMLElement.prototype; don't leak that.
+  vi.restoreAllMocks();
+});
 
 function renderList() {
   render(
@@ -158,6 +162,56 @@ describe("TagList", () => {
     await waitFor(() => expect(mockAsk).toHaveBeenCalled());
     expect(mockDeleteTag).not.toHaveBeenCalled();
     expect(screen.getByText("beach")).toBeInTheDocument();
+  });
+
+  // jsdom does no layout, so clipping/placement can only be checked through
+  // the classes that produce it.
+  it("does not clip a row menu that hangs past the list", async () => {
+    renderList();
+    await screen.findByText("beach");
+    expect(screen.getByRole("list").className).not.toContain("overflow-hidden");
+  });
+
+  it("opens a row menu downwards when there is room below", async () => {
+    renderList();
+    await screen.findByText("beach");
+
+    openRowMenu("beach");
+    expect(screen.getByRole("menu").className).toContain("top-full");
+  });
+
+  it("opens a row menu upwards when it would hang below the window", async () => {
+    renderList();
+    await screen.findByText("sunset");
+    // The placement comes from measuring the menu, so a menu of any height
+    // that lands past the bottom edge flips.
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue({
+      bottom: window.innerHeight + 20,
+    } as DOMRect);
+
+    openRowMenu("sunset");
+
+    const menu = screen.getByRole("menu");
+    expect(menu.className).toContain("bottom-full");
+    expect(menu.className).not.toContain("top-full");
+  });
+
+  it("measures again the next time a row menu is opened", async () => {
+    renderList();
+    await screen.findByText("sunset");
+    const rect = vi
+      .spyOn(HTMLElement.prototype, "getBoundingClientRect")
+      .mockReturnValue({ bottom: window.innerHeight + 20 } as DOMRect);
+
+    openRowMenu("sunset");
+    expect(screen.getByRole("menu").className).toContain("bottom-full");
+    openRowMenu("sunset");
+
+    // Scrolled up out of the danger zone: the menu opens downwards again
+    // rather than staying flipped from last time.
+    rect.mockReturnValue({ bottom: 100 } as DOMRect);
+    openRowMenu("sunset");
+    expect(screen.getByRole("menu").className).toContain("top-full");
   });
 
   it("shows an empty state when there are no tags", async () => {
