@@ -14,7 +14,7 @@ import {
   UpdateContext,
   type UpdateContextValue,
 } from "@/lib/update-context";
-import { listFolders, listTagCounts } from "@/lib/api";
+import { listAllCollections, listFolders, listTagCounts } from "@/lib/api";
 import { checkForUpdate } from "@/lib/updater";
 
 vi.mock("react-router-dom", async (importOriginal) => {
@@ -22,7 +22,11 @@ vi.mock("react-router-dom", async (importOriginal) => {
   return { ...actual, useNavigate: () => vi.fn() };
 });
 
-vi.mock("@/lib/api", () => ({ listFolders: vi.fn(), listTagCounts: vi.fn() }));
+vi.mock("@/lib/api", () => ({
+  listFolders: vi.fn(),
+  listAllCollections: vi.fn(),
+  listTagCounts: vi.fn(),
+}));
 
 // In the desktop app the palette gains a "Check for updates" action.
 vi.mock("@/lib/updater", () => ({
@@ -71,6 +75,7 @@ beforeEach(() => {
   localStorage.clear();
   document.documentElement.classList.remove("dark");
   vi.mocked(listFolders).mockResolvedValue([]);
+  vi.mocked(listAllCollections).mockResolvedValue([]);
   vi.mocked(listTagCounts).mockResolvedValue([]);
 });
 
@@ -88,7 +93,7 @@ describe("CommandPalette updates action", () => {
   it("filters to it by keyword", () => {
     renderPalette();
     pressCmdK();
-    fireEvent.change(screen.getByPlaceholderText(/search folders or actions/i), {
+    fireEvent.change(screen.getByPlaceholderText(/search folders, collections or actions/i), {
       target: { value: "upgrade" },
     });
     expect(screen.getByText("Check for updates")).toBeInTheDocument();

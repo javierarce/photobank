@@ -7,8 +7,8 @@ use tauri::State;
 use uuid::Uuid;
 
 use crate::db::{
-    self, Collection, Db, FolderCount, FolderFacets, Photo, SearchFacets, Tag, TagCount,
-    PHOTO_COLUMNS,
+    self, Collection, CollectionCount, Db, FolderCount, FolderFacets, Photo, SearchFacets, Tag,
+    TagCount, PHOTO_COLUMNS,
 };
 use crate::error::{Error, Result};
 
@@ -1119,11 +1119,57 @@ fn assign_photos(conn: &Connection, collection_id: &str, photo_ids: &[String]) -
     Ok(())
 }
 
+/// Every collection in the catalog with its photo count, title order first —
+/// the command palette's rows. Membership counts only photos still in the
+/// collection's folder, matching `collection_photo_ids`, so a count never
+/// promises photos the collection wouldn't show.
+///
+/// Only collections in folders that still hold photos. Folders exist as the
+/// distinct `folder` values on photos (see `folder_counts`), and nothing
+/// deletes a collection when the last photo leaves its folder — so emptying a
+/// folder strands its collections on a name no longer anywhere in the app.
+/// Listing those would put permanent ghosts in the palette leading to a page
+/// with no way back. A collection with no photos of its own still lists, as
+/// long as its folder is alive: that one you can still fill.
+fn all_collection_counts(conn: &Connection) -> Result<Vec<CollectionCount>> {
+    let mut stmt = conn.prepare(
+        "SELECT collections.id, collections.folder, collections.title, COUNT(photos.id)
+         FROM collections
+         LEFT JOIN collection_photos
+           ON collection_photos.collection_id = collections.id
+         LEFT JOIN photos
+           ON photos.id = collection_photos.photo_id
+          AND photos.folder = collections.folder
+         WHERE EXISTS (SELECT 1 FROM photos WHERE photos.folder = collections.folder)
+         GROUP BY collections.id
+         ORDER BY collections.title COLLATE NOCASE, collections.folder",
+    )?;
+    let collections = stmt
+        .query_map([], |row| {
+            Ok(CollectionCount {
+                id: row.get(0)?,
+                folder: row.get(1)?,
+                title: row.get(2)?,
+                count: row.get(3)?,
+            })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(collections)
+}
+
 /// A folder's collections with their photos — the grid's cards.
 #[tauri::command]
 pub fn list_collections(db: State<Db>, folder: String) -> Result<Vec<Collection>> {
     let conn = db.0.lock().unwrap();
     collections_in_folder(&conn, &folder)
+}
+
+/// Every collection, whatever folder it's in — what the command palette
+/// searches.
+#[tauri::command]
+pub fn list_all_collections(db: State<Db>) -> Result<Vec<CollectionCount>> {
+    let conn = db.0.lock().unwrap();
+    all_collection_counts(&conn)
 }
 
 /// Create a collection in `folder` holding `photo_ids` (which may be empty).
@@ -1405,7 +1451,8 @@ pub async fn copy_photo_to_clipboard(app: tauri::AppHandle, photo_id: String) ->
 #[cfg(test)]
 mod tests {
     use super::{
-        add_tags, assign_photos, badge_label, build_query, chosen_cover_id, collections_in_folder,
+        add_tags, all_collection_counts, assign_photos, badge_label, build_query, chosen_cover_id,
+        collections_in_folder,
         ensure_photos_in_folder, folder_counts, folder_cover, get_collection, like_pattern,
         unfile_photo,
         normalize_title, remove_tags, rename_tag_inner, set_cover, split_terms, tag_counts,
@@ -2078,6 +2125,61 @@ mod tests {
         assert!(collections[0].photo_ids.is_empty());
         // Another folder's collection stays out of it.
         assert_eq!(collections_in_folder(&conn, "beach").unwrap().len(), 1);
+    }
+
+    #[test]
+    fn every_collection_lists_by_title_with_a_live_photo_count() {
+        let conn = open_in_memory();
+        insert_cover_candidate(&conn, "a", "trips", "2026-01-01T00:00:00Z", true);
+        insert_cover_candidate(&conn, "b", "trips", "2026-02-01T00:00:00Z", true);
+        insert_cover_candidate(&conn, "c", "beach", "2026-01-01T00:00:00Z", true);
+        insert_collection(&conn, "c1", "trips", "Day one", "2026-01-01T00:00:00Z");
+        insert_collection(&conn, "c2", "beach", "Swims", "2026-02-01T00:00:00Z");
+        insert_collection(&conn, "c3", "trips", "Empty", "2026-03-01T00:00:00Z");
+        assign_photos(&conn, "c1", &["a".into(), "b".into()]).unwrap();
+        assign_photos(&conn, "c2", &["c".into()]).unwrap();
+
+        let all = all_collection_counts(&conn).unwrap();
+        let rows: Vec<_> = all
+            .iter()
+            .map(|c| (c.title.as_str(), c.folder.as_str(), c.count))
+            .collect();
+        // Every folder's collections together, in title order, empties included.
+        assert_eq!(
+            rows,
+            vec![
+                ("Day one", "trips", 2),
+                ("Empty", "trips", 0),
+                ("Swims", "beach", 1),
+            ]
+        );
+
+        // A membership that outlived a move doesn't inflate the count, just as
+        // it doesn't show up inside the collection.
+        conn.execute(
+            "UPDATE photos SET folder = 'beach', s3_key = 'beach/b.jpg' WHERE id = 'b'",
+            [],
+        )
+        .unwrap();
+        let all = all_collection_counts(&conn).unwrap();
+        assert_eq!(all[0].count, 1);
+    }
+
+    #[test]
+    fn a_collection_whose_folder_emptied_out_is_not_listed() {
+        let conn = open_in_memory();
+        insert_cover_candidate(&conn, "a", "trips", "2026-01-01T00:00:00Z", true);
+        insert_collection(&conn, "c1", "trips", "Day one", "2026-01-01T00:00:00Z");
+        assign_photos(&conn, "c1", &["a".into()]).unwrap();
+
+        // Emptying the folder — moving its last photo out, deleting it — leaves
+        // the collection behind pointing at a folder that no longer exists (no
+        // photos, so `folder_counts` doesn't list it either).
+        conn.execute("DELETE FROM photos WHERE id = 'a'", []).unwrap();
+
+        assert!(all_collection_counts(&conn).unwrap().is_empty());
+        // The folder listing agrees the folder is gone.
+        assert!(folder_counts(&conn).unwrap().is_empty());
     }
 
     #[test]

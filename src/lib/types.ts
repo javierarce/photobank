@@ -50,6 +50,17 @@ export type Collection = {
   updatedAt: string;
 };
 
+/** A collection anywhere in the catalog, plus how many photos are in it —
+ * enough to list and open one without its photo ids (mirrors Rust
+ * `CollectionCount`). `folder` disambiguates the title, which is only unique
+ * within a folder, and is half of the collection's route. */
+export type CollectionCount = {
+  id: string;
+  folder: string;
+  title: string;
+  count: number;
+};
+
 /** A tag plus how many photos carry it — drives the Tags management page. */
 export type TagCount = {
   id: string;

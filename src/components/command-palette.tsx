@@ -1,16 +1,17 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
-import { listFolders, listTagCounts } from "@/lib/api";
+import { listAllCollections, listFolders, listTagCounts } from "@/lib/api";
 import { tagQuery } from "@/lib/search-query";
 import { useTheme } from "@/lib/theme-context";
 import { useUpdate } from "@/lib/update-context";
 import { checkForUpdate, isTauri } from "@/lib/updater";
 import { UpdateIcon } from "@/components/update-icon";
-import type { FolderCount, TagCount } from "@/lib/types";
+import type { CollectionCount, FolderCount, TagCount } from "@/lib/types";
 
 // A lightweight command palette, in the spirit of ankitron's. Cmd/Ctrl+K opens
-// it; type to filter actions and folders, arrow/Tab to move, Enter to go, Esc
-// to close. Photobank has no icon dependency, so rows use small inline SVGs.
+// it; type to filter actions, folders, collections and tags, arrow/Tab to move,
+// Enter to go, Esc to close. Photobank has no icon dependency, so rows use
+// small inline SVGs.
 
 type IconProps = { className?: string };
 type IconComponent = (props: IconProps) => React.ReactElement;
@@ -75,6 +76,24 @@ const FolderIcon: IconComponent = ({ className }) => (
     aria-hidden
   >
     <path d="M1.5 4a1 1 0 0 1 1-1h3l1.5 1.5h6a1 1 0 0 1 1 1V12a1 1 0 0 1-1 1h-11a1 1 0 0 1-1-1V4Z" />
+  </svg>
+);
+
+// A stack of cards — a collection reads as several photos held together,
+// which is what tells it apart from a folder in the list.
+const CollectionIcon: IconComponent = ({ className }) => (
+  <svg
+    viewBox="0 0 16 16"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth={1.5}
+    strokeLinecap="round"
+    strokeLinejoin="round"
+    className={className}
+    aria-hidden
+  >
+    <rect x="2" y="5.5" width="9" height="8" rx="1" />
+    <path d="M5 3.5h7a1 1 0 0 1 1 1v7" />
   </svg>
 );
 
@@ -183,11 +202,34 @@ type ActionDef = {
 type Item =
   | { kind: "action"; id: ActionId; label: string; icon: IconComponent; hint: string }
   | { kind: "folder"; label: string; folder: string; count: number }
+  | {
+      kind: "collection";
+      label: string;
+      id: string;
+      folder: string;
+      count: number;
+    }
   | { kind: "tag"; label: string; tag: string; count: number };
 
 /** Lowercase + strip diacritics so "cafe" matches "Café". */
 function foldText(s: string) {
   return s.normalize("NFD").replace(/\p{Diacritic}/gu, "").toLowerCase();
+}
+
+/** The icon standing for each kind of destination row. */
+function rowIcon(kind: "folder" | "collection" | "tag"): IconComponent {
+  if (kind === "folder") return FolderIcon;
+  if (kind === "collection") return CollectionIcon;
+  return TagIcon;
+}
+
+/** A key that stays stable across re-filters — kind-prefixed so a folder and a
+ * tag of the same name can't collide. */
+function rowKey(item: Item) {
+  if (item.kind === "action") return `action:${item.id}`;
+  if (item.kind === "folder") return `folder:${item.folder}`;
+  if (item.kind === "collection") return `collection:${item.id}`;
+  return `tag:${item.tag}`;
 }
 
 export function CommandPalette() {
@@ -197,6 +239,7 @@ export function CommandPalette() {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [folders, setFolders] = useState<FolderCount[]>([]);
+  const [collections, setCollections] = useState<CollectionCount[]>([]);
   const [tags, setTags] = useState<TagCount[]>([]);
   const [selected, setSelected] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -223,8 +266,8 @@ export function CommandPalette() {
     return () => window.removeEventListener("keydown", handleKey);
   }, [open, close]);
 
-  // Refresh folders and tags each time the palette opens so newly-created ones
-  // show up without reloading the app.
+  // Refresh folders, collections and tags each time the palette opens so
+  // newly-created ones show up without reloading the app.
   useEffect(() => {
     if (!open) return;
     let cancelled = false;
@@ -234,6 +277,13 @@ export function CommandPalette() {
       })
       .catch(() => {
         if (!cancelled) setFolders([]);
+      });
+    listAllCollections()
+      .then((c) => {
+        if (!cancelled) setCollections(c);
+      })
+      .catch(() => {
+        if (!cancelled) setCollections([]);
       });
     listTagCounts()
       .then((t) => {
@@ -332,6 +382,12 @@ export function CommandPalette() {
     ? folders.filter((f) => foldText(f.folder).includes(q))
     : folders;
 
+  // Matched on title alone: the folder is shown beside it for context, but
+  // typing a folder name should turn up that folder, not everything in it.
+  const filteredCollections = q
+    ? collections.filter((c) => foldText(c.title).includes(q))
+    : collections;
+
   const filteredTags = q
     ? tags.filter((t) => foldText(t.name).includes(q))
     : tags;
@@ -349,6 +405,13 @@ export function CommandPalette() {
       label: f.folder,
       folder: f.folder,
       count: f.count,
+    })),
+    ...filteredCollections.map((c) => ({
+      kind: "collection" as const,
+      label: c.title,
+      id: c.id,
+      folder: c.folder,
+      count: c.count,
     })),
     ...filteredTags.map((t) => ({
       kind: "tag" as const,
@@ -400,6 +463,10 @@ export function CommandPalette() {
     }
     if (item.kind === "tag") {
       navigate(`/search?q=${encodeURIComponent(tagQuery(item.tag))}`);
+    } else if (item.kind === "collection") {
+      navigate(
+        `/folders/${encodeURIComponent(item.folder)}/collections/${encodeURIComponent(item.id)}`
+      );
     } else {
       navigate(`/folders/${encodeURIComponent(item.folder)}`);
     }
@@ -452,7 +519,7 @@ export function CommandPalette() {
               setSelected(0);
             }}
             onKeyDown={onKeyDown}
-            placeholder="Search folders or actions…"
+            placeholder="Search folders, collections or actions…"
             className="w-full bg-transparent py-3 text-sm text-foreground placeholder:text-foreground/40 focus:outline-none"
           />
         </div>
@@ -465,20 +532,10 @@ export function CommandPalette() {
             items.map((item, i) => {
               const isSelected = i === selected;
               const RowIcon =
-                item.kind === "action"
-                  ? item.icon
-                  : item.kind === "folder"
-                    ? FolderIcon
-                    : TagIcon;
+                item.kind === "action" ? item.icon : rowIcon(item.kind);
               return (
                 <button
-                  key={
-                    item.kind === "action"
-                      ? `action:${item.id}`
-                      : item.kind === "folder"
-                        ? `folder:${item.folder}`
-                        : `tag:${item.tag}`
-                  }
+                  key={rowKey(item)}
                   type="button"
                   // Keep focus on the input so arrow keys always drive the
                   // `selected` highlight instead of stranding focus on a row.
@@ -499,9 +556,16 @@ export function CommandPalette() {
                     ) : (
                       <MatchedText name={item.label} query={q} />
                     )}
+                    {/* Collection titles are only unique within a folder, so
+                        the folder rides along to tell two of a name apart. */}
+                    {item.kind === "collection" && (
+                      <span className="shrink-0 text-xs text-foreground/40">
+                        in {item.folder}
+                      </span>
+                    )}
                   </span>
                   <span className="flex shrink-0 items-center gap-3 pl-3">
-                    {(item.kind === "folder" || item.kind === "tag") && (
+                    {item.kind !== "action" && (
                       <span className="text-xs tabular-nums text-foreground/40">
                         {item.count}
                       </span>

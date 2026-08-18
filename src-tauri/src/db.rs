@@ -97,6 +97,22 @@ pub struct Collection {
     pub updated_at: String,
 }
 
+/// A collection across the whole catalog: enough to list and open one without
+/// carrying its photo ids. The command palette lists every collection at once,
+/// where the ids would be dead weight — `folder` is what makes the title
+/// unambiguous (titles are only unique within a folder) and what the route
+/// needs.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CollectionCount {
+    pub id: String,
+    pub folder: String,
+    pub title: String,
+    /// How many photos are in it, counting only members still in its folder —
+    /// the same rule the collection's own listing follows.
+    pub count: i64,
+}
+
 /// Distinct EXIF values for search autocomplete. Tags and folders already have
 /// their own list commands; these are the camera/lens facets. Only reflects
 /// photos whose metadata has been loaded (see the lazy-metadata note).

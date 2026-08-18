@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
   Collection,
+  CollectionCount,
   FolderCount,
   FolderFacets,
   Photo,
@@ -67,6 +68,13 @@ export function searchPhotoIds(q: string, folder: string): Promise<string[]> {
  * the folder's own photos. */
 export function listCollections(folder: string): Promise<Collection[]> {
   return invoke("list_collections", { folder });
+}
+
+/** Every collection in the catalog with its photo count, in title order — what
+ * the command palette searches. Carries no photo ids: the palette only needs
+ * to name a collection and open it. */
+export function listAllCollections(): Promise<CollectionCount[]> {
+  return invoke("list_all_collections");
 }
 
 /** Create a collection in `folder` holding `photoIds`. Rejects when the folder

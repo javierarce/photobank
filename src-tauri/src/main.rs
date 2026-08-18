@@ -95,6 +95,7 @@ fn main() {
             commands::add_tags_to_photos,
             commands::remove_tags_from_photos,
             commands::list_collections,
+            commands::list_all_collections,
             commands::create_collection,
             commands::rename_collection,
             commands::delete_collection,

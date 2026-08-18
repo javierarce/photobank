@@ -9,7 +9,7 @@ import {
 import { MemoryRouter } from "react-router-dom";
 import { CommandPalette } from "@/components/command-palette";
 import { ThemeProvider } from "@/lib/theme";
-import { listFolders, listTagCounts } from "@/lib/api";
+import { listAllCollections, listFolders, listTagCounts } from "@/lib/api";
 import { makeFolder } from "@/__tests__/fixtures";
 
 const mockNavigate = vi.fn();
@@ -21,10 +21,12 @@ vi.mock("react-router-dom", async (importOriginal) => {
 
 vi.mock("@/lib/api", () => ({
   listFolders: vi.fn(),
+  listAllCollections: vi.fn(),
   listTagCounts: vi.fn(),
 }));
 
 const mockListFolders = vi.mocked(listFolders);
+const mockListCollections = vi.mocked(listAllCollections);
 const mockListTagCounts = vi.mocked(listTagCounts);
 
 beforeEach(() => {
@@ -34,6 +36,10 @@ beforeEach(() => {
   mockListFolders.mockResolvedValue([
     makeFolder({ folder: "vacation", count: 12 }),
     makeFolder({ folder: "barcelona", count: 1 }),
+  ]);
+  mockListCollections.mockResolvedValue([
+    { id: "c1", folder: "vacation", title: "Day one", count: 4 },
+    { id: "c2", folder: "barcelona", title: "Sagrada", count: 2 },
   ]);
   mockListTagCounts.mockResolvedValue([
     { id: "t1", name: "portrait", count: 5 },
@@ -61,14 +67,14 @@ function pressCmdK() {
 }
 
 function getInput() {
-  return screen.getByPlaceholderText(/search folders or actions/i);
+  return screen.getByPlaceholderText(/search folders, collections or actions/i);
 }
 
 describe("CommandPalette", () => {
   it("is closed until Cmd+K is pressed", async () => {
     renderPalette();
     expect(
-      screen.queryByPlaceholderText(/search folders or actions/i)
+      screen.queryByPlaceholderText(/search folders, collections or actions/i)
     ).not.toBeInTheDocument();
 
     pressCmdK();
@@ -118,6 +124,50 @@ describe("CommandPalette", () => {
 
     // Goes to the search page with a typed tag query the user can refine.
     expect(mockNavigate).toHaveBeenCalledWith("/search?q=tag%3Aportrait");
+  });
+
+  it("lists collections with the folder they're in", async () => {
+    renderPalette();
+    pressCmdK();
+
+    await waitFor(() => expect(screen.getByText("Day one")).toBeInTheDocument());
+    expect(screen.getByText("Sagrada")).toBeInTheDocument();
+    // Titles are only unique per folder, so each row says where it lives.
+    expect(screen.getByText("in vacation")).toBeInTheDocument();
+    expect(screen.getByText("in barcelona")).toBeInTheDocument();
+  });
+
+  it("filters collections by title and opens one on Enter", async () => {
+    renderPalette();
+    pressCmdK();
+    await waitFor(() => expect(screen.getByText("Day one")).toBeInTheDocument());
+
+    // A partial match splits the title around the highlight, so the row is
+    // identified by the folder label riding beside it.
+    fireEvent.change(getInput(), { target: { value: "sagr" } });
+    expect(screen.getByText("in barcelona")).toBeInTheDocument();
+    expect(screen.queryByText("in vacation")).not.toBeInTheDocument();
+
+    // Step past the always-on Search action to the collection.
+    fireEvent.keyDown(getInput(), { key: "ArrowDown" });
+    fireEvent.keyDown(getInput(), { key: "Enter" });
+
+    expect(mockNavigate).toHaveBeenCalledWith(
+      "/folders/barcelona/collections/c2"
+    );
+  });
+
+  it("keeps a folder query on the folder, not its collections", async () => {
+    renderPalette();
+    pressCmdK();
+    await waitFor(() => expect(screen.getByText("Day one")).toBeInTheDocument());
+
+    // "vacation" is the folder holding "Day one"; typing it shouldn't drag
+    // the collection along — the folder row is what the user asked for.
+    fireEvent.change(getInput(), { target: { value: "vacation" } });
+
+    expect(screen.getByText("vacation")).toBeInTheDocument();
+    expect(screen.queryByText("Day one")).not.toBeInTheDocument();
   });
 
   it("navigates to a folder on Enter", async () => {
@@ -174,7 +224,7 @@ describe("CommandPalette", () => {
     // Close with the shortcut (the path that used to skip the reset)...
     pressCmdK();
     expect(
-      screen.queryByPlaceholderText(/search folders or actions/i)
+      screen.queryByPlaceholderText(/search folders, collections or actions/i)
     ).not.toBeInTheDocument();
 
     // ...and reopening shows a fresh, empty palette.
@@ -239,7 +289,7 @@ describe("CommandPalette", () => {
     fireEvent.keyDown(getInput(), { key: "Escape" });
 
     expect(
-      screen.queryByPlaceholderText(/search folders or actions/i)
+      screen.queryByPlaceholderText(/search folders, collections or actions/i)
     ).not.toBeInTheDocument();
     expect(documentEscape).not.toHaveBeenCalled();
   });
