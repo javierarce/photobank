@@ -23,6 +23,7 @@ import {
   searchPhotoIds,
   updatePhoto,
 } from "@/lib/api";
+import { resetOrientations } from "@/lib/orientation";
 import type { Photo } from "@/lib/types";
 import type { UploadFile } from "@/hooks/use-upload";
 import { makeCollection, makePhoto } from "./fixtures";
@@ -161,6 +162,9 @@ beforeEach(() => {
   // Most tests are about the tiles, not the cards: a folder with no
   // collections is the default, and the collection tests below override it.
   vi.mocked(listCollections).mockResolvedValue([]);
+  // Orientation measurements outlive a render by design (that's the point of
+  // remembering them), so each test starts from an unmeasured library.
+  resetOrientations();
 });
 
 afterEach(() => {
@@ -1121,6 +1125,288 @@ describe("PhotoGrid", () => {
       expect(screen.getByText("Processing…")).toBeInTheDocument();
     });
     expect(screen.queryByText("Cancel")).not.toBeInTheDocument();
+  });
+
+  describe("orientation filter", () => {
+    const wide = makePhoto({
+      id: "w",
+      filename: "wide.jpg",
+      s3Key: "vacation/wide.jpg",
+      folder: "vacation",
+      width: 1920,
+      height: 1080,
+    });
+    const tall = makePhoto({
+      id: "t",
+      filename: "tall.jpg",
+      s3Key: "vacation/tall.jpg",
+      folder: "vacation",
+      width: 1080,
+      height: 1920,
+    });
+    // The common case in a synced library: catalogued from the bucket listing,
+    // so the row carries no dimensions at all.
+    const unmeasured = makePhoto({
+      id: "u",
+      filename: "unmeasured.jpg",
+      s3Key: "vacation/unmeasured.jpg",
+      folder: "vacation",
+      width: null,
+      height: null,
+    });
+
+    /** Report a probe's picture as having loaded at these dimensions — jsdom
+     * fetches nothing, so the natural size has to be planted by hand. */
+    function loadAt(img: Element, width: number, height: number) {
+      Object.defineProperty(img, "naturalWidth", { value: width });
+      Object.defineProperty(img, "naturalHeight", { value: height });
+      fireEvent.load(img);
+    }
+
+    it("shows every photo by default", async () => {
+      mockListPhotos.mockResolvedValueOnce([wide, tall]);
+
+      render(<PhotoGrid folder="vacation" />);
+
+      expect(await screen.findByAltText("wide.jpg")).toBeInTheDocument();
+      expect(screen.getByAltText("tall.jpg")).toBeInTheDocument();
+    });
+
+    it("holds back the photos turned the other way", async () => {
+      mockListPhotos.mockResolvedValueOnce([wide, tall]);
+
+      render(<PhotoGrid folder="vacation" orientation="portrait" />);
+
+      expect(await screen.findByAltText("tall.jpg")).toBeInTheDocument();
+      expect(screen.queryByAltText("wide.jpg")).toBeNull();
+    });
+
+    it("says the filter came up empty rather than that the folder is", async () => {
+      mockListPhotos.mockResolvedValueOnce([wide]);
+
+      render(<PhotoGrid folder="vacation" orientation="portrait" />);
+
+      expect(
+        await screen.findByText("No portrait photos here.")
+      ).toBeInTheDocument();
+      expect(screen.queryByText("No photos in this folder.")).toBeNull();
+    });
+
+    it("measures a photo whose row has no dimensions, then lets it in", async () => {
+      mockListPhotos.mockResolvedValueOnce([unmeasured]);
+
+      render(<PhotoGrid folder="vacation" orientation="portrait" />);
+
+      // Nothing is known about it yet, so it's off the grid and being probed.
+      const probe = await screen.findByTestId("orientation-probe");
+      expect(srcPath(probe)).toBe("photo://localhost/vacation/unmeasured_640.webp");
+      expect(screen.getByText("Checking 1 unmeasured photo…")).toBeInTheDocument();
+      expect(screen.queryByAltText("unmeasured.jpg")).toBeNull();
+
+      act(() => loadAt(probe, 800, 1200));
+
+      expect(await screen.findByAltText("unmeasured.jpg")).toBeInTheDocument();
+      expect(screen.queryByTestId("orientation-probe")).toBeNull();
+    });
+
+    it("keeps a measured photo out when it's turned the wrong way", async () => {
+      mockListPhotos.mockResolvedValueOnce([unmeasured]);
+
+      render(<PhotoGrid folder="vacation" orientation="portrait" />);
+
+      const probe = await screen.findByTestId("orientation-probe");
+      act(() => loadAt(probe, 1200, 800));
+
+      await waitFor(() =>
+        expect(screen.queryByTestId("orientation-probe")).toBeNull()
+      );
+      expect(screen.queryByAltText("unmeasured.jpg")).toBeNull();
+      expect(screen.getByText("No portrait photos here.")).toBeInTheDocument();
+    });
+
+    it("probes the original when the thumbnail variant is missing", async () => {
+      mockListPhotos.mockResolvedValueOnce([unmeasured]);
+
+      render(<PhotoGrid folder="vacation" orientation="portrait" />);
+
+      const probe = await screen.findByTestId("orientation-probe");
+      fireEvent.error(probe);
+
+      expect(srcPath(screen.getByTestId("orientation-probe"))).toBe(
+        "photo://localhost/vacation/unmeasured.jpg"
+      );
+    });
+
+    it("gives up on a photo whose variant and original are both gone", async () => {
+      mockListPhotos.mockResolvedValueOnce([unmeasured]);
+
+      render(<PhotoGrid folder="vacation" orientation="portrait" />);
+
+      const probe = await screen.findByTestId("orientation-probe");
+      fireEvent.error(probe); // the variant
+      fireEvent.error(screen.getByTestId("orientation-probe")); // the original
+
+      // Off the queue rather than retried forever, so the note stops claiming
+      // there's still something to find.
+      await waitFor(() =>
+        expect(screen.queryByTestId("orientation-probe")).toBeNull()
+      );
+      expect(screen.queryByText(/Checking/)).toBeNull();
+    });
+
+    it("probes a batch at a time instead of the whole folder at once", async () => {
+      mockListPhotos.mockResolvedValueOnce(
+        Array.from({ length: 20 }, (_, i) =>
+          makePhoto({
+            id: `p${i}`,
+            filename: `p${i}.jpg`,
+            s3Key: `vacation/p${i}.jpg`,
+            folder: "vacation",
+            width: null,
+            height: null,
+          })
+        )
+      );
+
+      render(<PhotoGrid folder="vacation" orientation="landscape" />);
+
+      await waitFor(() =>
+        expect(screen.getAllByTestId("orientation-probe")).toHaveLength(12)
+      );
+      expect(screen.getByText("Checking 20 unmeasured photos…")).toBeInTheDocument();
+    });
+
+    it("leaves the collection cards standing — a card isn't a photo", async () => {
+      vi.mocked(listCollections).mockResolvedValue([
+        makeCollection({ id: "c1", folder: "vacation", photoIds: ["w"] }),
+      ]);
+      mockListPhotos.mockResolvedValueOnce([wide, tall]);
+
+      render(<PhotoGrid folder="vacation" orientation="portrait" />);
+
+      expect(await screen.findByAltText("tall.jpg")).toBeInTheDocument();
+      expect(screen.getByText("Day one")).toBeInTheDocument();
+    });
+
+    it("leaves photos with no derivatives out of the queue", async () => {
+      // Synced into the bucket from outside, variants not generated yet.
+      // Probing one 404s on the variant and then drags the full-size original
+      // down instead — for the whole folder at once, on a single click.
+      mockListPhotos.mockResolvedValueOnce([
+        { ...unmeasured, variantsOk: false },
+      ]);
+
+      render(<PhotoGrid folder="vacation" orientation="portrait" />);
+
+      await waitFor(() =>
+        expect(
+          screen.getByText(/1 photo can’t be measured/)
+        ).toBeInTheDocument()
+      );
+      expect(screen.queryByTestId("orientation-probe")).toBeNull();
+      expect(screen.queryByText(/Checking/)).toBeNull();
+    });
+
+    it("counts a photo it gave up on as one the refresh would fix", async () => {
+      mockListPhotos.mockResolvedValueOnce([unmeasured]);
+
+      render(<PhotoGrid folder="vacation" orientation="portrait" />);
+
+      const probe = await screen.findByTestId("orientation-probe");
+      fireEvent.error(probe); // the variant
+      fireEvent.error(screen.getByTestId("orientation-probe")); // the original
+
+      expect(
+        await screen.findByText(
+          "1 photo can’t be measured — a library refresh regenerates missing thumbnails."
+        )
+      ).toBeInTheDocument();
+    });
+
+    it("accounts for a failed photo instead of letting it vanish", async () => {
+      // Nothing to measure and nothing to probe — the one case that could
+      // slip through both notes.
+      mockListPhotos.mockResolvedValueOnce([
+        { ...unmeasured, processingStatus: "failed" as const },
+      ]);
+
+      render(<PhotoGrid folder="vacation" orientation="portrait" />);
+
+      expect(
+        await screen.findByText(/1 photo can’t be measured/)
+      ).toBeInTheDocument();
+      expect(screen.queryByTestId("orientation-probe")).toBeNull();
+    });
+
+    it("gives written-off photos another go once a refresh settles", async () => {
+      mockListPhotos.mockResolvedValue([unmeasured]);
+
+      render(<PhotoGrid folder="vacation" orientation="portrait" />);
+
+      // Written off: both URLs failed.
+      const probe = await screen.findByTestId("orientation-probe");
+      fireEvent.error(probe);
+      fireEvent.error(screen.getByTestId("orientation-probe"));
+      expect(
+        await screen.findByText(/1 photo can’t be measured/)
+      ).toBeInTheDocument();
+
+      // The refresh the note asks for regenerates exactly the variant whose
+      // absence wrote it off, so the advice has to pay off without a relaunch.
+      act(() => {
+        hoisted.refreshListener?.({ payload: { status: "done" } });
+      });
+
+      const retried = await screen.findByTestId("orientation-probe");
+      act(() => loadAt(retried, 800, 1200));
+
+      expect(await screen.findByAltText("unmeasured.jpg")).toBeInTheDocument();
+      expect(screen.queryByText(/can’t be measured/)).toBeNull();
+    });
+
+    /** What the tiles have taught the store, once the batched write lands. */
+    const stored = () =>
+      new Promise((resolve) => setTimeout(resolve, 600)).then(() =>
+        localStorage.getItem("photobank:photo-orientation")
+      );
+
+    it("measures a dimensionless row off its own tile, filter or no filter", async () => {
+      mockListPhotos.mockResolvedValueOnce([unmeasured]);
+
+      render(<PhotoGrid folder="vacation" />);
+
+      // Browsing with the filter off is what makes switching it on instant
+      // later: the tile has to load the picture anyway.
+      const img = await screen.findByAltText("unmeasured.jpg");
+      act(() => loadAt(img, 800, 1200));
+
+      expect(await stored()).toBe(JSON.stringify({ u: "p" }));
+    });
+
+    it("records nothing when the row already has dimensions", async () => {
+      mockListPhotos.mockResolvedValueOnce([tall]);
+
+      render(<PhotoGrid folder="vacation" />);
+
+      const img = await screen.findByAltText("tall.jpg");
+      act(() => loadAt(img, 1080, 1920));
+
+      // orientationOf answers from the row and never reads a stored
+      // measurement, so this would be a write nobody reads — and every write
+      // notifies, which with the filter on rebuilds the grid once per tile.
+      expect(await stored()).toBeNull();
+    });
+
+    it("does not probe while the filter is off", async () => {
+      mockListPhotos.mockResolvedValueOnce([unmeasured]);
+
+      render(<PhotoGrid folder="vacation" />);
+
+      // The tile loads the same picture anyway and measures itself; a separate
+      // probe would only duplicate the request.
+      expect(await screen.findByAltText("unmeasured.jpg")).toBeInTheDocument();
+      expect(screen.queryByTestId("orientation-probe")).toBeNull();
+    });
   });
 
   describe("collections", () => {

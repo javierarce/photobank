@@ -7,6 +7,7 @@ import {
   SelectionActionBar,
   SelectionToolbar,
 } from "@/components/selection-toolbar";
+import { SegmentedControl } from "@/components/segmented-control";
 import { SortDropdown } from "@/components/sort-dropdown";
 import { listCollections } from "@/lib/api";
 import {
@@ -15,6 +16,10 @@ import {
   SORT_OPTIONS,
   type SortMode,
 } from "@/lib/photo-sort";
+import {
+  ORIENTATION_OPTIONS,
+  type OrientationFilter,
+} from "@/lib/orientation";
 import { useBackgroundDeselect, useSelection } from "@/hooks/use-selection";
 import type { Collection } from "@/lib/types";
 
@@ -33,6 +38,9 @@ export default function CollectionPage() {
   );
   const [query, setQuery] = useState("");
   const [sortMode, setSortMode] = useState<SortMode>(loadSortMode);
+  // Session-only, like the folder page's — see the note there on why this one
+  // isn't persisted the way the sort is.
+  const [orientation, setOrientation] = useState<OrientationFilter>("all");
   const { selected } = useSelection();
   const handleBackgroundClick = useBackgroundDeselect();
   const navigate = useNavigate();
@@ -109,13 +117,21 @@ export default function CollectionPage() {
         </div>
 
         {collection && collection.photoIds.length > 0 && (
-          <div className="mt-4">
-            <SearchField
-              value={query}
-              onChange={setQuery}
-              folder={folder}
-              placeholder="Search — try tag:sunset, iso:>=800"
-              ariaLabel="Search this collection"
+          <div className="mt-4 flex items-center gap-3">
+            <div className="min-w-0 flex-1">
+              <SearchField
+                value={query}
+                onChange={setQuery}
+                folder={folder}
+                placeholder="Search — try tag:sunset, iso:>=800"
+                ariaLabel="Search this collection"
+              />
+            </div>
+            <SegmentedControl
+              value={orientation}
+              options={ORIENTATION_OPTIONS}
+              onChange={setOrientation}
+              label="Filter by orientation"
             />
           </div>
         )}
@@ -138,6 +154,7 @@ export default function CollectionPage() {
                 folder={folder}
                 collectionId={collection.id}
                 sortMode={sortMode}
+                orientation={orientation}
                 query={query}
                 onCollectionsChange={adopt}
               />

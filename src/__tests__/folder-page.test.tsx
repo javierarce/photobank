@@ -1,5 +1,12 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { render, screen, cleanup, fireEvent, waitFor } from "@testing-library/react";
+import {
+  render,
+  screen,
+  cleanup,
+  fireEvent,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import { forwardRef, useEffect } from "react";
 import { MemoryRouter, Route, Routes, useNavigate } from "react-router-dom";
 import FolderPage from "@/routes/folder";
@@ -29,17 +36,22 @@ vi.mock("@/components/photo-grid", () => ({
   PhotoGrid: forwardRef(function PhotoGrid({
     onHasPhotosChange,
     onOpenCollection,
+    orientation,
   }: {
     onHasPhotosChange?: (has: boolean) => void;
     onOpenCollection?: (collection: { id: string }) => void;
+    orientation?: string;
   }) {
     useEffect(() => {
       onHasPhotosChange?.(true);
     }, [onHasPhotosChange]);
     return (
-      <button onClick={() => onOpenCollection?.({ id: "c1" })}>
-        open-collection
-      </button>
+      <>
+        <span data-testid="grid-orientation">{orientation}</span>
+        <button onClick={() => onOpenCollection?.({ id: "c1" })}>
+          open-collection
+        </button>
+      </>
     );
   }),
 }));
@@ -399,6 +411,50 @@ describe("FolderPage — collections", () => {
     );
     await waitFor(() =>
       expect(screen.queryByTestId("new-collection-input")).toBeNull()
+    );
+  });
+});
+
+describe("FolderPage — orientation filter", () => {
+  const control = () =>
+    screen.getByRole("radiogroup", { name: "Filter by orientation" });
+
+  it("starts unfiltered", async () => {
+    renderPage();
+
+    expect(await screen.findByTestId("grid-orientation")).toHaveTextContent(
+      "all"
+    );
+    expect(screen.getByRole("radio", { name: "All" })).toHaveAttribute(
+      "aria-checked",
+      "true"
+    );
+  });
+
+  it("hands the chosen orientation to the grid", async () => {
+    renderPage();
+
+    fireEvent.click(
+      await within(control()).findByRole("radio", { name: "Portrait" })
+    );
+
+    expect(screen.getByTestId("grid-orientation")).toHaveTextContent("portrait");
+  });
+
+  it("carries the choice from one folder to the next", async () => {
+    renderPageWithNav();
+
+    fireEvent.click(
+      await within(control()).findByRole("radio", { name: "Landscape" })
+    );
+    fireEvent.click(screen.getByText("go-beach"));
+
+    // Unlike the search query — which is about one folder and is cleared —
+    // "show me the landscape ones" means the same thing everywhere.
+    await waitFor(() =>
+      expect(screen.getByTestId("grid-orientation")).toHaveTextContent(
+        "landscape"
+      )
     );
   });
 });
