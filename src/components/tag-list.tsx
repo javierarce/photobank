@@ -278,14 +278,10 @@ function TagRowMenu({
   // this keeps working if the menu grows an item. Only ever down -> up, once
   // per open, so the two placements can't ping-pong; a layout effect lands the
   // flip before the browser paints. (Same approach as PhotoContextMenu.)
+  // Opening resets the placement first (see the button below), so every open
+  // measures from scratch — the row may have scrolled somewhere else by then.
   useLayoutEffect(() => {
-    // Closing resets the placement, so the next open measures from scratch
-    // (the row may have scrolled somewhere else in the window by then).
-    if (!open) {
-      setUp(false);
-      return;
-    }
-    if (!menuRef.current) return;
+    if (!open || !menuRef.current) return;
     if (menuRef.current.getBoundingClientRect().bottom > window.innerHeight) {
       setUp(true);
     }
@@ -298,7 +294,12 @@ function TagRowMenu({
         aria-haspopup="menu"
         aria-expanded={open}
         aria-label={`Actions for ${tag.name}`}
-        onClick={() => setOpen((v) => !v)}
+        onClick={() => {
+          // Reset the placement on the way in so the effect below measures a
+          // menu that starts out below the row, whatever last time decided.
+          if (!open) setUp(false);
+          setOpen((v) => !v);
+        }}
         className="flex size-7 items-center justify-center rounded-md text-foreground/50 transition-colors hover:bg-foreground/5 hover:text-foreground"
       >
         <svg viewBox="0 0 16 16" className="size-4" fill="currentColor" aria-hidden="true">
