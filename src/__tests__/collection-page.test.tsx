@@ -31,13 +31,19 @@ vi.mock("@/components/photo-grid", () => ({
     folder,
     collectionId,
     onCollectionsChange,
+    orientation,
   }: {
     folder: string;
     collectionId?: string;
     onCollectionsChange?: (collections: unknown[]) => void;
+    orientation?: string;
   }) => {
     handOver.fire = (collections) => onCollectionsChange?.(collections);
-    return <div data-testid="grid">{`${folder}/${collectionId}`}</div>;
+    return (
+      <div data-testid="grid" data-orientation={orientation}>
+        {`${folder}/${collectionId}`}
+      </div>
+    );
   },
 }));
 
@@ -242,5 +248,21 @@ describe("CollectionPage", () => {
       await screen.findByText(/This collection no longer exists/)
     ).toBeInTheDocument();
     expect(screen.queryByTestId("grid")).toBeNull();
+  });
+
+  it("filters the collection by orientation", async () => {
+    renderPage();
+
+    expect(await screen.findByTestId("grid")).toHaveAttribute(
+      "data-orientation",
+      "all"
+    );
+
+    fireEvent.click(screen.getByRole("radio", { name: "Landscape" }));
+
+    expect(screen.getByTestId("grid")).toHaveAttribute(
+      "data-orientation",
+      "landscape"
+    );
   });
 });
