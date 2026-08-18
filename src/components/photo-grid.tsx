@@ -11,7 +11,7 @@ import {
   type MouseEvent,
 } from "react";
 import { listen } from "@tauri-apps/api/event";
-import { imageUrl, previewUrl } from "@/lib/image-url";
+import { imageUrl, originalUrl, previewUrl } from "@/lib/image-url";
 import { message } from "@tauri-apps/plugin-dialog";
 import {
   addPhotosToCollection,
@@ -44,6 +44,18 @@ import {
   photosInCollection,
 } from "@/lib/collections";
 import { sortPhotos, DEFAULT_SORT_MODE, type SortMode } from "@/lib/photo-sort";
+import {
+  isUnmeasurable,
+  markUnmeasurable,
+  matchesOrientation,
+  orientationOf,
+  ORIENTATION_OPTIONS,
+  PROBE_BATCH,
+  recordOrientation,
+  retryUnmeasurable,
+  useOrientations,
+  type OrientationFilter,
+} from "@/lib/orientation";
 import type { Collection, Photo } from "@/lib/types";
 import type { DragTracker, UploadFile } from "@/hooks/use-upload";
 
@@ -79,6 +91,10 @@ type Props = {
   onCollectionsChange?: (collections: Collection[]) => void;
   /** How to order the tiles; defaults to newest-first by filename date. */
   sortMode?: SortMode;
+  /** Show only photos turned one way; "all" (the default) shows everything.
+   * Collection cards are unaffected — a card stands for a whole collection,
+   * whichever way the photos inside it happen to be turned. */
+  orientation?: OrientationFilter;
   /** Ankitron-style typed query (tag:, camera:, iso:>=800, …) run backend-side
    * by search_photo_ids scoped to this folder; empty shows every photo. */
   query?: string;
@@ -99,6 +115,7 @@ export const PhotoGrid = forwardRef<PhotoGridRef, Props>(function PhotoGrid(
     registerDragTracker,
     onCollectionsChange,
     sortMode = DEFAULT_SORT_MODE,
+    orientation = "all",
     query = "",
     onHasPhotosChange,
     uploads = NO_UPLOADS,
@@ -280,7 +297,11 @@ export const PhotoGrid = forwardRef<PhotoGridRef, Props>(function PhotoGrid(
   const collection = collectionId
     ? collections.find((c) => c.id === collectionId)
     : undefined;
-  const visiblePhotos = useMemo(() => {
+  // Everything this page is about, before the orientation filter narrows it —
+  // the folder's loose photos, or one collection's. The empty states below
+  // speak for THIS set, not for what the filter left standing: a folder whose
+  // photos are all landscape is not an empty folder.
+  const scopePhotos = useMemo(() => {
     // Inside a collection, a search narrows what's in there.
     if (collectionId) {
       return collection ? photosInCollection(matchingPhotos, collection) : [];
@@ -293,6 +314,67 @@ export const PhotoGrid = forwardRef<PhotoGridRef, Props>(function PhotoGrid(
     if (trimmedQuery) return matchingPhotos;
     return loosePhotos(matchingPhotos, collections);
   }, [matchingPhotos, collections, collection, collectionId, trimmedQuery]);
+
+  // Re-run the memos below whenever a probe (or a tile) measures a photo:
+  // orientationOf reads a store outside React, so nothing else would tell them
+  // the answer has changed. Only while the filter is on, though — every tile
+  // that loads records a measurement, so subscribing with the filter off would
+  // rebuild this whole grid once per thumbnail for an answer it never asks for.
+  const filtering = orientation !== "all";
+  const orientationVersion = useOrientations(filtering);
+
+  const visiblePhotos = useMemo(
+    () =>
+      filtering
+        ? scopePhotos.filter((p) => matchesOrientation(p, orientation))
+        : // Handed straight back, not copied: with the filter off this has to
+          // keep the stable identity the pool effect depends on (see the note
+          // above sortedPhotos).
+          scopePhotos,
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [scopePhotos, filtering, orientation, orientationVersion]
+  );
+
+  // Photos in scope that nobody has measured yet — the probe queue. Held out of
+  // it are: photos with no derivatives (a probe would 404 on the variant and
+  // drag the full-size original down instead, for the whole folder at once —
+  // a library refresh is what fixes those); photos still being processed, which
+  // have nothing to load yet; and photos already given up on, so the queue
+  // drains rather than retrying forever.
+  const unmeasured = useMemo(
+    () =>
+      filtering
+        ? scopePhotos.filter(
+            (p) =>
+              p.processingStatus === "completed" &&
+              p.variantsOk &&
+              orientationOf(p) === null &&
+              !isUnmeasurable(p.id)
+          )
+        : [],
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [scopePhotos, filtering, orientationVersion]
+  );
+
+  // Everything else the filter is holding back: in scope, orientation unknown,
+  // and not in the queue to find out — no derivatives, processing failed, or
+  // already given up on. Counted rather than quietly dropped, so no photo goes
+  // missing without the grid accounting for it. (A pending/processing row lands
+  // here too for a moment; the 3s poll clears it.)
+  const heldBack = useMemo(
+    () =>
+      filtering
+        ? scopePhotos.filter(
+            (p) =>
+              orientationOf(p) === null &&
+              (p.processingStatus !== "completed" ||
+                !p.variantsOk ||
+                isUnmeasurable(p.id))
+          ).length
+        : 0,
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [scopePhotos, filtering, orientationVersion]
+  );
 
   // Keyboard cursor over the tiles: arrows/hjkl move DOM focus between tiles
   // (so the highlight is their own :focus-visible style, shared with Tab),
@@ -593,7 +675,13 @@ export const PhotoGrid = forwardRef<PhotoGridRef, Props>(function PhotoGrid(
   // original-image fallback to the real thumbnails.
   useEffect(() => {
     const unlisten = listen<RefreshProgress>(REFRESH_PROGRESS_EVENT, (event) => {
-      if (event.payload.status !== "running") loadPhotos();
+      if (event.payload.status !== "running") {
+        // It regenerates exactly the variants whose absence made a photo
+        // unmeasurable, so the ones written off get another go with the
+        // reloaded rows — the note that sent the user here says as much.
+        retryUnmeasurable();
+        loadPhotos();
+      }
     });
     return () => {
       unlisten.then((fn) => fn());
@@ -658,7 +746,7 @@ export const PhotoGrid = forwardRef<PhotoGridRef, Props>(function PhotoGrid(
   if (
     collectionId &&
     !trimmedQuery &&
-    !visiblePhotos.length &&
+    !scopePhotos.length &&
     !activeUploads.length
   ) {
     return (
@@ -680,7 +768,7 @@ export const PhotoGrid = forwardRef<PhotoGridRef, Props>(function PhotoGrid(
   if (
     trimmedQuery &&
     searchSettled &&
-    !visiblePhotos.length &&
+    !scopePhotos.length &&
     !activeUploads.length &&
     !active &&
     !tagTargets &&
@@ -733,6 +821,34 @@ export const PhotoGrid = forwardRef<PhotoGridRef, Props>(function PhotoGrid(
           Metadata filters only match photos whose info has been loaded.
         </p>
       )}
+      {/* The orientation filter measures what it doesn't know, a batch at a
+          time; matching photos join the grid as their probes land. */}
+      {unmeasured.slice(0, PROBE_BATCH).map((photo) => (
+        <OrientationProbe key={photo.id} photo={photo} />
+      ))}
+      {unmeasured.length > 0 && (
+        <p className="mb-3 text-xs text-foreground/40">
+          Checking {unmeasured.length} unmeasured photo
+          {unmeasured.length === 1 ? "" : "s"}…
+        </p>
+      )}
+      {/* Say what the filter is holding back rather than letting it vanish —
+          and say what would bring it back. */}
+      {heldBack > 0 && (
+        <p className="mb-3 text-xs text-foreground/40">
+          {heldBack} photo{heldBack === 1 ? "" : "s"} can’t be measured — a
+          library refresh regenerates missing thumbnails.
+        </p>
+      )}
+      {filtering &&
+        !unmeasured.length &&
+        !visiblePhotos.length &&
+        !cards.length &&
+        !activeUploads.length && (
+          <p className="text-sm text-foreground/60">
+            No {orientationLabel(orientation)} photos here.
+          </p>
+        )}
       {/* Collections lead the grid, the way folders sit above files in a file
           manager; the folder's own photos follow. Inside a collection there
           are no cards, so this is the plain grid it has always been. */}
@@ -850,6 +966,74 @@ export const PhotoGrid = forwardRef<PhotoGridRef, Props>(function PhotoGrid(
     </>
   );
 });
+
+/** The filter's own name, lower-cased for a sentence ("No portrait photos"). */
+function orientationLabel(orientation: OrientationFilter): string {
+  const option = ORIENTATION_OPTIONS.find((o) => o.value === orientation);
+  return (option?.label ?? orientation).toLowerCase();
+}
+
+/** How long to wait on one of a probe's two URLs before writing the photo off.
+ * WKWebView doesn't reliably fire `onError` for the `photo://` scheme (see
+ * Thumbnail), so a request that never resolves would otherwise sit in the queue
+ * forever and hold back the photos behind it. Long enough that a cold fetch of
+ * a big original over a slow link still makes it. */
+const PROBE_TIMEOUT_MS = 20_000;
+
+/**
+ * An off-screen load of one photo's thumbnail, purely to read its natural size.
+ *
+ * The orientation filter needs to know which way every photo is turned, and
+ * most catalog rows have no dimensions at all — they were catalogued from the
+ * bucket listing, which carries none, and filling them in means downloading the
+ * original (that's what "Load info" does, one photo at a time). The 640px
+ * variant is the same object the tile would fetch and the disk cache pins it,
+ * so this costs a browsed folder nothing and an unbrowsed one exactly one
+ * scroll-through. The answer is remembered, so it happens once per photo.
+ *
+ * That accounting only holds for photos that HAVE derivatives, which is why the
+ * queue above screens on variantsOk: the fallback below is a safety net for the
+ * odd photo whose variant went missing, not a way to pull a folder's worth of
+ * full-size originals down on one click.
+ */
+function OrientationProbe({ photo }: { photo: Photo }) {
+  // Same fallback as the tiles: a photo whose variant turns out to be missing
+  // anyway still has its original in the bucket.
+  const [fallback, setFallback] = useState(false);
+
+  // Dropping to the original restarts the clock — it's a different, much
+  // bigger request than the variant that just failed.
+  useEffect(() => {
+    const timer = setTimeout(() => markUnmeasurable(photo.id), PROBE_TIMEOUT_MS);
+    return () => clearTimeout(timer);
+  }, [photo.id, fallback]);
+
+  return (
+    <img
+      src={
+        fallback
+          ? originalUrl(photo.s3Key, photo.updatedAt)
+          : imageUrl(photo.s3Key, "640", "webp", photo.updatedAt)
+      }
+      alt=""
+      aria-hidden
+      data-testid="orientation-probe"
+      className="hidden"
+      decoding="async"
+      onLoad={(e) =>
+        recordOrientation(
+          photo.id,
+          e.currentTarget.naturalWidth,
+          e.currentTarget.naturalHeight
+        )
+      }
+      onError={() => {
+        if (fallback) markUnmeasurable(photo.id);
+        else setFallback(true);
+      }}
+    />
+  );
+}
 
 /** A single selectable grid tile. Memoized so a selection change only
  * re-renders the tiles whose `selected` flag actually flipped, not the whole

@@ -8,6 +8,7 @@ import {
   SelectionActionBar,
   SelectionToolbar,
 } from "@/components/selection-toolbar";
+import { SegmentedControl } from "@/components/segmented-control";
 import { SortDropdown } from "@/components/sort-dropdown";
 import {
   loadSortMode,
@@ -15,6 +16,10 @@ import {
   SORT_OPTIONS,
   type SortMode,
 } from "@/lib/photo-sort";
+import {
+  ORIENTATION_OPTIONS,
+  type OrientationFilter,
+} from "@/lib/orientation";
 import type { UploadSummary } from "@/lib/upload-progress";
 import { useUpload } from "@/hooks/use-upload";
 import { useBackgroundDeselect, useSelection } from "@/hooks/use-selection";
@@ -35,6 +40,11 @@ export default function FolderPage() {
   const [renamingFolder, setRenamingFolder] = useState(false);
   // Sort order is a global preference, persisted across folders and launches.
   const [sortMode, setSortMode] = useState<SortMode>(loadSortMode);
+  // Which way the photos are turned. Kept for the session (it rides along from
+  // folder to folder, like the sort) but deliberately NOT persisted across
+  // launches: a sort order only reorders, whereas this hides photos, and
+  // opening the app to a silently thinned-out folder is a bad surprise.
+  const [orientation, setOrientation] = useState<OrientationFilter>("all");
   // Naming a collection before it has any photos — the counterpart to New
   // folder on the home page. Photos are dragged onto its card afterwards.
   const [naming, setNaming] = useState(false);
@@ -172,13 +182,23 @@ export default function FolderPage() {
             (tag:, camera:, iso:>=800, …), scoped to this folder — only once the
             folder actually has photos to search. */}
         {hasPhotos && (
-          <div className="mt-4">
-            <SearchField
-              value={query}
-              onChange={setQuery}
-              folder={folder}
-              placeholder="Search — try tag:sunset, iso:>=800"
-              ariaLabel="Search this folder"
+          <div className="mt-4 flex items-center gap-3">
+            <div className="min-w-0 flex-1">
+              <SearchField
+                value={query}
+                onChange={setQuery}
+                folder={folder}
+                placeholder="Search — try tag:sunset, iso:>=800"
+                ariaLabel="Search this folder"
+              />
+            </div>
+            {/* Sits with the search field rather than the header buttons: both
+                narrow what the grid shows, and neither is an action. */}
+            <SegmentedControl
+              value={orientation}
+              options={ORIENTATION_OPTIONS}
+              onChange={setOrientation}
+              label="Filter by orientation"
             />
           </div>
         )}
@@ -193,6 +213,7 @@ export default function FolderPage() {
             folder={folder}
             ref={photoGridRef}
             sortMode={sortMode}
+            orientation={orientation}
             query={query}
             onHasPhotosChange={setHasPhotos}
             uploads={folderUploads}

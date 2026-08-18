@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { imageUrl, originalUrl } from "@/lib/image-url";
 import { ThumbnailFallback } from "@/components/thumbnail-fallback";
+import { classifyOrientation, recordOrientation } from "@/lib/orientation";
 import type { Photo } from "@/lib/types";
 
 /** A grid/result thumbnail that never shows a broken image. The on-brand
@@ -16,6 +17,17 @@ export function Thumbnail({ photo }: { photo: Photo }) {
       s3Key={photo.s3Key}
       version={photo.updatedAt}
       alt={photo.filename}
+      // Browsing measures the folder for the orientation filter as a side
+      // effect: the tile has to load the picture anyway, and its natural size
+      // is the only place most photos' dimensions can be read from (see
+      // orientationOf). Only the rows that need it, though — when the catalog
+      // already carries dimensions, orientationOf answers from those and never
+      // reads a stored measurement, so recording one would be a write nobody
+      // reads: a duplicate of the folder in localStorage, and (with the filter
+      // on) a grid rebuild per tile for an answer that didn't change.
+      measureId={
+        classifyOrientation(photo.width, photo.height) ? undefined : photo.id
+      }
     />
   );
 }
@@ -26,11 +38,16 @@ export function ThumbnailImage({
   s3Key,
   version,
   alt,
+  measureId,
 }: {
   s3Key: string;
   /** The photo's `updatedAt`; doubles as the cache-buster. */
   version: string;
   alt: string;
+  /** When set, the loaded picture's natural size is remembered as this
+   * photo's orientation. Folder covers leave it off — they know a key, not a
+   * catalog row. */
+  measureId?: string;
 }) {
   const [loaded, setLoaded] = useState(false);
   // When the 640px variant is missing from the bucket (original synced in
@@ -73,7 +90,15 @@ export function ThumbnailImage({
         }`}
         loading="lazy"
         draggable={false}
-        onLoad={() => setLoaded(true)}
+        onLoad={(e) => {
+          setLoaded(true);
+          if (measureId)
+            recordOrientation(
+              measureId,
+              e.currentTarget.naturalWidth,
+              e.currentTarget.naturalHeight
+            );
+        }}
         // A missing 640px variant drops to the original; if that's gone too the
         // image just stays hidden and the placeholder remains.
         onError={() => setFallback(true)}
