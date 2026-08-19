@@ -8,6 +8,7 @@ import {
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { message } from "@tauri-apps/plugin-dialog";
 import { copyPhotoToClipboard, exportPhotos } from "@/lib/api";
+import { useFolderCover } from "@/hooks/use-folder-cover";
 import { splitDisplayName } from "@/lib/keys";
 import { DEFAULT_EXPORT_RESOLUTION } from "@/components/export-button";
 import type { Photo } from "@/lib/types";
@@ -80,6 +81,14 @@ export function PhotoContextMenu({ photos, x, y, onCollect, onClose }: Props) {
 
   const count = photos.length;
 
+  // Which photo the folder currently shows on the home page, so the item can
+  // offer to remove the pick when it's this one. Shared with the lightbox
+  // sidebar's toggle, which can be on screen at the same time. Only offered for
+  // a single photo — a folder shows one cover, so a selection has nothing to
+  // set.
+  const { coverId, setCover, clearCover } = useFolderCover(photos[0].folder);
+  const isCover = coverId === photos[0].id;
+
   // The name as the user sees it, minus the extension — what you'd paste into a
   // post or a caption. One per line for a multi-photo selection.
   const handleCopyFilename = async () => {
@@ -133,6 +142,22 @@ export function PhotoContextMenu({ photos, x, y, onCollect, onClose }: Props) {
     }
   };
 
+  // Same toggle the lightbox sidebar offers, one right-click away from the
+  // grid. The menu closes first, so a failure reports itself in a dialog.
+  const handleCover = async () => {
+    onClose();
+    try {
+      if (isCover) await clearCover();
+      else await setCover(photos[0].id);
+    } catch (err) {
+      // Tauri commands reject with a plain message string (see src/lib/api.ts)
+      await message(
+        typeof err === "string" ? err : "Failed to update the folder cover",
+        { title: "Folder cover", kind: "error" }
+      );
+    }
+  };
+
   return (
     <div
       ref={ref}
@@ -168,15 +193,22 @@ export function PhotoContextMenu({ photos, x, y, onCollect, onClose }: Props) {
             : `Add ${count} photos to a collection…`}
         </MenuItem>
       )}
+      {count === 1 && (
+        <MenuItem onClick={handleCover} disabled={coverId === undefined}>
+          {isCover ? "Remove folder cover" : "Set as folder cover"}
+        </MenuItem>
+      )}
     </div>
   );
 }
 
 function MenuItem({
   onClick,
+  disabled,
   children,
 }: {
   onClick: () => void;
+  disabled?: boolean;
   children: ReactNode;
 }) {
   return (
@@ -184,7 +216,8 @@ function MenuItem({
       type="button"
       role="menuitem"
       onClick={onClick}
-      className="block w-full px-3 py-1.5 text-left text-sm transition-colors hover:bg-foreground/5"
+      disabled={disabled}
+      className="block w-full px-3 py-1.5 text-left text-sm transition-colors hover:bg-foreground/5 disabled:pointer-events-none disabled:opacity-40"
     >
       {children}
     </button>
