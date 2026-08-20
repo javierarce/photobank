@@ -44,13 +44,27 @@ vi.mock("@tauri-apps/api/event", () => ({
 }));
 
 const exportPhotos = vi.fn().mockResolvedValue(null);
+const copyPhotoToClipboard = vi.fn().mockResolvedValue(undefined);
+const setFolderCover = vi.fn().mockResolvedValue(undefined);
 vi.mock("@/lib/api", () => ({
   exportPhotos: (...args: unknown[]) => exportPhotos(...args),
+  // Reached from the right-click menu over the picture.
+  copyPhotoToClipboard: (...args: unknown[]) => copyPhotoToClipboard(...args),
   // The sidebar's folder-cover toggle reads the folder's current pick on
   // mount; these tests are about everything else, so keep it quiet.
   getFolderCover: () => Promise.resolve(null),
-  setFolderCover: () => Promise.resolve(),
+  setFolderCover: (...args: unknown[]) => setFolderCover(...args),
   clearFolderCover: () => Promise.resolve(),
+}));
+
+// The right-click menu copies through the Tauri plugins (the web clipboard is
+// dead in WKWebView) and reports failures in a native dialog.
+vi.mock("@tauri-apps/plugin-clipboard-manager", () => ({
+  writeText: vi.fn().mockResolvedValue(undefined),
+}));
+
+vi.mock("@tauri-apps/plugin-dialog", () => ({
+  message: vi.fn().mockResolvedValue(undefined),
 }));
 
 const photo: Photo = makePhoto({
@@ -71,6 +85,8 @@ const photo: Photo = makePhoto({
 afterEach(() => {
   cleanup();
   exportPhotos.mockClear();
+  copyPhotoToClipboard.mockClear();
+  setFolderCover.mockClear();
 });
 
 /** A photo:// src with its `?v=` cache-buster stripped. These tests care about
@@ -466,6 +482,113 @@ describe("PhotoLightbox", () => {
 
     fireEvent.click(screen.getByText("Delete"));
     expect(onDelete).toHaveBeenCalledWith(photo);
+  });
+
+  describe("right-click menu over the picture", () => {
+    const rightClickImage = () =>
+      fireEvent.contextMenu(screen.getByTestId("lightbox-image-pane"), {
+        clientX: 40,
+        clientY: 60,
+      });
+
+    it("shows our menu in place of WKWebView's", () => {
+      render(<PhotoLightbox photo={photo} onClose={vi.fn()} />);
+
+      // fireEvent returns false when the handler called preventDefault, which
+      // is what keeps the native "Save Image As…"/"Share" menu from appearing.
+      expect(rightClickImage()).toBe(false);
+      expect(screen.getByTestId("photo-context-menu")).toBeInTheDocument();
+    });
+
+    it("acts on the photo that's open", async () => {
+      render(<PhotoLightbox photo={photo} onClose={vi.fn()} />);
+      rightClickImage();
+
+      const item = await screen.findByRole("menuitem", {
+        name: "Set as folder cover",
+      });
+      await waitFor(() => expect(item).toBeEnabled());
+      fireEvent.click(item);
+
+      await waitFor(() =>
+        expect(setFolderCover).toHaveBeenCalledWith("inbox", "1")
+      );
+    });
+
+    it("leaves the sidebar's toggle agreeing with what the menu just did", async () => {
+      render(<PhotoLightbox photo={photo} onClose={vi.fn()} />);
+      await waitFor(() =>
+        expect(screen.getByTestId("folder-cover")).toBeEnabled()
+      );
+      rightClickImage();
+
+      fireEvent.click(
+        await screen.findByRole("menuitem", { name: "Set as folder cover" })
+      );
+
+      // Both read the same pick, so the sidebar must not still offer to set a
+      // cover the menu has already set.
+      await waitFor(() =>
+        expect(screen.getByTestId("folder-cover")).toHaveTextContent(
+          "Remove folder cover"
+        )
+      );
+    });
+
+    it("keeps the native menu in the sidebar, where copy and paste help", () => {
+      render(<PhotoLightbox photo={photo} onClose={vi.fn()} />);
+
+      expect(fireEvent.contextMenu(screen.getByTestId("filename-display"))).toBe(
+        true
+      );
+      expect(screen.queryByTestId("photo-context-menu")).toBeNull();
+    });
+
+    it("dismisses on a click outside without closing the lightbox", () => {
+      const onClose = vi.fn();
+      render(<PhotoLightbox photo={photo} onClose={onClose} />);
+      rightClickImage();
+
+      const backdrop = document.querySelector(".backdrop-in")!;
+      fireEvent.mouseDown(backdrop);
+      fireEvent.click(backdrop);
+
+      expect(screen.queryByTestId("photo-context-menu")).toBeNull();
+      // The click that dismissed the menu stops there, as it would on macOS;
+      // the next one closes the lightbox as usual.
+      expect(onClose).not.toHaveBeenCalled();
+      fireEvent.mouseDown(backdrop);
+      fireEvent.click(backdrop);
+      expect(onClose).toHaveBeenCalled();
+    });
+
+    it("dismisses on Escape without closing the lightbox", () => {
+      const onClose = vi.fn();
+      render(<PhotoLightbox photo={photo} onClose={onClose} />);
+      rightClickImage();
+
+      fireEvent.keyDown(document, { key: "Escape" });
+
+      expect(screen.queryByTestId("photo-context-menu")).toBeNull();
+      expect(onClose).not.toHaveBeenCalled();
+    });
+
+    it("goes away when the arrows page to another photo", () => {
+      const { rerender } = render(
+        <PhotoLightbox photo={photo} onClose={vi.fn()} />
+      );
+      rightClickImage();
+
+      // The menu acts on the photo it opened over, so it can't outlive it.
+      rerender(
+        <PhotoLightbox
+          photo={makePhoto({ id: "2", filename: "next.jpg" })}
+          onClose={vi.fn()}
+        />
+      );
+
+      expect(screen.queryByTestId("photo-context-menu")).toBeNull();
+    });
   });
 
   describe("inline filename editing", () => {

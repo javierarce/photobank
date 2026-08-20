@@ -6,6 +6,7 @@ import { splitDisplayName } from "@/lib/keys";
 import { exportPhotos } from "@/lib/api";
 import { ExportButton } from "@/components/export-button";
 import { FolderCoverButton } from "@/components/folder-cover-button";
+import { PhotoContextMenu } from "@/components/photo-context-menu";
 import { PhotoTags } from "@/components/photo-tags";
 import type { Photo } from "@/lib/types";
 
@@ -53,6 +54,13 @@ export function PhotoLightbox({
   const [replaceProgress, setReplaceProgress] = useState(0);
   const [loadingInfo, setLoadingInfo] = useState(false);
   const [infoError, setInfoError] = useState<string | null>(null);
+  /** Viewport coordinates of the right-click that opened our own menu over the
+   * picture, replacing WKWebView's ("Save Image As…", "Share"). */
+  const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
+  // Was the menu up when this press started? It dismisses itself on mousedown,
+  // so by the time the backdrop's click arrives the state is already gone —
+  // and the click would close the lightbox as well as the menu.
+  const menuOpenAtPress = useRef(false);
   // Show and edit the user-facing name (legacy "_original" marker stripped),
   // never the raw stored filename.
   const [name, ext] = splitDisplayName(photo.filename);
@@ -72,6 +80,8 @@ export function PhotoLightbox({
     setInfoError(null);
     setReplaceError(null);
     setReplaceProgress(0);
+    // The menu acts on the photo it opened over, so it can't outlive it.
+    setMenu(null);
   }
 
   const [prevFilename, setPrevFilename] = useState(photo.filename);
@@ -160,9 +170,14 @@ export function PhotoLightbox({
   return (
     <div
       className="backdrop-in fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4"
+      onMouseDown={() => {
+        menuOpenAtPress.current = menu !== null;
+      }}
       onClick={(e) => {
         // Don't let the backdrop click bubble to the page's deselect handler.
         e.stopPropagation();
+        // The click that dismissed the menu stops there, as it would on macOS.
+        if (menuOpenAtPress.current) return;
         onClose();
       }}
     >
@@ -170,7 +185,19 @@ export function PhotoLightbox({
         className="modal-in relative flex h-[85vh] w-[min(95vw,1200px)] overflow-hidden rounded-lg border-0 bg-background dark:border dark:border-border"
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="relative flex w-0 flex-1 items-center justify-center bg-black">
+        <div
+          className="relative flex w-0 flex-1 items-center justify-center bg-black"
+          // WKWebView's own menu on an image ("Save Image As…", "Share") knows
+          // nothing about the library, so ours takes its place. Left off the
+          // sidebar, where the native menu still does something useful: copy
+          // and paste in the filename field and the tag input.
+          onContextMenu={(e) => {
+            e.preventDefault();
+            if (replacing) return;
+            setMenu({ x: e.clientX, y: e.clientY });
+          }}
+          data-testid="lightbox-image-pane"
+        >
           {!loaded && (
             <div className="absolute inset-0 flex items-center justify-center">
               <svg
@@ -518,6 +545,17 @@ export function PhotoLightbox({
           </div>
         </div>
       </div>
+
+      {menu && (
+        // No "Add to collection…" here: that dialog belongs to the grid that
+        // opened the lightbox, which is behind this overlay.
+        <PhotoContextMenu
+          photos={[photo]}
+          x={menu.x}
+          y={menu.y}
+          onClose={() => setMenu(null)}
+        />
+      )}
     </div>
   );
 }

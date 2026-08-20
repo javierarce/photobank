@@ -1,7 +1,13 @@
-import { describe, it, expect, vi, afterEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, cleanup, fireEvent, waitFor } from "@testing-library/react";
 import { PhotoContextMenu } from "@/components/photo-context-menu";
-import { copyPhotoToClipboard, exportPhotos } from "@/lib/api";
+import {
+  clearFolderCover,
+  copyPhotoToClipboard,
+  exportPhotos,
+  getFolderCover,
+  setFolderCover,
+} from "@/lib/api";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { message } from "@tauri-apps/plugin-dialog";
 import { makePhoto } from "./fixtures";
@@ -9,6 +15,9 @@ import { makePhoto } from "./fixtures";
 vi.mock("@/lib/api", () => ({
   exportPhotos: vi.fn().mockResolvedValue(null),
   copyPhotoToClipboard: vi.fn().mockResolvedValue(undefined),
+  getFolderCover: vi.fn().mockResolvedValue(null),
+  setFolderCover: vi.fn().mockResolvedValue(undefined),
+  clearFolderCover: vi.fn().mockResolvedValue(undefined),
 }));
 
 vi.mock("@tauri-apps/plugin-clipboard-manager", () => ({
@@ -18,6 +27,12 @@ vi.mock("@tauri-apps/plugin-clipboard-manager", () => ({
 vi.mock("@tauri-apps/plugin-dialog", () => ({
   message: vi.fn().mockResolvedValue(undefined),
 }));
+
+beforeEach(() => {
+  vi.mocked(getFolderCover).mockResolvedValue(null);
+  vi.mocked(setFolderCover).mockResolvedValue(undefined);
+  vi.mocked(clearFolderCover).mockResolvedValue(undefined);
+});
 
 afterEach(() => {
   cleanup();
@@ -213,6 +228,65 @@ describe("PhotoContextMenu", () => {
     expect(collect).toHaveBeenCalledWith(photos);
     // The menu gets out of the way of the dialog it just opened.
     expect(onClose).toHaveBeenCalled();
+  });
+
+  it("sets the right-clicked photo as its folder's cover", async () => {
+    open([makePhoto({ id: "p1", folder: "trips" })]);
+
+    const item = await screen.findByRole("menuitem", {
+      name: "Set as folder cover",
+    });
+    await waitFor(() => expect(item).toBeEnabled());
+    fireEvent.click(item);
+
+    await waitFor(() => expect(setFolderCover).toHaveBeenCalledWith("trips", "p1"));
+  });
+
+  it("offers to remove the pick when this photo already holds it", async () => {
+    vi.mocked(getFolderCover).mockResolvedValue("p1");
+    open([makePhoto({ id: "p1", folder: "trips" })]);
+
+    fireEvent.click(
+      await screen.findByRole("menuitem", { name: "Remove folder cover" })
+    );
+
+    await waitFor(() => expect(clearFolderCover).toHaveBeenCalledWith("trips"));
+    expect(setFolderCover).not.toHaveBeenCalled();
+  });
+
+  it("waits for the current pick before acting on the cover", () => {
+    // Otherwise a photo that IS the cover would briefly offer to set it again.
+    vi.mocked(getFolderCover).mockReturnValue(new Promise(() => {}));
+    open();
+
+    expect(
+      screen.getByRole("menuitem", { name: "Set as folder cover" })
+    ).toBeDisabled();
+  });
+
+  it("leaves the cover item out for a selection", () => {
+    // A folder shows one cover, so several photos have nothing to set.
+    open([makePhoto({ id: "1" }), makePhoto({ id: "2" })]);
+
+    expect(screen.queryByRole("menuitem", { name: /folder cover/ })).toBeNull();
+  });
+
+  it("reports a rejected cover change instead of failing silently", async () => {
+    vi.mocked(setFolderCover).mockRejectedValue(
+      "That photo is not in this folder"
+    );
+    open();
+
+    fireEvent.click(
+      await screen.findByRole("menuitem", { name: "Set as folder cover" })
+    );
+
+    await waitFor(() =>
+      expect(message).toHaveBeenCalledWith(
+        "That photo is not in this folder",
+        expect.objectContaining({ kind: "error" })
+      )
+    );
   });
 
   it("pulls itself back inside the window when opened near an edge", () => {

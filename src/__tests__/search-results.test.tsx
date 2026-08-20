@@ -28,6 +28,11 @@ vi.mock("@/lib/api", () => ({
   listTags: vi.fn(),
   addTagsToPhotos: vi.fn(),
   removeTagsFromPhotos: vi.fn(),
+  // The right-click menu's folder-cover item reads the folder's current pick
+  // on open; these tests are about everything else, so keep it quiet.
+  getFolderCover: vi.fn().mockResolvedValue(null),
+  setFolderCover: vi.fn(),
+  clearFolderCover: vi.fn(),
 }));
 
 // Surfaces the edit callbacks the results page wires up, so tests can trigger

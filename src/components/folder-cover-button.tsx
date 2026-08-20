@@ -1,5 +1,5 @@
-import { useEffect, useState } from "react";
-import { clearFolderCover, getFolderCover, setFolderCover } from "@/lib/api";
+import { useState } from "react";
+import { useFolderCover } from "@/hooks/use-folder-cover";
 import type { Photo } from "@/lib/types";
 
 /** Picks (or unpicks) the photo the home page shows for its folder.
@@ -16,36 +16,18 @@ export function FolderCoverButton({
 }) {
   // undefined while the current pick is still being read — the button waits
   // rather than flashing "Set as cover" on a photo that already is one.
-  const [coverId, setCoverId] = useState<string | null | undefined>(undefined);
+  const { coverId, setCover, clearCover } = useFolderCover(photo.folder);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // The lightbox keeps this button mounted while it pages through photos, so
-  // re-baseline when another one arrives: a stale error must not carry over,
-  // and a photo from another folder answers to another pick. Adjusting during
-  // render (not in the effect below) avoids an extra render pass.
-  const [prev, setPrev] = useState({ id: photo.id, folder: photo.folder });
-  if (prev.id !== photo.id) {
-    setPrev({ id: photo.id, folder: photo.folder });
+  // The lightbox keeps this button mounted while it pages through photos, so a
+  // stale error must not carry over when another one arrives. Adjusting during
+  // render (not in an effect) avoids an extra render pass.
+  const [prevId, setPrevId] = useState(photo.id);
+  if (prevId !== photo.id) {
+    setPrevId(photo.id);
     setError(null);
-    if (prev.folder !== photo.folder) setCoverId(undefined);
   }
-
-  useEffect(() => {
-    let cancelled = false;
-    getFolderCover(photo.folder)
-      .then((id) => {
-        if (!cancelled) setCoverId(id);
-      })
-      // A failed read only costs the "already the cover" state; treating it as
-      // "no pick" keeps the button usable, and setting one is idempotent.
-      .catch(() => {
-        if (!cancelled) setCoverId(null);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [photo.folder]);
 
   const isCover = coverId === photo.id;
 
@@ -54,13 +36,8 @@ export function FolderCoverButton({
     setSaving(true);
     setError(null);
     try {
-      if (isCover) {
-        await clearFolderCover(photo.folder);
-        setCoverId(null);
-      } else {
-        await setFolderCover(photo.folder, photo.id);
-        setCoverId(photo.id);
-      }
+      if (isCover) await clearCover();
+      else await setCover(photo.id);
     } catch (err) {
       // Tauri commands reject with a plain message string (see src/lib/api.ts).
       setError(typeof err === "string" ? err : "Failed to update folder cover");
