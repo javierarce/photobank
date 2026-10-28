@@ -6,7 +6,7 @@
 use fast_image_resize::images::Image as FirImage;
 use fast_image_resize::{FilterType, PixelType, ResizeAlg, ResizeOptions, Resizer};
 use image::metadata::Orientation;
-use image::RgbImage;
+use image::{RgbImage, RgbaImage};
 use img_parts::ImageICC;
 
 use crate::error::{Error, Result};
@@ -54,7 +54,7 @@ pub fn process(bytes: &[u8], s3_key: &str) -> Result<ProcessedImage> {
         decoded.apply_orientation(orientation);
     }
 
-    let rgb = decoded.to_rgb8();
+    let rgb = decoded.to_rgba8();
     let (width, height) = rgb.dimensions();
 
     let mut variants = Vec::with_capacity(VARIANT_WIDTHS.len() * 2);
@@ -80,7 +80,7 @@ pub fn process(bytes: &[u8], s3_key: &str) -> Result<ProcessedImage> {
 
 /// Lanczos3 downscale to `target_width`, never enlarging (sharp's
 /// withoutEnlargement: smaller sources keep their size).
-fn resize_to_width(rgb: &RgbImage, target_width: u32) -> Result<RgbImage> {
+fn resize_to_width(rgb: &RgbaImage, target_width: u32) -> Result<RgbaImage> {
     let (width, height) = rgb.dimensions();
     if width <= target_width {
         return Ok(rgb.clone());
@@ -88,9 +88,9 @@ fn resize_to_width(rgb: &RgbImage, target_width: u32) -> Result<RgbImage> {
     let target_height =
         ((height as f64) * (target_width as f64) / (width as f64)).round().max(1.0) as u32;
 
-    let src = FirImage::from_vec_u8(width, height, rgb.as_raw().clone(), PixelType::U8x3)
+    let src = FirImage::from_vec_u8(width, height, rgb.as_raw().clone(), PixelType::U8x4)
         .map_err(|e| Error::msg(format!("resize input: {e}")))?;
-    let mut dst = FirImage::new(target_width, target_height, PixelType::U8x3);
+    let mut dst = FirImage::new(target_width, target_height, PixelType::U8x4);
     Resizer::new()
         .resize(
             &src,
@@ -99,23 +99,28 @@ fn resize_to_width(rgb: &RgbImage, target_width: u32) -> Result<RgbImage> {
         )
         .map_err(|e| Error::msg(format!("resize: {e}")))?;
 
-    RgbImage::from_raw(target_width, target_height, dst.into_vec())
+    RgbaImage::from_raw(target_width, target_height, dst.into_vec())
         .ok_or_else(|| Error::msg("resize produced an invalid buffer"))
 }
 
-fn encode(rgb: &RgbImage, format: VariantFormat, icc: Option<&[u8]>) -> Result<Vec<u8>> {
+fn encode(rgb: &RgbaImage, format: VariantFormat, icc: Option<&[u8]>) -> Result<Vec<u8>> {
     let (width, height) = rgb.dimensions();
     let plain = match format {
         VariantFormat::Jpg => {
             let mut out = Vec::new();
             let encoder =
                 image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, QUALITY);
-            rgb.write_with_encoder(encoder)
+            let flattened = RgbImage::from_fn(width, height, |x, y| {
+                let pixel = rgb.get_pixel(x, y).0;
+                let alpha = pixel[3] as u32;
+                image::Rgb(std::array::from_fn(|i| ((pixel[i] as u32 * alpha + 255 * (255 - alpha) + 127) / 255) as u8))
+            });
+            flattened.write_with_encoder(encoder)
                 .map_err(|e| Error::msg(format!("jpeg encode: {e}")))?;
             out
         }
         VariantFormat::Webp => {
-            let encoder = webp::Encoder::from_rgb(rgb.as_raw(), width, height);
+            let encoder = webp::Encoder::from_rgba(rgb.as_raw(), width, height);
             encoder.encode(QUALITY as f32).to_vec()
         }
     };
@@ -165,6 +170,22 @@ pub fn mime_for_extension(path: &str) -> Option<&'static str> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn transparent_sources_keep_alpha_in_webp_and_use_white_for_jpeg() {
+        // Wide enough to exercise RGBA resizing as well as encoding.
+        let img = image::RgbaImage::from_pixel(800, 40, image::Rgba([0, 0, 0, 0]));
+        let mut source = std::io::Cursor::new(Vec::new());
+        img.write_to(&mut source, image::ImageFormat::Png).unwrap();
+        let processed = super::process(source.get_ref(), "inbox/transparent.png").unwrap();
+        for variant in processed.variants {
+            let decoded = image::load_from_memory(&variant.bytes).unwrap();
+            if variant.key.ends_with(".webp") {
+                assert!(decoded.to_rgba8().pixels().all(|pixel| pixel.0[3] == 0));
+            } else {
+                assert!(decoded.to_rgb8().pixels().all(|pixel| pixel.0.iter().all(|v| *v >= 250)));
+            }
+        }
+    }
     use super::*;
 
     /// A 100x50 gradient so resizing has real content to chew on.

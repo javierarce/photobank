@@ -15,9 +15,14 @@ import {
   listTags,
   removeTagsFromPhotos,
   updatePhoto,
+  deletePhoto,
 } from "@/lib/api";
 import type { Photo } from "@/lib/types";
 import { makePhoto } from "./fixtures";
+
+vi.mock("@tauri-apps/plugin-dialog", () => ({
+  ask: vi.fn().mockResolvedValue(true), message: vi.fn(), open: vi.fn(),
+}));
 
 vi.mock("@/lib/api", () => ({
   searchPhotos: vi.fn(),
@@ -91,6 +96,7 @@ function renderSearch(params: Record<string, string> = {}) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mockSearchPhotos.mockReset();
 });
 
 afterEach(() => {
@@ -98,6 +104,39 @@ afterEach(() => {
 });
 
 describe("SearchResults", () => {
+  it("keeps the next page reachable after deleting every loaded result", async () => {
+    const first = Array.from({ length: 200 }, (_, i) => makePhoto({ id: String(i), filename: `photo-${i}.jpg` }));
+    mockSearchPhotos.mockResolvedValueOnce(first)
+      .mockResolvedValueOnce([makePhoto({ id: "remaining", filename: "remaining.jpg" })]);
+    vi.mocked(deletePhoto).mockResolvedValue(undefined);
+    renderSearch({ q: "photo" });
+    await screen.findByText("200 results loaded");
+    fireEvent.keyDown(document.body, { key: "a", metaKey: true });
+    fireEvent.click(screen.getByRole("button", { name: "Delete" }));
+    await waitFor(() => expect(deletePhoto).toHaveBeenCalledTimes(200));
+    expect(screen.queryByText("No results found.")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Load more results" }));
+    await screen.findByText("remaining.jpg");
+    expect(mockSearchPhotos).toHaveBeenLastCalledWith({ q: "photo", tag: "", offset: 0 });
+  });
+
+  it("loads results beyond the first 200 and preserves the previous page on a retry", async () => {
+    const first = Array.from({ length: 200 }, (_, i) => makePhoto({ id: String(i), filename: `photo-${i}.jpg` }));
+    mockSearchPhotos.mockResolvedValueOnce(first)
+      .mockRejectedValueOnce("temporarily offline")
+      .mockResolvedValueOnce([makePhoto({ id: "201", filename: "last-photo.jpg" })]);
+    renderSearch({ q: "photo" });
+    await screen.findByText("200 results loaded");
+    fireEvent.click(screen.getByRole("button", { name: "Load more results" }));
+    await screen.findByText("Could not load more results. Try again.");
+    expect(screen.getByText("photo-0.jpg")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Load more results" }));
+    await screen.findByText("last-photo.jpg");
+    expect(mockSearchPhotos).toHaveBeenLastCalledWith({ q: "photo", tag: "", offset: 200 });
+    expect(screen.getByText("201 results")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Load more results" })).not.toBeInTheDocument();
+  });
+
   it("shows prompt when no search term is provided", () => {
     renderSearch();
     expect(screen.getByText("Enter a search term.")).toBeInTheDocument();

@@ -8,6 +8,10 @@ mod error;
 mod exif;
 mod import;
 mod keys;
+mod library;
+mod paths;
+#[cfg(test)]
+mod test_support;
 mod manifest;
 mod photos;
 mod pipeline;
@@ -42,6 +46,8 @@ fn main() {
             let conn = db::init(app.handle())?;
             app.manage(db::Db(Mutex::new(conn)));
             app.manage(settings::S3State::default());
+            app.manage(library::LibraryState::default());
+            app.manage(protocol::CacheState::default());
             app.manage(manifest::ManifestState::default());
             app.manage(import::CancelRegistry::default());
             app.manage(refresh::RefreshState::default());
@@ -69,11 +75,11 @@ fn main() {
                 }
             });
 
-            // Build the S3 client from saved settings + Keychain off the main
+            // Build the S3 client from saved settings and credentials off the main
             // thread; the UI shows "not configured" states until it lands.
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
-                settings::refresh_client(&handle).await;
+                settings::initialize_client(&handle).await;
             });
             Ok(())
         })
@@ -132,6 +138,7 @@ fn main() {
             // quit inside that window would silently drop it — see
             // cdn::flush_on_exit.
             if let tauri::RunEvent::ExitRequested { .. } = event {
+                manifest::flush_on_exit(app);
                 cdn::flush_on_exit(app);
             }
         });

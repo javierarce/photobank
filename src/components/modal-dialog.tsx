@@ -1,4 +1,4 @@
-import { useEffect, type ReactNode } from "react";
+import { useEffect, useId, useRef, type ReactNode } from "react";
 
 interface ModalFooter {
   confirmLabel: string;
@@ -34,15 +34,46 @@ export function ModalDialog({
   onClose,
   footer,
 }: ModalDialogProps) {
+  const titleId = useId();
+  const card = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const previous = document.activeElement as HTMLElement | null;
+    if (!card.current?.contains(previous)) {
+      (card.current?.querySelector<HTMLElement>("input, button:not(:disabled), [tabindex='0']") ?? card.current)?.focus();
+    }
+    return () => { if (previous?.isConnected) previous.focus(); };
+  }, []);
+
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && !busy) {
+      const dialogs = document.querySelectorAll('[role="dialog"][aria-modal="true"]');
+      if (dialogs[dialogs.length - 1] !== card.current) return;
+      // Keys inside the card reach its bubble handler after nested controls
+      // have had a chance to consume them (e.g. tag suggestions).
+      if (e.key === "Escape" && !card.current?.contains(e.target as Node)) {
+        e.preventDefault();
         e.stopPropagation();
-        onClose();
+        if (!busy) onClose();
+      }
+      if (e.key === "Tab") {
+        const controls = Array.from(card.current?.querySelectorAll<HTMLElement>("*") ?? [])
+          .filter((element) => element.tabIndex >= 0 && !element.matches(":disabled") && !element.closest("[hidden]"));
+        const first = controls[0];
+        const last = controls.at(-1);
+        if (!first) {
+          e.preventDefault();
+          card.current?.focus();
+        } else if (e.shiftKey && (document.activeElement === first || !card.current?.contains(document.activeElement))) {
+          e.preventDefault();
+          last?.focus();
+        } else if (!e.shiftKey && (document.activeElement === last || !card.current?.contains(document.activeElement))) {
+          e.preventDefault();
+          first.focus();
+        }
       }
     };
-    document.addEventListener("keydown", handleKeyDown);
-    return () => document.removeEventListener("keydown", handleKeyDown);
+    document.addEventListener("keydown", handleKeyDown, true);
+    return () => document.removeEventListener("keydown", handleKeyDown, true);
   }, [onClose, busy]);
 
   return (
@@ -55,8 +86,11 @@ export function ModalDialog({
       }}
     >
       <div
+        ref={card}
         role="dialog"
         aria-modal="true"
+        aria-labelledby={titleId}
+        tabIndex={-1}
         data-drop-sink={dropSink || undefined}
         // No clipping overflow on the card or body: the tag field's
         // autocomplete is absolutely positioned and would otherwise be cut off.
@@ -64,8 +98,15 @@ export function ModalDialog({
         // capped, self-clipping container instead.
         className="modal-in relative flex max-h-[85vh] w-[min(95vw,440px)] flex-col rounded-lg border-0 bg-background p-5 dark:border dark:border-border"
         onClick={(e) => e.stopPropagation()}
+        onKeyDown={(e) => {
+          e.stopPropagation();
+          if (e.key === "Escape" && !e.defaultPrevented) {
+            e.preventDefault();
+            if (!busy) onClose();
+          }
+        }}
       >
-        <h2 className="mb-3 text-base font-semibold text-foreground">{title}</h2>
+        <h2 id={titleId} className="mb-3 text-base font-semibold text-foreground">{title}</h2>
         <div className="min-h-0 flex-1">{children}</div>
         {footer && (
           <div className="mt-5 flex justify-end gap-2">

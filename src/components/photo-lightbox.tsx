@@ -1,3 +1,4 @@
+import { showExportResult } from "@/lib/export-result";
 import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { listen } from "@tauri-apps/api/event";
@@ -528,7 +529,7 @@ export function PhotoLightbox({
               menuPlacement="top"
               disabled={renaming || replacing}
               onExport={(resolution) =>
-                exportPhotos([photo.id], resolution).catch(() =>
+                exportPhotos([photo.id], resolution).then(showExportResult).catch(() =>
                   alert("Failed to export photo")
                 )
               }

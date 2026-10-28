@@ -24,8 +24,8 @@ use crate::pipeline;
 use crate::protocol;
 use crate::settings::S3State;
 
-/// Variant-existence checks are single HEAD requests; a wider lane keeps a
-/// large pending set moving.
+/// Variant-existence checks use HEAD requests; a wider lane keeps a large
+/// pending set moving.
 const CHECK_CONCURRENCY: usize = 8;
 /// Same ceiling as imports — regenerations download originals, so two in
 /// flight keeps the pipe busy without saturating the connection.
@@ -43,6 +43,30 @@ pub struct RefreshState {
     /// and-forget, so a freshly mounted Settings page needs this snapshot to
     /// rejoin a background refresh instead of showing it as idle.
     progress: std::sync::Mutex<Option<(usize, usize, usize)>>,
+}
+
+impl RefreshState {
+    fn begin(&self) -> Result<()> {
+        let mut progress = self.progress.lock().unwrap();
+        if self.running.load(Ordering::SeqCst) {
+            return Err(Error::msg("A refresh is already running"));
+        }
+        self.cancel.store(false, Ordering::Relaxed);
+        self.running.store(true, Ordering::SeqCst);
+        *progress = Some((0, 0, 0));
+        Ok(())
+    }
+
+    fn request_cancel(&self) {
+        let _progress = self.progress.lock().unwrap();
+        self.cancel.store(true, Ordering::Relaxed);
+    }
+
+    fn finish(&self) {
+        let mut progress = self.progress.lock().unwrap();
+        *progress = None;
+        self.running.store(false, Ordering::SeqCst);
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -76,7 +100,7 @@ struct Target {
 fn targets(conn: &Connection) -> Result<Vec<Target>> {
     let mut stmt = conn.prepare(
         "SELECT id, s3_key, filename FROM photos
-         WHERE processing_status = 'completed' AND variants_ok = 0
+         WHERE (processing_status = 'completed' AND (variants_ok = 0 OR variants_recheck = 1)) OR processing_status = 'failed'
          ORDER BY created_at",
     )?;
     let rows = stmt
@@ -112,7 +136,7 @@ pub fn refresh_pending_count(db: tauri::State<Db>) -> Result<usize> {
 /// flight finish. Already-refreshed photos keep their new variants/metadata.
 #[tauri::command]
 pub fn cancel_refresh(state: tauri::State<RefreshState>) {
-    state.cancel.store(true, Ordering::Relaxed);
+    state.request_cancel();
 }
 
 /// Progress of the refresh currently in flight, or None when idle. Lets the
@@ -156,20 +180,23 @@ struct RunGuard(AppHandle);
 impl Drop for RunGuard {
     fn drop(&mut self) {
         let state = self.0.state::<RefreshState>();
-        state.running.store(false, Ordering::SeqCst);
-        *state.progress.lock().unwrap() = None;
+        state.finish();
     }
 }
 
 async fn run(app: &AppHandle) -> Result<RefreshReport> {
-    {
-        let state = app.state::<RefreshState>();
-        if state.running.swap(true, Ordering::SeqCst) {
-            return Err(Error::msg("A refresh is already running"));
-        }
-        state.cancel.store(false, Ordering::Relaxed);
-    }
+    // Register before waiting: cancellation and duplicate-run checks also
+    // apply while an import/export owns the library.
+    app.state::<RefreshState>().begin()?;
     let _guard = RunGuard(app.clone());
+    let _operation = crate::library::write(app).await;
+    if app.state::<RefreshState>().cancel.load(Ordering::Relaxed) {
+        let db = app.state::<Db>();
+        let total = pending_count(&db.0.lock().unwrap())?;
+        let report = RefreshReport { total, refreshed: 0, failed: 0, cancelled: true };
+        emit_finished(app, &report);
+        return Ok(report);
+    }
 
     // Refuse to write into a bucket the catalog wasn't built from, and fail
     // fast when S3 isn't configured at all.
@@ -189,7 +216,9 @@ async fn run(app: &AppHandle) -> Result<RefreshReport> {
     };
     let total = list.len();
     if total == 0 {
-        return Ok(RefreshReport { total: 0, refreshed: 0, failed: 0, cancelled: false });
+        let report = RefreshReport { total: 0, refreshed: 0, failed: 0, cancelled: false };
+        emit_finished(app, &report);
+        return Ok(report);
     }
     *app.state::<RefreshState>().progress.lock().unwrap() = Some((total, 0, 0));
 
@@ -249,18 +278,8 @@ async fn run(app: &AppHandle) -> Result<RefreshReport> {
 
     let (refreshed, failed) = *counters.lock().unwrap();
     let cancelled = app.state::<RefreshState>().cancel.load(Ordering::Relaxed);
-    let _ = app.emit(
-        PROGRESS_EVENT,
-        RefreshProgress {
-            total,
-            done: refreshed,
-            failed,
-            status: if cancelled { "cancelled" } else { "done" },
-            photo_id: None,
-            filename: None,
-            error: None,
-        },
-    );
+    let report = RefreshReport { total, refreshed, failed, cancelled };
+    emit_finished(app, &report);
 
     // The catalog now carries real metadata — persist it so the next rebuild
     // takes the manifest fast path instead of another listing + refresh.
@@ -268,7 +287,15 @@ async fn run(app: &AppHandle) -> Result<RefreshReport> {
         crate::manifest::schedule_upload(app);
     }
 
-    Ok(RefreshReport { total, refreshed, failed, cancelled })
+    Ok(report)
+}
+
+fn emit_finished(app: &AppHandle, report: &RefreshReport) {
+    let _ = app.emit(PROGRESS_EVENT, RefreshProgress {
+        total: report.total, done: report.refreshed, failed: report.failed,
+        status: if report.cancelled { "cancelled" } else { "done" },
+        photo_id: None, filename: None, error: None,
+    });
 }
 
 enum Outcome {
@@ -277,8 +304,8 @@ enum Outcome {
     Skipped,
 }
 
-/// Repair one photo. A HEAD on the 640px variant decides everything: if the
-/// variant is in the bucket the row is just marked healthy — no download, no
+/// Repair one photo. If every required variant and the original exist, the
+/// row is just marked healthy — no download, no
 /// metadata read. Only genuinely variant-less photos pay for a download,
 /// regenerate, and upload (which also fills metadata, since the bytes are at
 /// hand).
@@ -289,11 +316,17 @@ async fn refresh_one(
     heavy: &Semaphore,
 ) -> Result<Outcome> {
     {
+        let db = app.state::<Db>();
+        let conn = db.0.lock().unwrap();
+        let photo = conn.query_row(&format!("SELECT {PHOTO_COLUMNS} FROM photos WHERE id = ?1"), [&target.id], db::photo_from_row)?;
+        db::ensure_exclusive_keys(&conn, &photo)?;
+    }
+    {
         let _permit = check.acquire().await.expect("semaphore never closes");
         if app.state::<RefreshState>().cancel.load(Ordering::Relaxed) {
             return Ok(Outcome::Skipped);
         }
-        if variants_exist(app, &target.s3_key).await {
+        if variants_exist(app, &target.s3_key).await? {
             let db = app.state::<Db>();
             let conn = db.0.lock().unwrap();
             mark_variants_ok(&conn, &target.id)?;
@@ -360,6 +393,7 @@ async fn refresh_one(
 /// the row's metadata, and returns the updated row.
 #[tauri::command]
 pub async fn load_photo_metadata(app: AppHandle, photo_id: String) -> Result<db::Photo> {
+    let _operation = crate::library::write(&app).await;
     let (s3_key, filename) = {
         let db = app.state::<Db>();
         let conn = db.0.lock().unwrap();
@@ -404,20 +438,24 @@ pub async fn load_photo_metadata(app: AppHandle, photo_id: String) -> Result<db:
 /// set is assumed complete (both the old web pipeline and this app write all
 /// widths together). Any HEAD failure counts as missing, which errs toward
 /// regenerating.
-async fn variants_exist(app: &AppHandle, s3_key: &str) -> bool {
-    let key = crate::keys::variant_key(s3_key, 640, crate::keys::VariantFormat::Webp);
+async fn variants_exist(app: &AppHandle, s3_key: &str) -> Result<bool> {
     let state = app.state::<S3State>();
     let guard = state.0.read().await;
-    let Some(ctx) = guard.as_ref() else {
-        return false;
-    };
-    ctx.client
-        .head_object()
-        .bucket(&ctx.bucket)
-        .key(key)
-        .send()
-        .await
-        .is_ok()
+    let ctx = guard.as_ref().ok_or_else(|| Error::msg("S3 is not configured"))?;
+    variants_exist_in(ctx, s3_key).await
+}
+
+async fn variants_exist_in(ctx: &crate::settings::S3Ctx, s3_key: &str) -> Result<bool> {
+    let mut keys = crate::keys::required_variants(s3_key);
+    keys.push(s3_key.to_string());
+    for key in keys {
+        match ctx.client.head_object().bucket(&ctx.bucket).key(key).send().await {
+            Ok(_) => {},
+            Err(aws_sdk_s3::error::SdkError::ServiceError(e)) if e.raw().status().as_u16() == 404 => return Ok(false),
+            Err(e) => return Err(Error::msg(format!("Could not check image variants: {}", crate::error::friendly_s3_error(&e)))),
+        }
+    }
+    Ok(true)
 }
 
 /// Display dimensions (EXIF orientation applied) + EXIF, without a full
@@ -441,7 +479,7 @@ fn read_meta(bytes: &[u8]) -> Result<(u32, u32, ExifMeta)> {
 /// original-image fallback.
 fn mark_variants_ok(conn: &Connection, photo_id: &str) -> Result<()> {
     conn.execute(
-        "UPDATE photos SET variants_ok = 1, updated_at = ?1 WHERE id = ?2",
+        "UPDATE photos SET variants_ok = 1, variants_recheck = 0, processing_status = 'completed', updated_at = ?1 WHERE id = ?2",
         rusqlite::params![db::now(), photo_id],
     )?;
     Ok(())
@@ -496,6 +534,65 @@ fn store_refreshed(
 mod tests {
     use super::*;
 
+    #[tokio::test]
+    async fn queued_refresh_preserves_cancellation_and_rejects_a_second_run() {
+        let library = crate::library::LibraryState::default();
+        let busy = library.0.clone().lock_owned().await;
+        let state = Arc::new(RefreshState::default());
+        state.begin().unwrap();
+        let queued = state.clone();
+        let task = tokio::spawn(async move {
+            let _operation = library.0.lock_owned().await;
+            let cancelled = queued.cancel.load(Ordering::Relaxed);
+            queued.finish();
+            cancelled
+        });
+        assert!(state.begin().is_err());
+        state.request_cancel();
+        assert!(state.begin().is_err());
+        assert!(!task.is_finished());
+        drop(busy);
+        assert!(task.await.unwrap());
+        assert!(state.progress.lock().unwrap().is_none());
+        state.begin().unwrap();
+        assert!(!state.cancel.load(Ordering::Relaxed));
+        state.finish();
+    }
+
+    #[test]
+    fn a_full_set_recheck_preserves_known_thumbnail_availability_and_clears_on_success() {
+        let conn = db::open_in_memory();
+        insert_photo(&conn, "p", "a.jpg", "completed", true);
+        conn.execute("UPDATE photos SET variants_recheck = 1", []).unwrap();
+        assert_eq!(pending_count(&conn).unwrap(), 1);
+        assert_eq!(crate::commands::folder_counts(&conn).unwrap()[0].cover_key.as_deref(), Some("inbox/a.jpg"));
+        mark_variants_ok(&conn, "p").unwrap();
+        assert_eq!(pending_count(&conn).unwrap(), 0);
+        assert_eq!(crate::commands::folder_counts(&conn).unwrap()[0].cover_key.as_deref(), Some("inbox/a.jpg"));
+    }
+
+    #[tokio::test]
+    async fn healthy_requires_all_six_variants_and_the_original() {
+        let (ctx, server) = crate::test_support::s3(vec![(200, ""); 7]).await;
+        assert!(variants_exist_in(&ctx, "inbox/photo_original.jpg").await.unwrap());
+        let requests = server.await.unwrap();
+        let mut keys = crate::keys::required_variants("inbox/photo_original.jpg");
+        keys.push("inbox/photo_original.jpg".into());
+        for key in keys {
+            assert!(requests.iter().any(|request| request.starts_with(&format!("HEAD /test-only/{key} "))), "missing check for {key}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_missing_larger_variant_requires_repair_but_permission_errors_are_not_missing_files() {
+        let (ctx, server) = crate::test_support::s3(vec![(200, ""), (200, ""), (404, "")]).await;
+        assert!(!variants_exist_in(&ctx, "inbox/photo.jpg").await.unwrap());
+        assert_eq!(server.await.unwrap().len(), 3);
+        let (ctx, server) = crate::test_support::s3(vec![(403, "")]).await;
+        assert!(variants_exist_in(&ctx, "inbox/photo.jpg").await.is_err());
+        server.await.unwrap();
+    }
+
     fn insert_photo(conn: &Connection, id: &str, filename: &str, status: &str, variants_ok: bool) {
         conn.execute(
             "INSERT INTO photos (id, filename, s3_key, folder, variants_ok, processing_status, created_at, updated_at)
@@ -506,25 +603,26 @@ mod tests {
     }
 
     #[test]
-    fn targets_are_completed_rows_missing_variants() {
+    fn targets_include_failed_imports_and_incomplete_variants() {
         let conn = db::open_in_memory();
         // Synced-in original without derivatives — needs a refresh.
         insert_photo(&conn, "bare", "a.jpg", "completed", false);
         // Healthy row: variants known present — leave alone, even though
         // its EXIF may never have been loaded.
         insert_photo(&conn, "healthy", "b.jpg", "completed", true);
-        // Unfinished/failed imports are the importer's problem, not ours.
+        // A failed upload may have stored the original but only some variants.
         insert_photo(&conn, "stuck", "c.jpg", "failed", false);
+        insert_photo(&conn, "active", "d.jpg", "processing", false);
         // Cataloged before extension filtering existed: nothing to regenerate
         // for a video, so refresh must not download it just to fail.
         insert_photo(&conn, "video", "run-silent-run-deep-1958.mp4", "completed", false);
 
         let list = targets(&conn).unwrap();
-        assert_eq!(list.len(), 1);
-        assert_eq!(list[0].id, "bare");
-        assert_eq!(list[0].s3_key, "inbox/a.jpg");
+        assert_eq!(list.len(), 2);
+        assert!(list.iter().any(|photo| photo.id == "bare" && photo.s3_key == "inbox/a.jpg"));
+        assert!(list.iter().any(|photo| photo.id == "stuck"));
         // The advertised count always matches what a run would process.
-        assert_eq!(pending_count(&conn).unwrap(), 1);
+        assert_eq!(pending_count(&conn).unwrap(), 2);
     }
 
     #[test]

@@ -13,7 +13,7 @@ use crate::db::{
 use crate::error::{Error, Result};
 
 #[tauri::command]
-pub fn list_folders(db: State<Db>) -> Result<Vec<FolderCount>> {
+pub fn list_folders(db: State<'_, Db>) -> Result<Vec<FolderCount>> {
     let conn = db.0.lock().unwrap();
     folder_counts(&conn)
 }
@@ -22,7 +22,7 @@ pub fn list_folders(db: State<Db>) -> Result<Vec<FolderCount>> {
 /// name order; the home page re-sorts them client-side (see lib/folder-sort.ts),
 /// so `last_added_at` — when the folder's newest photo entered the catalog —
 /// travels with each row for the "Recently updated" order.
-fn folder_counts(conn: &Connection) -> Result<Vec<FolderCount>> {
+pub(crate) fn folder_counts(conn: &Connection) -> Result<Vec<FolderCount>> {
     let mut stmt = conn.prepare(
         "SELECT folder, COUNT(*), MAX(created_at) FROM photos GROUP BY folder ORDER BY folder",
     )?;
@@ -116,7 +116,7 @@ fn set_cover(conn: &Connection, folder: &str, photo_id: &str) -> Result<()> {
 }
 
 #[tauri::command]
-pub fn get_folder_cover(db: State<Db>, folder: String) -> Result<Option<String>> {
+pub fn get_folder_cover(db: State<'_, Db>, folder: String) -> Result<Option<String>> {
     let conn = db.0.lock().unwrap();
     chosen_cover_id(&conn, &folder)
 }
@@ -124,12 +124,13 @@ pub fn get_folder_cover(db: State<Db>, folder: String) -> Result<Option<String>>
 /// Set the folder's cover photo. Rejects a photo from another folder, so the
 /// pick can't outlive a move it never saw.
 #[tauri::command]
-pub fn set_folder_cover(
+pub async fn set_folder_cover(
     app: tauri::AppHandle,
-    db: State<Db>,
+    db: State<'_, Db>,
     folder: String,
     photo_id: String,
 ) -> Result<()> {
+    let _operation = crate::library::write(&app).await;
     {
         let conn = db.0.lock().unwrap();
         set_cover(&conn, &folder, &photo_id)?;
@@ -140,7 +141,8 @@ pub fn set_folder_cover(
 
 /// Drop the folder's cover pick; it falls back to its newest photo.
 #[tauri::command]
-pub fn clear_folder_cover(app: tauri::AppHandle, db: State<Db>, folder: String) -> Result<()> {
+pub async fn clear_folder_cover(app: tauri::AppHandle, db: State<'_, Db>, folder: String) -> Result<()> {
+    let _operation = crate::library::write(&app).await;
     {
         let conn = db.0.lock().unwrap();
         conn.execute("DELETE FROM folder_covers WHERE folder = ?1", params![folder])?;
@@ -150,7 +152,7 @@ pub fn clear_folder_cover(app: tauri::AppHandle, db: State<Db>, folder: String) 
 }
 
 #[tauri::command]
-pub fn list_photos(db: State<Db>, folder: String) -> Result<Vec<Photo>> {
+pub fn list_photos(db: State<'_, Db>, folder: String) -> Result<Vec<Photo>> {
     let conn = db.0.lock().unwrap();
     let mut stmt = conn.prepare(&format!(
         "SELECT {PHOTO_COLUMNS} FROM photos WHERE folder = ?1 ORDER BY created_at DESC",
@@ -511,10 +513,8 @@ fn build_conditions(
     Some((conditions.join(" AND "), params_list))
 }
 
-/// The results-page query: full rows, newest first, capped — this backs a
-/// scrollable list of results, where showing the newest 200 is a reasonable
-/// bound. Use [`build_id_query`] for filtering an already-loaded set, where a
-/// cap would silently subtract matches.
+/// One results page: full rows, newest first, with a stable tie-breaker.
+/// Use [`build_id_query`] for filtering an already-loaded set without a cap.
 fn build_query(
     q: Option<&str>,
     tag: Option<&str>,
@@ -524,7 +524,7 @@ fn build_query(
     let (where_sql, params) = build_conditions(q, tag, camera, folder)?;
     let sql = format!(
         "SELECT {PHOTO_COLUMNS} FROM photos WHERE {where_sql} \
-         ORDER BY created_at DESC LIMIT 200"
+         ORDER BY created_at DESC, id LIMIT 200"
     );
     Some((sql, params))
 }
@@ -541,13 +541,14 @@ fn build_id_query(q: &str, folder: &str) -> Option<(String, Vec<Value>)> {
 
 #[tauri::command]
 pub fn search_photos(
-    db: State<Db>,
+    db: State<'_, Db>,
     q: Option<String>,
     tag: Option<String>,
     camera: Option<String>,
     folder: Option<String>,
+    offset: Option<i64>,
 ) -> Result<Vec<Photo>> {
-    let Some((sql, params_list)) = build_query(
+    let Some((mut sql, mut params_list)) = build_query(
         q.as_deref(),
         tag.as_deref(),
         camera.as_deref(),
@@ -556,6 +557,8 @@ pub fn search_photos(
         return Ok(Vec::new());
     };
 
+    sql.push_str(" OFFSET ?");
+    params_list.push(Value::Integer(offset.unwrap_or(0).max(0)));
     let conn = db.0.lock().unwrap();
     let mut stmt = conn.prepare(&sql)?;
     let photos = stmt
@@ -567,7 +570,7 @@ pub fn search_photos(
 /// Ids of the photos in `folder` matching `q` — the in-folder search field's
 /// filter. Uncapped and ids-only; see [`build_id_query`].
 #[tauri::command]
-pub fn search_photo_ids(db: State<Db>, q: String, folder: String) -> Result<Vec<String>> {
+pub fn search_photo_ids(db: State<'_, Db>, q: String, folder: String) -> Result<Vec<String>> {
     let Some((sql, params_list)) = build_id_query(&q, &folder) else {
         return Ok(Vec::new());
     };
@@ -605,7 +608,7 @@ fn search_facets(conn: &rusqlite::Connection) -> rusqlite::Result<SearchFacets> 
 }
 
 #[tauri::command]
-pub fn list_search_facets(db: State<Db>) -> Result<SearchFacets> {
+pub fn list_search_facets(db: State<'_, Db>) -> Result<SearchFacets> {
     let conn = db.0.lock().unwrap();
     Ok(search_facets(&conn)?)
 }
@@ -654,13 +657,13 @@ fn folder_facets(conn: &rusqlite::Connection, folder: &str) -> rusqlite::Result<
 }
 
 #[tauri::command]
-pub fn list_folder_facets(db: State<Db>, folder: String) -> Result<FolderFacets> {
+pub fn list_folder_facets(db: State<'_, Db>, folder: String) -> Result<FolderFacets> {
     let conn = db.0.lock().unwrap();
     Ok(folder_facets(&conn, &folder)?)
 }
 
 #[tauri::command]
-pub fn list_tags(db: State<Db>) -> Result<Vec<Tag>> {
+pub fn list_tags(db: State<'_, Db>) -> Result<Vec<Tag>> {
     let conn = db.0.lock().unwrap();
     let mut stmt = conn.prepare("SELECT id, name FROM tags ORDER BY name")?;
     let tags = stmt
@@ -675,7 +678,7 @@ pub fn list_tags(db: State<Db>) -> Result<Vec<Tag>> {
 }
 
 #[tauri::command]
-pub fn get_photo_tags(db: State<Db>, photo_id: String) -> Result<Vec<Tag>> {
+pub fn get_photo_tags(db: State<'_, Db>, photo_id: String) -> Result<Vec<Tag>> {
     let conn = db.0.lock().unwrap();
     let mut stmt = conn.prepare(
         "SELECT tags.id, tags.name FROM photo_tags \
@@ -696,12 +699,13 @@ pub fn get_photo_tags(db: State<Db>, photo_id: String) -> Result<Vec<Tag>> {
 /// Add a tag to a photo, creating the tag if it doesn't exist (mirrors the
 /// old upsertTag + onConflictDoNothing pair).
 #[tauri::command]
-pub fn add_photo_tag(
+pub async fn add_photo_tag(
     app: tauri::AppHandle,
-    db: State<Db>,
+    db: State<'_, Db>,
     photo_id: String,
     name: String,
 ) -> Result<Tag> {
+    let _operation = crate::library::write(&app).await;
     let name = name.trim().to_string();
     if name.is_empty() {
         return Err(Error::msg("name is required"));
@@ -732,12 +736,13 @@ pub fn add_photo_tag(
 }
 
 #[tauri::command]
-pub fn remove_photo_tag(
+pub async fn remove_photo_tag(
     app: tauri::AppHandle,
-    db: State<Db>,
+    db: State<'_, Db>,
     photo_id: String,
     tag_id: String,
 ) -> Result<()> {
+    let _operation = crate::library::write(&app).await;
     let conn = db.0.lock().unwrap();
     conn.execute(
         "DELETE FROM photo_tags WHERE photo_id = ?1 AND tag_id = ?2",
@@ -837,7 +842,7 @@ fn remove_tags(conn: &Connection, photo_ids: &[String], names: &[String]) -> rus
 /// editor's usage checklist. Keyed by photo id.
 #[tauri::command]
 pub fn get_tags_for_photos(
-    db: State<Db>,
+    db: State<'_, Db>,
     photo_ids: Vec<String>,
 ) -> Result<HashMap<String, Vec<Tag>>> {
     let conn = db.0.lock().unwrap();
@@ -847,12 +852,13 @@ pub fn get_tags_for_photos(
 /// Add every named tag to every listed photo in one shot (creating tags as
 /// needed). No-op when either list is empty.
 #[tauri::command]
-pub fn add_tags_to_photos(
+pub async fn add_tags_to_photos(
     app: tauri::AppHandle,
-    db: State<Db>,
+    db: State<'_, Db>,
     photo_ids: Vec<String>,
     names: Vec<String>,
 ) -> Result<()> {
+    let _operation = crate::library::write(&app).await;
     if photo_ids.is_empty() || names.is_empty() {
         return Ok(());
     }
@@ -867,12 +873,13 @@ pub fn add_tags_to_photos(
 /// Remove every named tag from every listed photo in one shot. No-op when
 /// either list is empty.
 #[tauri::command]
-pub fn remove_tags_from_photos(
+pub async fn remove_tags_from_photos(
     app: tauri::AppHandle,
-    db: State<Db>,
+    db: State<'_, Db>,
     photo_ids: Vec<String>,
     names: Vec<String>,
 ) -> Result<()> {
+    let _operation = crate::library::write(&app).await;
     if photo_ids.is_empty() || names.is_empty() {
         return Ok(());
     }
@@ -953,7 +960,7 @@ fn rename_tag_inner(conn: &Connection, id: &str, name: &str) -> rusqlite::Result
 
 /// Every tag with its photo count — the source for the Tags page.
 #[tauri::command]
-pub fn list_tag_counts(db: State<Db>) -> Result<Vec<TagCount>> {
+pub fn list_tag_counts(db: State<'_, Db>) -> Result<Vec<TagCount>> {
     let conn = db.0.lock().unwrap();
     Ok(tag_counts(&conn)?)
 }
@@ -961,12 +968,13 @@ pub fn list_tag_counts(db: State<Db>) -> Result<Vec<TagCount>> {
 /// Rename a tag, merging into an existing tag of the same name if there is one.
 /// Resolves with the surviving tag.
 #[tauri::command]
-pub fn rename_tag(
+pub async fn rename_tag(
     app: tauri::AppHandle,
-    db: State<Db>,
+    db: State<'_, Db>,
     id: String,
     name: String,
 ) -> Result<Tag> {
+    let _operation = crate::library::write(&app).await;
     let name = name.trim().to_string();
     if name.is_empty() {
         return Err(Error::msg("name is required"));
@@ -984,7 +992,8 @@ pub fn rename_tag(
 
 /// Delete a tag everywhere. Its photo links cascade away; the photos stay.
 #[tauri::command]
-pub fn delete_tag(app: tauri::AppHandle, db: State<Db>, id: String) -> Result<()> {
+pub async fn delete_tag(app: tauri::AppHandle, db: State<'_, Db>, id: String) -> Result<()> {
+    let _operation = crate::library::write(&app).await;
     {
         let conn = db.0.lock().unwrap();
         conn.execute("DELETE FROM tags WHERE id = ?1", params![id])?;
@@ -1159,7 +1168,7 @@ fn all_collection_counts(conn: &Connection) -> Result<Vec<CollectionCount>> {
 
 /// A folder's collections with their photos — the grid's cards.
 #[tauri::command]
-pub fn list_collections(db: State<Db>, folder: String) -> Result<Vec<Collection>> {
+pub fn list_collections(db: State<'_, Db>, folder: String) -> Result<Vec<Collection>> {
     let conn = db.0.lock().unwrap();
     collections_in_folder(&conn, &folder)
 }
@@ -1167,7 +1176,7 @@ pub fn list_collections(db: State<Db>, folder: String) -> Result<Vec<Collection>
 /// Every collection, whatever folder it's in — what the command palette
 /// searches.
 #[tauri::command]
-pub fn list_all_collections(db: State<Db>) -> Result<Vec<CollectionCount>> {
+pub fn list_all_collections(db: State<'_, Db>) -> Result<Vec<CollectionCount>> {
     let conn = db.0.lock().unwrap();
     all_collection_counts(&conn)
 }
@@ -1177,13 +1186,14 @@ pub fn list_all_collections(db: State<Db>) -> Result<Vec<CollectionCount>> {
 /// silently pouring a selection into a same-named collection made elsewhere
 /// is the kind of thing you only notice much later.
 #[tauri::command]
-pub fn create_collection(
+pub async fn create_collection(
     app: tauri::AppHandle,
-    db: State<Db>,
+    db: State<'_, Db>,
     folder: String,
     title: String,
     photo_ids: Vec<String>,
 ) -> Result<Collection> {
+    let _operation = crate::library::write(&app).await;
     let title = normalize_title(&title)?;
     let collection = {
         let mut conn = db.0.lock().unwrap();
@@ -1217,12 +1227,13 @@ pub fn create_collection(
 
 /// Retitle a collection. Its photos are untouched.
 #[tauri::command]
-pub fn rename_collection(
+pub async fn rename_collection(
     app: tauri::AppHandle,
-    db: State<Db>,
+    db: State<'_, Db>,
     id: String,
     title: String,
 ) -> Result<Collection> {
+    let _operation = crate::library::write(&app).await;
     let title = normalize_title(&title)?;
     let collection = {
         let conn = db.0.lock().unwrap();
@@ -1253,7 +1264,8 @@ pub fn rename_collection(
 /// Dissolve a collection: the title goes, the photos stay in the folder as
 /// ungrouped. Nothing in the bucket moves, so this is always undoable by hand.
 #[tauri::command]
-pub fn delete_collection(app: tauri::AppHandle, db: State<Db>, id: String) -> Result<()> {
+pub async fn delete_collection(app: tauri::AppHandle, db: State<'_, Db>, id: String) -> Result<()> {
+    let _operation = crate::library::write(&app).await;
     {
         let conn = db.0.lock().unwrap();
         conn.execute("DELETE FROM collections WHERE id = ?1", params![id])?;
@@ -1264,12 +1276,13 @@ pub fn delete_collection(app: tauri::AppHandle, db: State<Db>, id: String) -> Re
 
 /// Move photos into an existing collection, out of any they were in.
 #[tauri::command]
-pub fn add_photos_to_collection(
+pub async fn add_photos_to_collection(
     app: tauri::AppHandle,
-    db: State<Db>,
+    db: State<'_, Db>,
     collection_id: String,
     photo_ids: Vec<String>,
 ) -> Result<Collection> {
+    let _operation = crate::library::write(&app).await;
     let collection = {
         let mut conn = db.0.lock().unwrap();
         let tx = conn.transaction()?;
@@ -1287,11 +1300,12 @@ pub fn add_photos_to_collection(
 /// Take photos out of whatever collection they're in; they stay in the folder.
 /// Photos that weren't in one are silently skipped.
 #[tauri::command]
-pub fn remove_photos_from_collections(
+pub async fn remove_photos_from_collections(
     app: tauri::AppHandle,
-    db: State<Db>,
+    db: State<'_, Db>,
     photo_ids: Vec<String>,
 ) -> Result<()> {
+    let _operation = crate::library::write(&app).await;
     if photo_ids.is_empty() {
         return Ok(());
     }
@@ -1386,7 +1400,7 @@ pub async fn replace_photos(
 /// drop can offer Replace / Keep both / Skip instead of silently renaming.
 #[tauri::command]
 pub fn check_import_collisions(
-    db: State<Db>,
+    db: State<'_, Db>,
     folder: String,
     filenames: Vec<String>,
 ) -> Result<Vec<String>> {
@@ -1439,7 +1453,7 @@ pub async fn export_photos(
     app: tauri::AppHandle,
     photo_ids: Vec<String>,
     resolution: String,
-) -> Result<Option<String>> {
+) -> Result<Option<crate::photos::ExportReport>> {
     crate::photos::export_photos(app, photo_ids, resolution).await
 }
 

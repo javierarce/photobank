@@ -1,5 +1,28 @@
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex, Weak};
+use std::sync::atomic::{AtomicBool, Ordering};
+use sha2::{Digest, Sha256};
+use crate::error::{Error, Result};
+
+#[derive(Default)]
+pub struct CacheState {
+    locks: Mutex<HashMap<PathBuf, Weak<tokio::sync::Mutex<()>>>>,
+    eviction_pending: AtomicBool,
+    eviction_running: AtomicBool,
+}
+
+fn key_lock(app: &AppHandle, path: &Path) -> Arc<tokio::sync::Mutex<()>> {
+    let state = app.state::<CacheState>();
+    let mut locks = state.locks.lock().unwrap();
+    locks.retain(|_, lock| lock.strong_count() > 0);
+    if let Some(lock) = locks.get(path).and_then(Weak::upgrade) { return lock; }
+    let lock = Arc::new(tokio::sync::Mutex::new(()));
+    locks.insert(path.to_path_buf(), Arc::downgrade(&lock));
+    lock
+}
+
 
 use percent_encoding::percent_decode_str;
 use tauri::http::{header, Request, Response, StatusCode};
@@ -97,37 +120,42 @@ async fn respond(
     path: &str,
 ) -> std::result::Result<Response<Vec<u8>>, (StatusCode, String)> {
     let key = decode_key(path).ok_or((StatusCode::BAD_REQUEST, "invalid key".to_string()))?;
-    let cache_path = cache_dir(app).join(&key);
-
-    let bytes = match tokio::fs::read(&cache_path).await {
-        Ok(bytes) => bytes,
-        Err(_) => fetch_and_cache(app, &key, &cache_path).await?,
-    };
+    let bytes = fetch_bytes(app, &key).await
+        .map_err(|e| (StatusCode::NOT_FOUND, e.to_string()))?;
 
     Ok(Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, content_type(&key))
-        .header(header::CACHE_CONTROL, "public, max-age=31536000, immutable")
+        .header(header::CACHE_CONTROL, "no-store")
         .body(bytes)
         .expect("response builder with static headers never fails"))
 }
 
-async fn fetch_and_cache(
-    app: &AppHandle,
-    key: &str,
-    cache_path: &Path,
-) -> std::result::Result<Vec<u8>, (StatusCode, String)> {
-    // Goes through the CDN when one is configured, S3 otherwise (cdn.rs).
-    let data = crate::cdn::get_object(app, key)
-        .await
-        .map_err(|e| (StatusCode::NOT_FOUND, format!("fetch failed: {e}")))?;
-
-    write_cache(cache_path, &data).await;
-    if !is_pinned(key) {
-        let dir = cache_dir(app);
-        tauri::async_runtime::spawn_blocking(move || evict_large(&dir));
+/// All reads use the same namespace and per-object lock as import/replace.
+/// Capture the namespace before awaiting: a late response from an old bucket
+/// or rebuild may only populate its old namespace.
+pub async fn fetch_bytes(app: &AppHandle, key: &str) -> Result<Vec<u8>> {
+    let (identity, epoch) = namespace(app);
+    let path = object_path(&cache_dir(app), &identity, &epoch, key);
+    let lock = key_lock(app, &path);
+    let _guard = lock.lock().await;
+    if let Ok(bytes) = tokio::fs::read(&path).await {
+        if image::guess_format(&bytes).is_ok() { return Ok(bytes); }
+        let _ = tokio::fs::remove_file(&path).await;
     }
-    Ok(data)
+    let ctx = {
+        let state = app.state::<crate::settings::S3State>();
+        let guard = state.0.read().await;
+        guard.clone().ok_or_else(|| Error::msg("S3 is not configured"))?
+    };
+    if ctx.identity != identity {
+        return Err(Error::msg("The catalog belongs to a different bucket. Rebuild it in Settings before downloading images."));
+    }
+    let bytes = crate::cdn::get_object_from(&ctx, key).await?;
+    image::guess_format(&bytes).map_err(|_| Error::msg("The downloaded object is not a supported image"))?;
+    write_cache(&path, &bytes).await;
+    schedule_eviction(app);
+    Ok(bytes)
 }
 
 /// Percent-decode the URL path into an S3 key, rejecting anything that could
@@ -164,10 +192,22 @@ fn content_type(key: &str) -> &'static str {
 }
 
 fn cache_dir(app: &AppHandle) -> PathBuf {
-    app.path()
-        .app_cache_dir()
-        .expect("app cache dir is always resolvable on macOS")
-        .join("photos")
+    crate::paths::cache(app).join("photos-v2")
+}
+
+fn namespace(app: &AppHandle) -> (String, String) {
+    let db = app.state::<crate::db::Db>();
+    let conn = db.0.lock().unwrap();
+    (
+        crate::db::get_meta(&conn, crate::db::META_CATALOG_BUCKET).ok().flatten().unwrap_or_default(),
+        crate::db::get_meta(&conn, "cache_epoch").ok().flatten().unwrap_or_default(),
+    )
+}
+
+fn object_path(root: &Path, identity: &str, epoch: &str, key: &str) -> PathBuf {
+    let namespace = format!("{:x}", Sha256::digest(format!("{}:{identity}{epoch}", identity.len()).as_bytes()));
+    let name = format!("{:x}.image", Sha256::digest(key.as_bytes()));
+    root.join(namespace).join(if is_pinned(key) { "pinned" } else { "large" }).join(name)
 }
 
 /// 640px thumbnails are small and power the instant grid — never evicted.
@@ -181,12 +221,42 @@ fn is_pinned(key: &str) -> bool {
 /// Seed the cache from elsewhere in the app (the importer writes freshly
 /// generated variants here so the grid renders without refetching from S3).
 pub async fn cache_put(app: &AppHandle, key: &str, data: &[u8]) {
-    write_cache(&cache_dir(app).join(key), data).await;
+    let path = cache_path(app, key);
+    let lock = key_lock(app, &path);
+    let _guard = lock.lock().await;
+    write_cache(&path, data).await;
+    schedule_eviction(app);
 }
 
-/// Where a key lives (or would live) in the disk cache.
 pub fn cache_path(app: &AppHandle, key: &str) -> PathBuf {
-    cache_dir(app).join(key)
+    let (identity, epoch) = namespace(app);
+    object_path(&cache_dir(app), &identity, &epoch, key)
+}
+
+pub async fn remove_cache(app: &AppHandle, key: &str) {
+    let path = cache_path(app, key);
+    let lock = key_lock(app, &path);
+    let _guard = lock.lock().await;
+    let _ = tokio::fs::remove_file(path).await;
+}
+
+fn schedule_eviction(app: &AppHandle) {
+    let state = app.state::<CacheState>();
+    state.eviction_pending.store(true, Ordering::SeqCst);
+    if state.eviction_running.swap(true, Ordering::SeqCst) { return; }
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+            app.state::<CacheState>().eviction_pending.store(false, Ordering::SeqCst);
+            let root = cache_dir(&app);
+            let _ = tauri::async_runtime::spawn_blocking(move || evict_large(&root)).await;
+            let state = app.state::<CacheState>();
+            state.eviction_running.store(false, Ordering::SeqCst);
+            if !state.eviction_pending.load(Ordering::SeqCst)
+                || state.eviction_running.swap(true, Ordering::SeqCst) { break; }
+        }
+    });
 }
 
 async fn write_cache(path: &Path, data: &[u8]) {
@@ -197,33 +267,36 @@ async fn write_cache(path: &Path, data: &[u8]) {
     }
     // Write to a temp sibling then rename, so a crash mid-write never leaves
     // a truncated image that would be served forever.
-    let tmp = path.with_extension("tmp-download");
+    let tmp = path.with_extension(format!("{}.tmp-download", uuid::Uuid::new_v4()));
     if tokio::fs::write(&tmp, data).await.is_ok() {
         let _ = tokio::fs::rename(&tmp, path).await;
     }
+    let _ = tokio::fs::remove_file(&tmp).await;
 }
 
 fn evict_large(dir: &Path) {
+    evict_to_budget(dir, LARGE_CACHE_CAP_BYTES);
+}
+
+fn evict_to_budget(dir: &Path, budget: u64) {
     let mut files: Vec<(PathBuf, u64, SystemTime)> = Vec::new();
     collect_files(dir, &mut files);
 
     let mut large: Vec<_> = files
         .into_iter()
         .filter(|(path, _, _)| {
-            !path
-                .file_name()
-                .map(|n| n.to_string_lossy().contains("_640."))
-                .unwrap_or(false)
+            !path.components().any(|part| part.as_os_str() == "pinned")
+                && path.extension().is_some_and(|ext| ext == "image")
         })
         .collect();
 
     let total: u64 = large.iter().map(|(_, size, _)| size).sum();
-    if total <= LARGE_CACHE_CAP_BYTES {
+    if total <= budget {
         return;
     }
 
     large.sort_by_key(|(_, _, mtime)| *mtime);
-    let mut excess = total - LARGE_CACHE_CAP_BYTES;
+    let mut excess = total - budget;
     for (path, size, _) in large {
         if excess == 0 {
             break;
@@ -251,6 +324,47 @@ fn collect_files(dir: &Path, out: &mut Vec<(PathBuf, u64, SystemTime)>) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn cache_paths_separate_bucket_endpoint_epoch_case_and_format() {
+        let root = std::path::Path::new("cache");
+        let paths: std::collections::HashSet<_> = [
+            ("bucket-a", "", "inbox/photo.jpg"),
+            ("bucket-b", "", "inbox/photo.jpg"),
+            ("bucket-a @ https://example.test", "", "inbox/photo.jpg"),
+            ("bucket-a", "rebuilt", "inbox/photo.jpg"),
+            ("bucket-a", "", "inbox/Photo.jpg"),
+            ("bucket-a", "", "inbox/photo.webp"),
+        ].into_iter().map(|(bucket, epoch, key)| super::object_path(root, bucket, epoch, key).to_string_lossy().to_lowercase()).collect();
+        assert_eq!(paths.len(), 6, "paths must differ even on a case-insensitive filesystem");
+    }
+
+    #[tokio::test]
+    async fn concurrent_cache_writes_preserve_each_formats_complete_bytes() {
+        let temp = crate::test_support::TempDir::new();
+        let jpg = temp.0.join("photo.jpg");
+        let webp = temp.0.join("photo.webp");
+        let jpg_bytes = vec![1; 100_000];
+        let webp_bytes = vec![2; 100_000];
+        tokio::join!(super::write_cache(&jpg, &jpg_bytes), super::write_cache(&webp, &webp_bytes));
+        assert_eq!(std::fs::read(&jpg).unwrap(), jpg_bytes);
+        assert_eq!(std::fs::read(&webp).unwrap(), webp_bytes);
+        assert_eq!(std::fs::read_dir(&temp.0).unwrap().count(), 2);
+    }
+
+    #[tokio::test]
+    async fn cache_eviction_enforces_the_budget_without_removing_thumbnails_or_temporary_files() {
+        let temp = crate::test_support::TempDir::new();
+        let pinned = super::object_path(&temp.0, "bucket", "", "inbox/photo_640.webp");
+        let large = super::object_path(&temp.0, "bucket", "", "inbox/photo.jpg");
+        super::write_cache(&pinned, &[1; 100]).await;
+        super::write_cache(&large, &[2; 100]).await;
+        let in_flight = large.with_extension("tmp-download");
+        std::fs::write(&in_flight, [3; 100]).unwrap();
+        super::evict_to_budget(&temp.0, 0);
+        assert!(pinned.exists());
+        assert!(in_flight.exists());
+        assert!(!large.exists());
+    }
     use super::{content_type, decode_key, decode_local_path, is_pinned, is_previewable};
     use std::path::PathBuf;
 

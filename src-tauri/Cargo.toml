@@ -30,6 +30,7 @@ aws-smithy-types = "1"
 # tauri-plugin-updater, so this adds no new transitive dependencies.
 reqwest = { version = "0.13", default-features = false, features = ["rustls", "http2"] }
 percent-encoding = "2"
+sha2 = "0.10"
 image = "0.25"
 fast_image_resize = "5"
 webp = "0.3"

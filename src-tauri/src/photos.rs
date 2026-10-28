@@ -65,6 +65,35 @@ async fn s3_copy(ctx: &S3Ctx, from: &str, to: &str) -> Result<()> {
     Ok(())
 }
 
+/// A missing optional legacy derivative is harmless; auth/network failures
+/// must not be mistaken for a successful copy.
+async fn copy_variant(ctx: &S3Ctx, from: &str, to: &str) -> Result<bool> {
+    if from == to { return Ok(false); }
+    match ctx.client.copy_object().bucket(&ctx.bucket)
+        .copy_source(format!("{}/{}", ctx.bucket, encode_key(from))).key(to).send().await {
+        Ok(_) => Ok(true),
+        Err(aws_sdk_s3::error::SdkError::ServiceError(e)) if e.raw().status().as_u16() == 404 => Ok(false),
+        Err(e) => Err(Error::msg(format!("copy of {from} failed: {}", friendly_s3_error(&e)))),
+    }
+}
+
+/// Keep successful copies even if a later derivative fails, so callers can
+/// remove the partial destination while leaving every source object intact.
+async fn copy_photo_objects(ctx: &S3Ctx, from: &str, to: &str) -> (Vec<(String, String)>, Option<Error>) {
+    if let Err(error) = s3_copy(ctx, from, to).await { return (vec![], Some(error)); }
+    let mut copied = vec![(from.to_string(), to.to_string())];
+    for suffix in variant_suffixes() {
+        let source = format!("{}{suffix}", variant_base(from));
+        let destination = format!("{}{suffix}", variant_base(to));
+        match copy_variant(ctx, &source, &destination).await {
+            Ok(true) => copied.push((source, destination)),
+            Ok(false) => {},
+            Err(error) => return (copied, Some(error)),
+        }
+    }
+    (copied, None)
+}
+
 async fn s3_delete_quiet(ctx: &S3Ctx, key: &str) {
     let _ = ctx
         .client
@@ -153,7 +182,7 @@ fn keys_referenced_under(
     let mut referenced = HashSet::new();
     for key in keys {
         let key = key?;
-        let base = base_key(&key).to_string();
+        let base = variant_base(&key).to_string();
         for suffix in variant_suffixes() {
             referenced.insert(format!("{base}{suffix}"));
         }
@@ -196,6 +225,7 @@ pub async fn update_photo(
     folder: Option<String>,
     filename: Option<String>,
 ) -> Result<Photo> {
+    let _operation = crate::library::write(&app).await;
     let folder = match folder {
         Some(f) => Some(sanitize_folder(&f).ok_or_else(|| Error::msg("Invalid folder"))?),
         None => None,
@@ -206,6 +236,10 @@ pub async fn update_photo(
     };
 
     let photo = get_photo(&app, &id)?;
+    {
+        let db = app.state::<Db>();
+        db::ensure_exclusive_keys(&db.0.lock().unwrap(), &photo)?;
+    }
     let new_folder = folder.unwrap_or_else(|| photo.folder.clone());
     let new_filename = filename.unwrap_or_else(|| photo.filename.clone());
     let new_s3_key = format!("{new_folder}/{new_filename}");
@@ -221,7 +255,7 @@ pub async fn update_photo(
     {
         let db = app.state::<Db>();
         let conn = db.0.lock().unwrap();
-        let occupant = db::variant_stem_occupant(&conn, &new_folder, &new_filename)?;
+        let occupant = db::key_occupant(&conn, &new_folder, &new_filename, Some(&id))?;
         if occupant.is_some_and(|other| other != id) {
             return Err(Error::msg(
                 "A photo with a conflicting name already exists in the target folder",
@@ -229,9 +263,10 @@ pub async fn update_photo(
         }
     }
 
-    let old_base = variant_base(&photo.s3_key).to_string();
-    let new_base = variant_base(&new_s3_key).to_string();
-
+    if crate::keys::owned_keys(&photo.s3_key).contains(&new_s3_key)
+        || crate::keys::owned_keys(&new_s3_key).contains(&photo.s3_key) {
+        return Err(Error::msg("The new filename conflicts with this photo's own image variants. Choose a different name."));
+    }
     let state = app.state::<S3State>();
     let guard = state.0.read().await;
     let ctx = guard
@@ -239,27 +274,20 @@ pub async fn update_photo(
         .ok_or_else(|| Error::msg("S3 is not configured — open Settings first"))?;
     crate::settings::ensure_catalog_matches_bucket(&app, ctx)?;
 
-    // Copy original; if this fails nothing has been touched yet
-    s3_copy(ctx, &photo.s3_key, &new_s3_key).await?;
-
-    // Copy variants, remembering which ones made it (a variant may not
-    // exist yet if the photo is still processing)
-    let mut copied_suffixes = Vec::new();
-    for suffix in variant_suffixes() {
-        if s3_copy(ctx, &format!("{old_base}{suffix}"), &format!("{new_base}{suffix}"))
-            .await
-            .is_ok()
-        {
-            copied_suffixes.push(suffix);
-        }
+    let (copied, failure) = copy_photo_objects(ctx, &photo.s3_key, &new_s3_key).await;
+    if let Some(error) = failure {
+        let destinations = copied.iter().map(|(_, to)| to.clone()).collect::<Vec<_>>();
+        s3_delete_keys_quiet(ctx, &destinations).await;
+        return Err(error);
     }
 
     // Point the DB at the new location before deleting anything, so a
     // failure here leaves the photo intact at its old key
     let updated = {
         let db = app.state::<Db>();
-        let conn = db.0.lock().unwrap();
-        let updated = conn.query_row(
+        let mut conn = db.0.lock().unwrap();
+        let tx = conn.transaction()?;
+        let updated = tx.query_row(
             &format!(
                 "UPDATE photos SET folder = ?1, filename = ?2, s3_key = ?3, updated_at = ?4
                  WHERE id = ?5 RETURNING {PHOTO_COLUMNS}"
@@ -271,25 +299,24 @@ pub async fn update_photo(
         // leaves the collection too — otherwise it would keep listing a
         // photo that is no longer anywhere near it.
         if new_folder != photo.folder {
-            conn.execute(
+            tx.execute(
                 "DELETE FROM collection_photos WHERE photo_id = ?1",
                 rusqlite::params![id],
             )?;
         }
+        tx.commit()?;
         updated
     };
 
     // Delete the old original and only the variants we actually copied
-    s3_delete_quiet(ctx, &photo.s3_key).await;
-    for suffix in &copied_suffixes {
-        s3_delete_quiet(ctx, &format!("{old_base}{suffix}")).await;
+    for (from, _) in &copied {
+        s3_delete_quiet(ctx, from).await;
     }
     drop(guard);
 
-    // Keep the local cache warm: rename cached files to their new keys
-    rename_cached(&app, &photo.s3_key, &new_s3_key).await;
-    for suffix in &copied_suffixes {
-        rename_cached(&app, &format!("{old_base}{suffix}"), &format!("{new_base}{suffix}")).await;
+    // Invalidate both paths so subsequent reads resolve the committed keys.
+    for (from, to) in &copied {
+        rename_cached(&app, from, to).await;
     }
 
     // The old keys are gone from the bucket, but the CDN would keep serving
@@ -352,6 +379,7 @@ fn plan_folder_rename(
     if photos.is_empty() {
         return Err(Error::msg("Folder not found"));
     }
+    for photo in &photos { db::ensure_exclusive_keys(conn, photo)?; }
     Ok(photos)
 }
 
@@ -416,6 +444,7 @@ fn commit_folder_rename(
 /// the folder never appears half-renamed; the worst a partial failure leaves
 /// behind is orphaned bucket objects. Returns the number of photos moved.
 pub async fn rename_folder(app: AppHandle, old_name: String, new_name: String) -> Result<usize> {
+    let _operation = crate::library::write(&app).await;
     let Some(new_name) = validate_folder_rename(&old_name, &new_name)? else {
         return Ok(0); // same name — nothing to do
     };
@@ -451,18 +480,7 @@ pub async fn rename_folder(app: AppHandle, old_name: String, new_name: String) -
         let new_key = format!("{new_name}/{}", photo.filename);
         tasks.spawn(async move {
             let _permit = semaphore.acquire_owned().await.expect("semaphore closed");
-            s3_copy(&ctx, &old_key, &new_key).await?;
-            let old_base = base_key(&old_key).to_string();
-            let new_base = base_key(&new_key).to_string();
-            let mut pairs = vec![(old_key, new_key)];
-            for suffix in variant_suffixes() {
-                let from = format!("{old_base}{suffix}");
-                let to = format!("{new_base}{suffix}");
-                if s3_copy(&ctx, &from, &to).await.is_ok() {
-                    pairs.push((from, to));
-                }
-            }
-            Ok::<_, Error>(pairs)
+            copy_photo_objects(&ctx, &old_key, &new_key).await
         });
     }
 
@@ -472,9 +490,9 @@ pub async fn rename_folder(app: AppHandle, old_name: String, new_name: String) -
     let mut failure: Option<Error> = None;
     while let Some(joined) = tasks.join_next().await {
         match joined {
-            Ok(Ok(pairs)) => copied.extend(pairs),
-            Ok(Err(e)) => {
-                failure.get_or_insert(e);
+            Ok((pairs, error)) => {
+                copied.extend(pairs);
+                if let Some(error) = error { failure.get_or_insert(error); }
             }
             Err(e) => {
                 failure.get_or_insert(Error::msg(e.to_string()));
@@ -530,7 +548,12 @@ pub async fn rename_folder(app: AppHandle, old_name: String, new_name: String) -
 /// Delete a photo, its variants, its catalog row (cascading to tags), and
 /// any cached files.
 pub async fn delete_photo(app: AppHandle, id: String) -> Result<()> {
+    let _operation = crate::library::write(&app).await;
     let photo = get_photo(&app, &id)?;
+    {
+        let db = app.state::<Db>();
+        db::ensure_exclusive_keys(&db.0.lock().unwrap(), &photo)?;
+    }
     let base = variant_base(&photo.s3_key).to_string();
 
     let mut keys = vec![photo.s3_key.clone()];
@@ -557,7 +580,7 @@ pub async fn delete_photo(app: AppHandle, id: String) -> Result<()> {
     }
 
     for key in &keys {
-        let _ = tokio::fs::remove_file(protocol::cache_path(&app, key)).await;
+        protocol::remove_cache(&app, key).await;
     }
 
     // Without this the CDN happily serves a deleted photo for the rest of its
@@ -569,12 +592,83 @@ pub async fn delete_photo(app: AppHandle, id: String) -> Result<()> {
 }
 
 async fn rename_cached(app: &AppHandle, from: &str, to: &str) {
-    let from = protocol::cache_path(app, from);
-    let to = protocol::cache_path(app, to);
-    if let Some(parent) = to.parent() {
-        let _ = tokio::fs::create_dir_all(parent).await;
-    }
-    let _ = tokio::fs::rename(from, to).await;
+    // Drop both entries under their per-key locks. Reads in flight cannot
+    // restore an old image after a rename finishes.
+    protocol::remove_cache(app, from).await;
+    protocol::remove_cache(app, to).await;
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportReport {
+    pub path: String,
+    pub requested: usize,
+    pub written: usize,
+    pub failures: Vec<ExportFailure>,
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct ExportFailure {
+    pub filename: String,
+    pub error: String,
+}
+
+/// Fully write a sibling before publishing it. Hard-link publication is
+/// atomic and refuses existing destinations, including case aliases on macOS.
+/// Filesystems without hard links use exclusive creation with failure cleanup.
+fn write_export(dir: &std::path::Path, name: &str, bytes: &[u8]) -> std::io::Result<PathBuf> {
+    use std::io::Write;
+    let tmp = dir.join(format!(".photobank-{}.tmp", uuid::Uuid::new_v4()));
+    let result = (|| {
+        let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(&tmp)?;
+        file.write_all(bytes)?;
+        file.sync_all()?;
+        drop(file);
+        let (stem, ext) = name.rsplit_once('.').unwrap_or((name, ""));
+        let mut n = 0;
+        loop {
+            let name = if n == 0 { name.to_string() }
+                else if ext.is_empty() { format!("{stem} ({n})") }
+                else { format!("{stem} ({n}).{ext}") };
+            let target = dir.join(name);
+            match std::fs::hard_link(&tmp, &target) {
+                Ok(()) => return Ok(target),
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => n += 1,
+                Err(_) => match write_new_export(&target, bytes) {
+                    Ok(()) => return Ok(target),
+                    Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => n += 1,
+                    Err(e) => return Err(e),
+                },
+            }
+        }
+    })();
+    let _ = std::fs::remove_file(tmp);
+    result
+}
+
+fn write_new_export(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    // If creation fails, the path belongs to somebody else; never remove it.
+    let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(path)?;
+    let result = file.write_all(bytes).and_then(|_| file.sync_all());
+    drop(file);
+    if result.is_err() { let _ = std::fs::remove_file(path); }
+    result
+}
+
+fn write_save(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    let tmp = path.with_extension(format!("{}.tmp", uuid::Uuid::new_v4()));
+    let result = (|| {
+        let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(&tmp)?;
+        file.write_all(bytes)?;
+        file.sync_all()?;
+        drop(file);
+        // The native Save dialog has already asked about replacing this path.
+        std::fs::rename(&tmp, path)
+    })();
+    let _ = std::fs::remove_file(tmp);
+    result
 }
 
 /// Export the chosen variant of each photo to disk. One photo → save-file
@@ -585,7 +679,8 @@ pub async fn export_photos(
     app: AppHandle,
     photo_ids: Vec<String>,
     resolution: String,
-) -> Result<Option<String>> {
+) -> Result<Option<ExportReport>> {
+    let _operation = crate::library::write(&app).await;
     if photo_ids.is_empty() {
         return Err(Error::msg("No photos selected"));
     }
@@ -630,7 +725,7 @@ pub async fn export_photos(
         }
     };
 
-    if photos.len() == 1 {
+    if photos.len() == 1 && photo_ids.len() == 1 {
         let photo = &photos[0];
         let (key, ext) = source_key(photo);
         let stem = base_key(&photo.filename).to_string();
@@ -649,10 +744,11 @@ pub async fn export_photos(
             return Ok(None);
         };
         let bytes = fetch_bytes(&app, &key).await?;
-        tokio::fs::write(&path, bytes)
-            .await
+        let output = path.clone();
+        tauri::async_runtime::spawn_blocking(move || write_save(&output, &bytes)).await
+            .map_err(|e| Error::msg(e.to_string()))?
             .map_err(|e| Error::msg(format!("could not write {}: {e}", path.display())))?;
-        return Ok(Some(path.display().to_string()));
+        return Ok(Some(ExportReport { path: path.display().to_string(), requested: 1, written: 1, failures: vec![] }));
     }
 
     let app_for_dialog = app.clone();
@@ -665,35 +761,31 @@ pub async fn export_photos(
         return Ok(None);
     };
 
-    // Avoid duplicate file names when photos in different folders share one
-    let mut used: HashSet<String> = HashSet::new();
-    let mut written = 0usize;
+    let mut report = ExportReport {
+        path: dir.display().to_string(), requested: photo_ids.len(), written: 0, failures: vec![],
+    };
+    for id in &photo_ids {
+        if !photos.iter().any(|p| &p.id == id) {
+            report.failures.push(ExportFailure { filename: id.clone(), error: "Photo no longer exists".into() });
+        }
+    }
     for photo in &photos {
         let (key, ext) = source_key(photo);
-        let stem = base_key(&photo.filename).to_string();
-        let mut name = format!("{stem}.{ext}");
-        let mut n = 1;
-        while used.contains(&name) {
-            name = format!("{stem} ({n}).{ext}");
-            n += 1;
+        let result = async {
+            let safe_name = sanitize_filename(&photo.filename).ok_or_else(|| Error::msg("Invalid export filename"))?;
+            let name = format!("{}.{}", base_key(&safe_name), ext);
+            let bytes = fetch_bytes(&app, &key).await?;
+            let dir = dir.clone();
+            tauri::async_runtime::spawn_blocking(move || write_export(&dir, &name, &bytes)).await
+                .map_err(|e| Error::msg(e.to_string()))?
+                .map_err(|e| Error::msg(e.to_string()))
+        }.await;
+        match result {
+            Ok(_) => report.written += 1,
+            Err(e) => report.failures.push(ExportFailure { filename: photo.filename.clone(), error: e.to_string() }),
         }
-
-        // Skip missing objects, like the old zip endpoint did
-        let Ok(bytes) = fetch_bytes(&app, &key).await else {
-            continue;
-        };
-        let target: PathBuf = dir.join(&name);
-        tokio::fs::write(&target, bytes)
-            .await
-            .map_err(|e| Error::msg(format!("could not write {}: {e}", target.display())))?;
-        used.insert(name);
-        written += 1;
     }
-
-    if written == 0 {
-        return Err(Error::msg("None of the selected photos could be exported"));
-    }
-    Ok(Some(dir.display().to_string()))
+    Ok(Some(report))
 }
 
 /// The stored versions to try when putting a photo on the clipboard, in order:
@@ -728,6 +820,7 @@ fn decode_rgba(bytes: &[u8]) -> Result<(Vec<u8>, u32, u32)> {
 /// for — and 2880 is already what the lightbox shows and what Download
 /// exports by default.
 pub async fn copy_photo_to_clipboard(app: AppHandle, photo_id: String) -> Result<()> {
+    let _operation = crate::library::write(&app).await;
     let photo = get_photo(&app, &photo_id)?;
 
     // Fall through to the next format on a failed fetch *or* a failed decode,
@@ -761,20 +854,78 @@ pub async fn copy_photo_to_clipboard(app: AppHandle, photo_id: String) -> Result
 /// Cache-first object read, warming the cache on a miss (same policy as the
 /// photo:// protocol). Also used by the refresh backfill to pull originals.
 pub(crate) async fn fetch_bytes(app: &AppHandle, key: &str) -> Result<Vec<u8>> {
-    let cache_path = protocol::cache_path(app, key);
-    if let Ok(bytes) = tokio::fs::read(&cache_path).await {
-        return Ok(bytes);
-    }
-
-    // Goes through the CDN when one is configured, S3 otherwise (cdn.rs).
-    let bytes = crate::cdn::get_object(app, key).await?;
-
-    protocol::cache_put(app, key, &bytes).await;
-    Ok(bytes)
+    protocol::fetch_bytes(app, key).await
 }
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn export_fallback_also_refuses_existing_files() {
+        let temp = crate::test_support::TempDir::new();
+        let path = temp.0.join("photo.jpg");
+        super::write_new_export(&path, b"existing photo").unwrap();
+        let error = super::write_new_export(&path, b"replacement").unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists);
+        assert_eq!(std::fs::read(path).unwrap(), b"existing photo");
+    }
+    #[tokio::test]
+    async fn missing_optional_variants_can_be_skipped_but_copy_failures_must_abort() {
+        let (ctx, server) = crate::test_support::s3(vec![(404, "<Error><Code>NoSuchKey</Code></Error>")]).await;
+        assert!(!super::copy_variant(&ctx, "old/photo_128.jpg", "new/photo_128.jpg").await.unwrap());
+        let requests = server.await.unwrap();
+        assert!(requests[0].starts_with("PUT /test-only/new/photo_128.jpg"));
+        let (ctx, server) = crate::test_support::s3(vec![(503, "<Error><Code>SlowDown</Code></Error>")]).await;
+        assert!(super::copy_variant(&ctx, "old/photo_640.webp", "new/photo_640.webp").await.is_err());
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn an_interrupted_legacy_copy_retains_all_destinations_for_cleanup() {
+        const COPIED: &str = "<CopyObjectResult><ETag>\"test\"</ETag></CopyObjectResult>";
+        let (ctx, server) = crate::test_support::s3(vec![(200, COPIED), (200, COPIED), (503, "<Error><Code>SlowDown</Code></Error>")]).await;
+        let (pairs, error) = super::copy_photo_objects(&ctx, "old/a_original.jpg", "new/a_original.jpg").await;
+        assert!(error.is_some());
+        assert_eq!(pairs, vec![("old/a_original.jpg".into(), "new/a_original.jpg".into()), ("old/a_128.jpg".into(), "new/a_128.jpg".into())]);
+        let requests = server.await.unwrap();
+        assert!(requests.iter().all(|request| request.starts_with("PUT ")));
+        assert!(requests[1].contains("x-amz-copy-source: test-only/old/a_128.jpg"));
+    }
+    #[test]
+    fn exporting_never_overwrites_existing_files_or_filename_suffixes() {
+        let temp = crate::test_support::TempDir::new();
+        std::fs::write(temp.0.join("photo.jpg"), b"precious original").unwrap();
+        std::fs::write(temp.0.join("photo (1).jpg"), b"previous export").unwrap();
+        let written = super::write_export(&temp.0, "photo.jpg", b"new export").unwrap();
+        assert_eq!(written.file_name().unwrap(), "photo (2).jpg");
+        assert_eq!(std::fs::read(temp.0.join("photo.jpg")).unwrap(), b"precious original");
+        assert_eq!(std::fs::read(temp.0.join("photo (1).jpg")).unwrap(), b"previous export");
+        assert_eq!(std::fs::read(written).unwrap(), b"new export");
+        assert_eq!(std::fs::read_dir(&temp.0).unwrap().count(), 3);
+    }
+
+    #[test]
+    fn concurrent_exports_publish_unique_complete_files() {
+        let temp = crate::test_support::TempDir::new();
+        let results = std::thread::scope(|scope| {
+            let workers: Vec<_> = (0..8u8).map(|n| {
+                let dir = &temp.0;
+                scope.spawn(move || (n, super::write_export(dir, "same.jpg", &vec![n; 8192]).unwrap()))
+            }).collect();
+            workers.into_iter().map(|worker| worker.join().unwrap()).collect::<Vec<_>>()
+        });
+        for (n, path) in results { assert_eq!(std::fs::read(path).unwrap(), vec![n; 8192]); }
+        assert_eq!(std::fs::read_dir(&temp.0).unwrap().count(), 8);
+    }
+
+    #[test]
+    fn legacy_folder_cleanup_protects_the_actual_derivative_keys() {
+        let conn = db::open_in_memory();
+        insert_photo(&conn, "legacy", "trips", "a_original.jpg");
+        let keys = keys_referenced_under(&conn, ["trips", "elsewhere"]).unwrap();
+        assert!(keys.contains("trips/a_original.jpg"));
+        assert!(keys.contains("trips/a_640.webp"));
+        assert!(!keys.contains("trips/a_original_640.webp"));
+    }
     use super::{
         clipboard_variant_keys, commit_folder_rename, decode_rgba, encode_key,
         keys_referenced_under, plan_folder_rename, validate_folder_rename,

@@ -1,3 +1,4 @@
+import { useMoveDestination } from "@/lib/move-context";
 import { useCallback, useState } from "react";
 import { ask, message, open } from "@tauri-apps/plugin-dialog";
 import {
@@ -24,6 +25,7 @@ function confirmDelete(label: string): Promise<boolean> {
  * folder grid and the search results.
  */
 export function usePhotoActions() {
+  const chooseFolder = useMoveDestination();
   const [photos, setPhotos] = useState<Photo[]>([]);
   // The photo currently open in the lightbox
   const [active, setActive] = useState<Photo | null>(null);
@@ -57,7 +59,7 @@ export function usePhotoActions() {
   };
 
   const handleMove = async (photo: Photo) => {
-    const newFolder = prompt("Move to folder:", photo.folder)?.trim();
+    const newFolder = (await chooseFolder(photo.folder))?.trim();
     if (!newFolder || newFolder === photo.folder) return;
 
     try {
@@ -65,7 +67,7 @@ export function usePhotoActions() {
       setPhotos((prev) => prev.filter((p) => p.id !== photo.id));
       setActive((prev) => (prev?.id === photo.id ? null : prev));
     } catch (err) {
-      alert(typeof err === "string" ? err : "Failed to move photo");
+      await message(String(err), { title: "Move failed", kind: "error" });
     }
   };
 
@@ -138,12 +140,7 @@ export function usePhotoActions() {
 
   const handleBulkMove = useCallback(async (targets: Photo[]) => {
     if (!targets.length) return false;
-    const newFolder = prompt(
-      targets.length === 1
-        ? "Move to folder:"
-        : `Move ${targets.length} photos to folder:`,
-      targets[0].folder
-    )?.trim();
+    const newFolder = (await chooseFolder(targets[0].folder))?.trim();
     if (!newFolder) return false;
 
     // Only touch photos that actually change folder — a same-folder pick (the
@@ -152,19 +149,16 @@ export function usePhotoActions() {
     const moving = targets.filter((p) => p.folder !== newFolder);
     if (!moving.length) return false;
 
-    const movedIds = new Set(moving.map((p) => p.id));
-    try {
-      await Promise.all(
-        moving.map((p) => updatePhoto(p.id, { folder: newFolder }))
-      );
-      setPhotos((prev) => prev.filter((p) => !movedIds.has(p.id)));
-      setActive((prev) => (prev && movedIds.has(prev.id) ? null : prev));
-      return true;
-    } catch (err) {
-      alert(typeof err === "string" ? err : "Failed to move photos");
-      return false;
+    const results = await Promise.allSettled(moving.map((p) => updatePhoto(p.id, { folder: newFolder })));
+    const movedIds = new Set(moving.filter((_, i) => results[i].status === "fulfilled").map((p) => p.id));
+    setPhotos((prev) => prev.filter((p) => !movedIds.has(p.id)));
+    setActive((prev) => (prev && movedIds.has(prev.id) ? null : prev));
+    const failures = results.filter((r): r is PromiseRejectedResult => r.status === "rejected");
+    if (failures.length) {
+      await message(`Moved ${movedIds.size} of ${moving.length} photos.\n${String(failures[0].reason)}`, { title: "Move incomplete", kind: "error" });
     }
-  }, []);
+    return movedIds.size > 0;
+  }, [chooseFolder]);
 
   const handleRename = async (photo: Photo, newFilename: string) => {
     try {

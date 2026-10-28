@@ -61,6 +61,23 @@ function renderDialog(onApplied = vi.fn(), onClose = vi.fn()) {
 }
 
 describe("BulkTagDialog", () => {
+  it("dismisses suggestions with Escape before closing the editor and keeps pending edits", async () => {
+    const { onClose } = renderDialog();
+    await screen.findByText("2 of 2");
+    const input = screen.getByRole("textbox");
+    fireEvent.change(input, { target: { value: "new-tag" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    fireEvent.change(input, { target: { value: "moun" } });
+    await screen.findByRole("button", { name: "mountain" });
+    fireEvent.keyDown(input, { key: "Escape" });
+    expect(onClose).not.toHaveBeenCalled();
+    expect(screen.queryByRole("button", { name: "mountain" })).not.toBeInTheDocument();
+    expect(screen.getByText("new-tag")).toBeInTheDocument();
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
+    fireEvent.keyDown(input, { key: "Escape" });
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
   it("shows the selection count and per-tag usage checklist", async () => {
     renderDialog();
     expect(screen.getByText("Edit Tags · 2 photos")).toBeInTheDocument();

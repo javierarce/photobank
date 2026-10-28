@@ -98,15 +98,64 @@ pub fn schedule_upload(app: &AppHandle) {
     let counter = state.0.clone();
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
-        tokio::time::sleep(DEBOUNCE).await;
-        if counter.load(Ordering::SeqCst) != generation {
-            return; // superseded by a newer mutation
-        }
-        if let Err(err) = upload(&app).await {
-            eprintln!("[manifest] upload failed: {err}");
+        let mut delay = DEBOUNCE;
+        loop {
+            tokio::time::sleep(delay).await;
+            let operation = crate::library::write(&app).await;
+            if counter.load(Ordering::SeqCst) != generation { return; }
+            if !pending(&app) { return; }
+            match upload(&app).await {
+                Ok(()) => return,
+                Err(err) => {
+                    let db = app.state::<Db>();
+                    let conn = db.0.lock().unwrap();
+                    let _ = db::set_meta(&conn, "manifest_error", &err.to_string());
+                }
+            }
+            drop(operation);
+            delay = Duration::from_secs(30);
         }
     });
 }
+
+fn pending(app: &AppHandle) -> bool {
+    let db = app.state::<Db>();
+    let conn = db.0.lock().unwrap();
+    db::backup_pending(&conn).unwrap_or(true)
+}
+
+pub fn resume_pending(app: &AppHandle) {
+    if pending(app) { schedule_upload(app); }
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BackupStatus {
+    pub pending: bool,
+    pub last_success: Option<String>,
+    pub error: Option<String>,
+}
+
+pub fn status(conn: &rusqlite::Connection) -> Result<BackupStatus> {
+    Ok(BackupStatus {
+        pending: db::backup_pending(conn)?,
+        last_success: db::get_meta(conn, "manifest_uploaded_at")?,
+        error: db::get_meta(conn, "manifest_error")?.filter(|s| !s.is_empty()),
+    })
+}
+
+/// Exit is best-effort; the durable dirty flag survives if the network is down.
+pub fn flush_on_exit(app: &AppHandle) {
+    if !pending(app) { return; }
+    let app = app.clone();
+    let _ = tauri::async_runtime::block_on(async move {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            let _operation = crate::library::write(&app).await;
+            upload(&app).await
+        }).await
+    });
+}
+
 
 async fn upload(app: &AppHandle) -> Result<()> {
     let state = app.state::<S3State>();
@@ -132,6 +181,13 @@ async fn upload(app: &AppHandle) -> Result<()> {
         .send()
         .await
         .map_err(|e| Error::msg(format!("manifest upload: {}", friendly_s3_error(&e))))?;
+    let db = app.state::<Db>();
+    let mut conn = db.0.lock().unwrap();
+    let tx = conn.transaction()?;
+    db::set_meta(&tx, "manifest_dirty", "0")?;
+    db::set_meta(&tx, "manifest_uploaded_at", &db::now())?;
+    db::set_meta(&tx, "manifest_error", "")?;
+    tx.commit()?;
     Ok(())
 }
 
@@ -283,6 +339,16 @@ pub struct RebuildReport {
 /// it knows, so loaded EXIF and tagging survive a rebuild.
 #[tauri::command]
 pub async fn rebuild_from_bucket(app: AppHandle) -> Result<RebuildReport> {
+    let _operation = crate::library::maintenance(&app)?;
+    // Keep a local recovery point even when switching to a different bucket.
+    let backups = crate::paths::data(&app).join("catalog-backups");
+    std::fs::create_dir_all(&backups).map_err(|e| Error::msg(e.to_string()))?;
+    {
+        let db = app.state::<Db>();
+        let conn = db.0.lock().unwrap();
+        let target = backups.join(format!("{}.sqlite", uuid::Uuid::new_v4()));
+        conn.execute("VACUUM INTO ?1", rusqlite::params![target.to_string_lossy()])?;
+    }
     // Rebuild is the one sanctioned way to (re-)bind the catalog to the
     // configured bucket, so record the identity along with the new catalog.
     let identity = {
@@ -295,6 +361,13 @@ pub async fn rebuild_from_bucket(app: AppHandle) -> Result<RebuildReport> {
             .clone()
     };
 
+    let same_bucket = {
+        let db = app.state::<Db>();
+        let conn = db.0.lock().unwrap();
+        db::get_meta(&conn, db::META_CATALOG_BUCKET)?.as_deref() == Some(identity.as_str())
+    };
+    // Never restore an older remote snapshot over unbacked-up local edits.
+    if same_bucket && pending(&app) { upload(&app).await?; }
     let manifest = download_manifest(&app).await?;
     let originals = list_originals(&app).await?;
 
@@ -403,6 +476,7 @@ fn replace_catalog(
     tx.execute("DELETE FROM tags", [])?;
     tx.execute("DELETE FROM photos", [])?;
     db::set_meta(&tx, db::META_CATALOG_BUCKET, bucket_identity)?;
+    db::set_meta(&tx, "cache_epoch", &uuid::Uuid::new_v4().to_string())?;
 
     let photos = originals.len();
     let mut kept_ids: std::collections::HashSet<&str> = std::collections::HashSet::new();
@@ -440,7 +514,7 @@ fn replace_catalog(
                     // whatever the manifest recorded.
                     original.has_variants,
                     p.created_at,
-                    p.updated_at,
+                    db::now(),
                 ],
             )?;
         } else {
@@ -640,7 +714,7 @@ fn originals_from_listing(entries: Vec<(String, Option<i64>)>) -> Vec<ListedOrig
         .iter()
         .filter(|(key, _)| is_original(key))
         .map(|(key, size)| ListedOriginal {
-            has_variants: has_grid_variant(key),
+            has_variants: crate::keys::required_variants(key).iter().all(|key| variant_keys.contains(key.as_str())),
             key: key.clone(),
             size: *size,
         })
@@ -671,7 +745,7 @@ fn originals_from_listing(entries: Vec<(String, Option<i64>)>) -> Vec<ListedOrig
     }
     drop(covered);
     originals.extend(stand_ins.into_values().map(|(_, key, size)| ListedOriginal {
-        has_variants: has_grid_variant(key),
+        has_variants: crate::keys::required_variants(key).iter().all(|key| variant_keys.contains(key.as_str())),
         key: key.clone(),
         size,
     }));
@@ -755,6 +829,10 @@ mod tests {
             ("inbox/full.jpg".to_string(), Some(100)),
             ("inbox/full_640.webp".to_string(), Some(10)),
             ("inbox/full_640.jpg".to_string(), Some(10)),
+            ("inbox/full_1280.webp".to_string(), Some(20)),
+            ("inbox/full_1280.jpg".to_string(), Some(20)),
+            ("inbox/full_2880.webp".to_string(), Some(30)),
+            ("inbox/full_2880.jpg".to_string(), Some(30)),
             // Original synced in without derivatives.
             ("inbox/bare.jpg".to_string(), Some(200)),
             // Legacy web-pipeline scheme: original carries the _original
@@ -778,7 +856,7 @@ mod tests {
         assert!(by_key["inbox/full.jpg"].has_variants);
         assert_eq!(by_key["inbox/full.jpg"].size, Some(100));
         assert!(!by_key["inbox/bare.jpg"].has_variants);
-        assert!(by_key["trips/R001_original.jpg"].has_variants);
+        assert!(!by_key["trips/R001_original.jpg"].has_variants, "a grid thumbnail alone is not a complete set");
     }
 
     #[test]
@@ -834,7 +912,7 @@ mod tests {
             originals.iter().map(|o| (o.key.as_str(), o)).collect();
 
         assert_eq!(originals.len(), 2, "{:?}", by_key.keys());
-        assert!(by_key["inbox/DSC_1280.jpg"].has_variants);
+        assert!(!by_key["inbox/DSC_1280.jpg"].has_variants, "partial derivatives still need repair");
         assert!(!by_key["inbox/DSC_2880.jpg"].has_variants);
     }
 

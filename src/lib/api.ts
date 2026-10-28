@@ -43,6 +43,7 @@ export function clearFolderCover(folder: string): Promise<void> {
 
 export function searchPhotos(params: {
   q?: string;
+  offset?: number;
   tag?: string;
   camera?: string;
   /** Restrict the search to a single folder (the in-folder search field). */
@@ -50,6 +51,7 @@ export function searchPhotos(params: {
 }): Promise<Photo[]> {
   return invoke("search_photos", {
     q: params.q || null,
+    offset: params.offset ?? null,
     tag: params.tag || null,
     camera: params.camera || null,
     folder: params.folder || null,
@@ -256,11 +258,18 @@ export function setUploadBadge(percent: number | null): Promise<void> {
 /** Which stored version of a photo to export. */
 export type ExportResolution = "640" | "1280" | "2880" | "original";
 
+export type ExportReport = {
+  path: string;
+  requested: number;
+  written: number;
+  failures: { filename: string; error: string }[];
+};
+
 /** Export photos as files into a directory picked by the user. */
 export function exportPhotos(
   photoIds: string[],
   resolution: ExportResolution = "2880"
-): Promise<string | null> {
+): Promise<ExportReport | null> {
   return invoke("export_photos", { photoIds, resolution });
 }
 
@@ -284,6 +293,7 @@ export type S3Settings = {
 };
 
 export type SettingsInfo = {
+  backup?: { pending: boolean; lastSuccess: string | null; error: string | null } | null;
   settings: S3Settings;
   /** A secret access key is stored in the macOS Keychain. */
   hasSecret: boolean;

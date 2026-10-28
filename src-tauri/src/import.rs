@@ -128,35 +128,42 @@ impl Drop for CancelGuard {
     }
 }
 
+struct QueuedFile {
+    path: String,
+    filename: String,
+    key: String,
+    cancel: Arc<AtomicBool>,
+    guard: CancelGuard,
+}
+
+/// Register before waiting for another library operation. A queued upload
+/// must remain cancellable even while it cannot start processing yet.
+fn register_batch(app: &AppHandle, paths: Vec<String>, folder: &str) -> Vec<QueuedFile> {
+    let registry = app.state::<CancelRegistry>();
+    paths.into_iter().filter(|path| pipeline::is_importable(path)).filter_map(|path| {
+        let filename = sanitize_filename(std::path::Path::new(&path).file_name()?.to_string_lossy().as_ref())?;
+        let key = format!("{folder}/{filename}");
+        let (id, cancel) = registry.register(&key);
+        let guard = CancelGuard { app: app.clone(), key: key.clone(), id };
+        Some(QueuedFile { path, filename, key, cancel, guard })
+    }).collect()
+}
+
 pub async fn import_photos(app: AppHandle, paths: Vec<String>, folder: String) -> Result<Vec<Photo>> {
     let folder = sanitize_folder(&folder).ok_or_else(|| Error::msg("Invalid folder"))?;
-
-    let importable: Vec<String> = paths.into_iter().filter(|p| pipeline::is_importable(p)).collect();
-    if importable.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    let registry = app.state::<CancelRegistry>();
+    let queued = register_batch(&app, paths, &folder);
+    if queued.is_empty() { return Ok(vec![]); }
+    let _operation = crate::library::write(&app).await;
     let semaphore = Arc::new(Semaphore::new(IMPORT_CONCURRENCY));
-    let mut handles = Vec::with_capacity(importable.len());
-    for path in importable {
-        // Derive the key up front and register the cancel flag before spawning,
-        // so an item still queued on the semaphore can already be cancelled.
-        let Some(filename) = sanitize_filename(
-            std::path::Path::new(&path).file_name().map(|n| n.to_string_lossy()).unwrap_or_default().as_ref(),
-        ) else {
-            continue;
-        };
-        let s3_key = format!("{folder}/{filename}");
-        let (id, cancel) = registry.register(&s3_key);
-
+    let mut handles = Vec::with_capacity(queued.len());
+    for QueuedFile { path, filename, key, cancel, guard } in queued {
         let app = app.clone();
         let folder = folder.clone();
         let semaphore = semaphore.clone();
         handles.push(tauri::async_runtime::spawn(async move {
-            let _guard = CancelGuard { app: app.clone(), key: s3_key.clone(), id };
+            let _guard = guard;
             let _permit = semaphore.acquire().await.expect("semaphore never closes");
-            import_one(&app, &path, &folder, &filename, &s3_key, &cancel).await
+            import_one(&app, &path, &folder, &filename, &key, &cancel).await
         }));
     }
 
@@ -166,6 +173,7 @@ pub async fn import_photos(app: AppHandle, paths: Vec<String>, folder: String) -
             imported.push(photo);
         }
     }
+    crate::manifest::resume_pending(&app);
     Ok(imported)
 }
 
@@ -475,6 +483,10 @@ async fn replace_one(
     cancel: Option<&AtomicBool>,
 ) -> Result<Replaced> {
     let ReplaceTarget { photo, mime } = target;
+    {
+        let db = app.state::<Db>();
+        db::ensure_exclusive_keys(&db.0.lock().unwrap(), &photo)?;
+    }
     let cancelled = || cancel.is_some_and(|c| c.load(Ordering::Relaxed));
     let emit = |progress: u8, status: &'static str| {
         if let Some(reporter) = reporter {
@@ -559,7 +571,7 @@ async fn replace_one(
         protocol::cache_put(app, &variant.key, &variant.bytes).await;
     }
     for key in &stale {
-        let _ = tokio::fs::remove_file(protocol::cache_path(app, key)).await;
+        protocol::remove_cache(app, key).await;
     }
 
     store_replaced(app, &photo.id, file_size, &processed)?;
@@ -585,6 +597,7 @@ enum Replaced {
 /// rather than an indeterminate spinner: processing plus seven uploads is
 /// several seconds, long enough to read as "nothing is happening".
 pub async fn replace_photo(app: AppHandle, id: String, path: String) -> Result<Photo> {
+    let _operation = crate::library::write(&app).await;
     let photo = load_photo(&app, &id).map_err(|_| Error::msg("Photo not found"))?;
     let reporter = Reporter {
         app: app.clone(),
@@ -622,31 +635,19 @@ pub async fn replace_photos(
     folder: String,
 ) -> Result<Vec<Photo>> {
     let folder = sanitize_folder(&folder).ok_or_else(|| Error::msg("Invalid folder"))?;
-
-    let registry = app.state::<CancelRegistry>();
+    let queued = register_batch(&app, paths, &folder);
+    if queued.is_empty() { return Ok(vec![]); }
+    let _operation = crate::library::write(&app).await;
     let semaphore = Arc::new(Semaphore::new(IMPORT_CONCURRENCY));
-    let mut handles = Vec::with_capacity(paths.len());
-    for path in paths.into_iter().filter(|p| pipeline::is_importable(p)) {
-        let Some(filename) = sanitize_filename(
-            std::path::Path::new(&path)
-                .file_name()
-                .map(|n| n.to_string_lossy())
-                .unwrap_or_default()
-                .as_ref(),
-        ) else {
-            continue;
-        };
-        // The same "folder/filename" key the frontend's tile is waiting on.
-        let s3_key = format!("{folder}/{filename}");
-        let (id, cancel) = registry.register(&s3_key);
-
+    let mut handles = Vec::with_capacity(queued.len());
+    for QueuedFile { path, filename, key, cancel, guard } in queued {
         let app = app.clone();
         let folder = folder.clone();
         let semaphore = semaphore.clone();
         handles.push(tauri::async_runtime::spawn(async move {
-            let _guard = CancelGuard { app: app.clone(), key: s3_key.clone(), id };
+            let _guard = guard;
             let _permit = semaphore.acquire().await.expect("semaphore never closes");
-            replace_matching(&app, &path, &folder, &filename, &s3_key, &cancel).await
+            replace_matching(&app, &path, &folder, &filename, &key, &cancel).await
         }));
     }
 
@@ -768,7 +769,7 @@ fn store_replaced_conn(
     conn.execute(
         "UPDATE photos SET
            width = ?1, height = ?2, file_size = ?3, processing_status = 'completed',
-           variants_ok = 1, camera_make = ?4, camera_model = ?5, lens = ?6,
+           variants_ok = 1, variants_recheck = 0, camera_make = ?4, camera_model = ?5, lens = ?6,
            focal_length = ?7, aperture = ?8, shutter_speed = ?9, iso = ?10,
            taken_at = ?11, gps_latitude = ?12, gps_longitude = ?13, updated_at = ?14
          WHERE id = ?15",
@@ -825,7 +826,7 @@ async fn cleanup_cancelled(app: &AppHandle, photo_id: &str) {
     }
 
     for key in &keys {
-        let _ = tokio::fs::remove_file(protocol::cache_path(app, key)).await;
+        protocol::remove_cache(app, key).await;
     }
 
     {
@@ -841,10 +842,7 @@ async fn cleanup_cancelled(app: &AppHandle, photo_id: &str) {
 /// all possible variants. Variants hang off `variant_base` (which strips a
 /// legacy `_original` stem marker), matching where the pipeline uploads them.
 fn deletion_keys(s3_key: &str) -> Vec<String> {
-    let base = crate::keys::variant_base(s3_key).to_string();
-    let mut keys = vec![s3_key.to_string()];
-    keys.extend(crate::keys::variant_suffixes().iter().map(|suffix| format!("{base}{suffix}")));
-    keys
+    crate::keys::owned_keys(s3_key)
 }
 
 pub(crate) async fn put_object(
@@ -954,6 +952,11 @@ fn reserve_row_conn(
             // A failed leftover — reuse its row (retry). Capture its prior state
             // so a cancel can put the failed marker back rather than delete it.
             Some((id, status)) if status == "failed" => {
+                if db::key_occupant(conn, folder, &filename, Some(&id))?.is_some() {
+                    filename = indexed_filename(desired, n);
+                    n += 1;
+                    continue;
+                }
                 let prior = conn.query_row(
                     "SELECT processing_status, mime_type, file_size FROM photos WHERE id = ?1",
                     rusqlite::params![&id],
@@ -1024,7 +1027,7 @@ fn finalize_row(app: &AppHandle, photo_id: &str, processed: &ProcessedImage) -> 
     let exif = &processed.exif;
     conn.execute(
         "UPDATE photos SET
-           width = ?1, height = ?2, processing_status = 'completed',
+           width = ?1, height = ?2, processing_status = 'completed', variants_ok = 1, variants_recheck = 0,
            camera_make = ?3, camera_model = ?4, lens = ?5, focal_length = ?6,
            aperture = ?7, shutter_speed = ?8, iso = ?9, taken_at = ?10,
            gps_latitude = ?11, gps_longitude = ?12, updated_at = ?13
@@ -1063,6 +1066,22 @@ fn load_photo(app: &AppHandle, photo_id: &str) -> Result<Photo> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn an_upload_can_be_cancelled_while_waiting_for_another_library_operation() {
+        let library = crate::library::LibraryState::default();
+        let busy = library.0.clone().lock_owned().await;
+        let registry = CancelRegistry::default();
+        let (_, cancelled) = registry.register("inbox/queued.jpg");
+        let waiting = tokio::spawn(async move {
+            let _operation = library.0.lock_owned().await;
+            cancelled.load(Ordering::Relaxed)
+        });
+        registry.cancel("inbox/queued.jpg");
+        assert!(!waiting.is_finished());
+        drop(busy);
+        assert!(waiting.await.unwrap());
+    }
 
     #[test]
     fn cancel_flips_the_registered_flag() {

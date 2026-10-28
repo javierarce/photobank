@@ -53,6 +53,10 @@ export function SearchResults() {
   const [tagTargets, setTagTargets] = useState<Photo[] | null>(null);
   // Bumped after a bulk tag edit to re-run the search, so photos that no longer
   // match a tag-based query (e.g. removing the tag being viewed) drop out.
+  const [hasMore, setHasMore] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [pageError, setPageError] = useState<string | null>(null);
+  const searchRequest = useRef(0);
   const [reloadNonce, setReloadNonce] = useState(0);
 
   const {
@@ -168,11 +172,15 @@ export function SearchResults() {
     if (!q && !tag) return;
     const key = `${q}|${tag}`;
     let cancelled = false;
+    const request = ++searchRequest.current;
 
     searchPhotos({ q, tag })
       .then((photos) => {
         if (cancelled) return;
         setPhotos(photos);
+        setHasMore(photos.length === 200);
+        setLoadingMore(false);
+        setPageError(null);
         setStatus({ key, state: "done" });
       })
       .catch(() => {
@@ -181,8 +189,26 @@ export function SearchResults() {
 
     return () => {
       cancelled = true;
+      searchRequest.current = request + 1;
     };
   }, [q, tag, setPhotos, reloadNonce]);
+
+  const loadMore = async () => {
+    if (loadingMore) return;
+    const request = searchRequest.current;
+    setLoadingMore(true);
+    setPageError(null);
+    try {
+      const next = await searchPhotos({ q, tag, offset: photos.length });
+      if (request !== searchRequest.current) return;
+      setPhotos((previous) => [...previous, ...next.filter((photo) => !previous.some((p) => p.id === photo.id))]);
+      setHasMore(next.length === 200);
+    } catch {
+      if (request === searchRequest.current) setPageError("Could not load more results. Try again.");
+    } finally {
+      if (request === searchRequest.current) setLoadingMore(false);
+    }
+  };
 
   if (status.state === "loading") {
     return <p className="text-sm text-foreground/60">Searching...</p>;
@@ -200,7 +226,8 @@ export function SearchResults() {
   // bulk editor) can empty the results mid-interaction, and returning here would
   // unmount it without clearing `active` / `tagTargets` — so it would pop back
   // open over unrelated results on the next search that matches.
-  if (!photos.length && !active && !tagTargets) {
+  // A deleted page can be empty while later matches still need loading.
+  if (!photos.length && !hasMore && !active && !tagTargets) {
     return <p className="text-sm text-foreground/60">No results found.</p>;
   }
 
@@ -215,7 +242,7 @@ export function SearchResults() {
         ) : (
           <>
             <p className="text-sm text-foreground/60">
-              {photos.length} {photos.length === 1 ? "result" : "results"}
+              {photos.length} {photos.length === 1 ? "result" : "results"}{hasMore ? " loaded" : ""}
             </p>
             {selected.length === 1 && <SelectionActionBar />}
           </>
@@ -263,6 +290,14 @@ export function SearchResults() {
         ))}
       </div>
 
+      {hasMore && <div className="flex items-center gap-3">
+        <button type="button" onClick={() => { void loadMore(); }} disabled={loadingMore}
+          className="rounded-md border border-border px-3 py-2 text-sm disabled:opacity-50">
+          {loadingMore ? "Loading…" : "Load more results"}
+        </button>
+        <p className="text-xs text-foreground/50">Select all applies to loaded results.</p>
+      </div>}
+      {pageError && <p role="alert" className="text-sm text-red-600">{pageError}</p>}
       {menu && (
         <PhotoContextMenu
           photos={menu.photos}
