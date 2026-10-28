@@ -5,6 +5,7 @@ import {
   cleanup,
   waitFor,
   fireEvent,
+  act,
 } from "@testing-library/react";
 import { PhotoTags } from "@/components/photo-tags";
 import {
@@ -43,6 +44,31 @@ afterEach(() => {
 });
 
 describe("PhotoTags", () => {
+  it("ignores an earlier photo's tags when responses arrive after navigation", async () => {
+    let first!: (tags: { id: string; name: string }[]) => void;
+    mockGetPhotoTags.mockReturnValueOnce(new Promise((resolve) => { first = resolve; }));
+    mockGetPhotoTags.mockResolvedValueOnce([{ id: "new", name: "Second photo" }]);
+    const view = render(<PhotoTags photoId="first" />);
+    view.rerender(<PhotoTags photoId="second" />);
+    await screen.findByText("Second photo");
+    await act(async () => { first([{ id: "old", name: "First photo" }]); });
+    expect(screen.queryByText("First photo")).not.toBeInTheDocument();
+    expect(screen.getByText("Second photo")).toBeInTheDocument();
+  });
+
+  it("does not apply an old photo's pending removal to the next photo", async () => {
+    let finish!: () => void;
+    mockRemovePhotoTag.mockReturnValueOnce(new Promise((resolve) => { finish = resolve; }));
+    const view = render(<PhotoTags photoId="first" />);
+    await screen.findByText("Landscape");
+    fireEvent.click(screen.getByText("×"));
+    view.rerender(<PhotoTags photoId="second" />);
+    await screen.findByText("Landscape");
+    await act(async () => { finish(); });
+    expect(screen.getByText("Landscape")).toBeInTheDocument();
+    expect(mockRemovePhotoTag).toHaveBeenCalledWith("first", "t1");
+  });
+
   it("fetches and renders existing tags", async () => {
     render(<PhotoTags photoId="p1" />);
 

@@ -93,9 +93,7 @@ pub struct CdnCtx {
 pub struct S3State(pub RwLock<Option<S3Ctx>>);
 
 fn data_dir(app: &AppHandle) -> PathBuf {
-    app.path()
-        .app_data_dir()
-        .expect("app data dir is always resolvable on macOS")
+    crate::paths::data(app)
 }
 
 fn settings_path(app: &AppHandle) -> PathBuf {
@@ -242,9 +240,15 @@ pub fn ensure_catalog_matches_bucket(app: &AppHandle, ctx: &S3Ctx) -> Result<()>
     crate::db::ensure_catalog_bucket(&conn, &ctx.identity)
 }
 
+pub async fn initialize_client(app: &AppHandle) {
+    let _operation = crate::library::write(app).await;
+    refresh_client(app).await;
+    crate::manifest::resume_pending(app);
+}
+
 /// Rebuild the shared client from the stored settings + secret. Runs at
 /// startup and after every settings save.
-pub async fn refresh_client(app: &AppHandle) {
+async fn refresh_client(app: &AppHandle) {
     let settings = load_settings(app);
     let ctx = match (settings.is_complete(), load_secret(app)) {
         (true, Some(secret)) if !secret.is_empty() => Some(build_ctx(&settings, &secret).await),
@@ -264,6 +268,7 @@ pub struct SettingsInfo {
     /// The catalog belongs to a different bucket than the one configured —
     /// everything on screen is the old bucket's until a rebuild.
     pub bucket_mismatch: bool,
+    pub backup: Option<crate::manifest::BackupStatus>,
 }
 
 fn settings_info(app: &AppHandle) -> SettingsInfo {
@@ -281,7 +286,13 @@ fn settings_info(app: &AppHandle) -> SettingsInfo {
         && catalog_bucket
             .as_deref()
             .is_some_and(|bound| bound != bucket_identity(&settings));
+    let backup = {
+        let db = app.state::<crate::db::Db>();
+        let conn = db.0.lock().unwrap();
+        crate::manifest::status(&conn).ok()
+    };
     SettingsInfo {
+        backup,
         settings,
         has_secret,
         configured,
@@ -301,13 +312,28 @@ pub async fn save_settings(
     settings: S3Settings,
     secret_access_key: Option<String>,
 ) -> Result<SettingsInfo> {
+    let _operation = crate::library::maintenance(&app)?;
+    {
+        let db = app.state::<crate::db::Db>();
+        let conn = db.0.lock().unwrap();
+        ensure_bucket_change(&conn, &bucket_identity(&settings))?;
+    }
     store_settings(&app, &settings)?;
     if let Some(secret) = secret_access_key.map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
     {
         store_secret(&app, &secret)?;
     }
     refresh_client(&app).await;
+    crate::manifest::resume_pending(&app);
     Ok(settings_info(&app))
+}
+
+fn ensure_bucket_change(conn: &rusqlite::Connection, identity: &str) -> Result<()> {
+    let bound = crate::db::get_meta(conn, crate::db::META_CATALOG_BUCKET)?;
+    if crate::db::backup_pending(conn)? && bound.as_deref().is_some_and(|old| old != identity) {
+        return Err(Error::msg("The current library has changes waiting to back up. Finish its backup before switching buckets. You can still update credentials for the current bucket."));
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -330,6 +356,17 @@ pub async fn test_connection(app: AppHandle) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pending_backup_blocks_bucket_switch_but_allows_current_bucket_credentials() {
+        let conn = crate::db::open_in_memory();
+        crate::db::set_meta(&conn, crate::db::META_CATALOG_BUCKET, "original").unwrap();
+        crate::db::set_meta(&conn, "manifest_dirty", "1").unwrap();
+        assert!(ensure_bucket_change(&conn, "different").is_err());
+        assert!(ensure_bucket_change(&conn, "original").is_ok());
+        crate::db::set_meta(&conn, "manifest_dirty", "0").unwrap();
+        assert!(ensure_bucket_change(&conn, "different").is_ok());
+    }
 
     fn settings(bucket: &str, endpoint: Option<&str>) -> S3Settings {
         S3Settings {

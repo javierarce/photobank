@@ -87,6 +87,21 @@ pub fn variant_suffixes() -> Vec<String> {
         .collect()
 }
 
+/// Every key a photo may own, including legacy variants. Use this for both
+/// collision checks and destructive cleanup so their definitions cannot drift.
+pub fn owned_keys(s3_key: &str) -> Vec<String> {
+    let base = variant_base(s3_key);
+    let mut keys = vec![s3_key.to_string()];
+    keys.extend(variant_suffixes().iter().map(|suffix| format!("{base}{suffix}")));
+    keys
+}
+
+pub fn required_variants(s3_key: &str) -> Vec<String> {
+    VARIANT_WIDTHS.iter().flat_map(|width| {
+        VARIANT_FORMATS.iter().map(move |format| variant_key(s3_key, *width, *format))
+    }).collect()
+}
+
 /// Strip any path components from a filename and reject anything that can't
 /// be a plain file name.
 pub fn sanitize_filename(filename: &str) -> Option<String> {

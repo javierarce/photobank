@@ -3,7 +3,7 @@ use std::sync::Mutex;
 
 use rusqlite::{Connection, Row};
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Manager};
+use tauri::AppHandle;
 
 use crate::error::{Error, Result};
 
@@ -279,6 +279,36 @@ PRAGMA user_version = 5;
 COMMIT;
 ";
 
+/// Persist backup intent in the same SQLite transaction as every catalog edit.
+/// A crash after a mutation but before schedule_upload must not lose the job.
+fn install_backup_triggers(conn: &Connection) -> Result<()> {
+    conn.execute_batch("BEGIN")?;
+    let result = (|| -> Result<()> {
+        // Older versions did not persist backup intent. Preserve existing
+        // local edits by scheduling an initial backup after the upgrade.
+        conn.execute("INSERT OR REPLACE INTO meta (key, value)
+            SELECT 'manifest_dirty', '1' WHERE EXISTS (SELECT 1 FROM photos)
+            OR EXISTS (SELECT 1 FROM tags) OR EXISTS (SELECT 1 FROM collections)", [])?;
+        for table in ["photos", "tags", "photo_tags", "folder_covers", "collections", "collection_photos"] {
+            for event in ["INSERT", "UPDATE", "DELETE"] {
+                conn.execute_batch(&format!(
+                    "CREATE TRIGGER backup_{table}_{event} AFTER {event} ON {table}
+                     BEGIN INSERT INTO meta (key, value) VALUES ('manifest_dirty', '1')
+                     ON CONFLICT(key) DO UPDATE SET value = '1'; END;"
+                ))?;
+            }
+        }
+        conn.execute_batch("PRAGMA user_version = 6; COMMIT;")?;
+        Ok(())
+    })();
+    if result.is_err() { let _ = conn.execute_batch("ROLLBACK"); }
+    result
+}
+
+pub fn backup_pending(conn: &Connection) -> Result<bool> {
+    Ok(get_meta(conn, "manifest_dirty")?.as_deref() == Some("1"))
+}
+
 /// meta key: the bucket identity this catalog was built from.
 pub const META_CATALOG_BUCKET: &str = "catalog_bucket";
 
@@ -313,18 +343,38 @@ pub fn variant_stem_occupant(
     folder: &str,
     filename: &str,
 ) -> Result<Option<String>> {
-    let stem = crate::keys::variant_base(filename).to_string();
-    let mut stmt = conn.prepare("SELECT id, filename FROM photos WHERE folder = ?1")?;
+    key_occupant(conn, folder, filename, None)
+}
+
+pub fn key_occupant(
+    conn: &Connection,
+    folder: &str,
+    filename: &str,
+    except_id: Option<&str>,
+) -> Result<Option<String>> {
+    let keys: std::collections::HashSet<_> =
+        crate::keys::owned_keys(&format!("{folder}/{filename}")).into_iter().collect();
+    let mut stmt = conn.prepare("SELECT id, s3_key FROM photos WHERE folder = ?1")?;
     let rows = stmt.query_map(rusqlite::params![folder], |row| {
         Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
     })?;
     for row in rows {
-        let (id, name) = row?;
-        if crate::keys::variant_base(&name) == stem {
+        let (id, key) = row?;
+        if except_id == Some(id.as_str()) { continue; }
+        if crate::keys::owned_keys(&key).iter().any(|key| keys.contains(key)) {
             return Ok(Some(id));
         }
     }
     Ok(None)
+}
+
+/// Old catalogs may already contain colliding keys. Refuse to mutate them
+/// instead of deleting or replacing an object another photo still owns.
+pub fn ensure_exclusive_keys(conn: &Connection, photo: &Photo) -> Result<()> {
+    if key_occupant(conn, &photo.folder, &photo.filename, Some(&photo.id))?.is_some() {
+        return Err(Error::msg("This photo shares storage keys with another photo. Resolve the conflict before moving, replacing, repairing, or deleting it."));
+    }
+    Ok(())
 }
 
 /// Every S3 write must target the bucket this catalog was built from —
@@ -357,10 +407,7 @@ pub fn ensure_catalog_bucket(conn: &Connection, bucket: &str) -> Result<()> {
 /// Open (creating if needed) the catalog at
 /// `~/Library/Application Support/com.photobank.app/photobank.db`.
 pub fn init(app: &AppHandle) -> Result<Connection> {
-    let dir = app
-        .path()
-        .app_data_dir()
-        .expect("app data dir is always resolvable on macOS");
+    let dir = crate::paths::data(app);
     fs::create_dir_all(&dir).map_err(|e| crate::error::Error::msg(e.to_string()))?;
     open(&dir.join("photobank.db"))
 }
@@ -413,6 +460,16 @@ fn migrate(conn: &Connection) -> Result<()> {
     if version < 5 {
         conn.execute_batch(SCHEMA_V5)?;
     }
+    if version < 6 { install_backup_triggers(conn)?; }
+    if version < 7 {
+        // Preserve known thumbnail availability while scheduling a full-set
+        // check. Automatic covers still need to work before Generate runs.
+        conn.execute_batch("BEGIN;
+            ALTER TABLE photos ADD COLUMN variants_recheck INTEGER NOT NULL DEFAULT 0;
+            UPDATE photos SET variants_recheck = 1 WHERE processing_status = 'completed';
+            PRAGMA user_version = 7;
+            COMMIT;")?;
+    }
     Ok(())
 }
 
@@ -431,6 +488,88 @@ pub fn open_in_memory() -> Connection {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn upgrading_rechecks_old_thumbnail_health_without_changing_photo_identity() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        for schema in [super::SCHEMA_V1, super::SCHEMA_V2, super::SCHEMA_V3, super::SCHEMA_V4, super::SCHEMA_V5] {
+            conn.execute_batch(schema).unwrap();
+        }
+        insert_photo(&conn, "existing", "trips", "a.jpg");
+        conn.execute("UPDATE photos SET variants_ok = 1, processing_status = 'completed'", []).unwrap();
+        super::migrate(&conn).unwrap();
+        let (key, healthy): (String, bool) = conn.query_row("SELECT s3_key, variants_ok FROM photos WHERE id = 'existing'", [], |row| Ok((row.get(0)?, row.get(1)?))).unwrap();
+        assert_eq!(key, "trips/a.jpg");
+        assert!(healthy);
+        let recheck: bool = conn.query_row("SELECT variants_recheck FROM photos WHERE id = 'existing'", [], |row| row.get(0)).unwrap();
+        assert!(recheck);
+        assert_eq!(crate::refresh::pending_count(&conn).unwrap(), 1);
+        assert_eq!(crate::commands::folder_counts(&conn).unwrap()[0].cover_key.as_deref(), Some("trips/a.jpg"));
+        assert!(super::backup_pending(&conn).unwrap());
+    }
+    #[test]
+    fn every_derivative_name_collides_with_its_original_in_both_directions() {
+        for suffix in crate::keys::variant_suffixes() {
+            let conn = super::open_in_memory();
+            insert_photo(&conn, "original", "inbox", "photo.jpg");
+            let derivative = format!("photo{suffix}");
+            assert_eq!(super::key_occupant(&conn, "inbox", &derivative, None).unwrap().as_deref(), Some("original"));
+            assert!(super::key_occupant(&conn, "elsewhere", &derivative, None).unwrap().is_none());
+
+            let reverse = super::open_in_memory();
+            insert_photo(&reverse, "width-named", "inbox", &derivative);
+            assert_eq!(super::key_occupant(&reverse, "inbox", "photo.jpg", None).unwrap().as_deref(), Some("width-named"));
+        }
+    }
+
+    #[test]
+    fn existing_collisions_refuse_mutations_but_a_photo_does_not_conflict_with_itself() {
+        let conn = super::open_in_memory();
+        insert_photo(&conn, "original", "inbox", "photo.jpg");
+        let photo = conn.query_row(&format!("SELECT {} FROM photos WHERE id = 'original'", super::PHOTO_COLUMNS), [], super::photo_from_row).unwrap();
+        assert!(super::ensure_exclusive_keys(&conn, &photo).is_ok());
+        insert_photo(&conn, "width-named", "inbox", "photo_640.webp");
+        assert!(super::ensure_exclusive_keys(&conn, &photo).is_err());
+    }
+
+    #[test]
+    fn backup_intent_is_atomic_and_survives_reopening_the_database() {
+        let conn = super::open_in_memory();
+        assert!(!super::backup_pending(&conn).unwrap());
+        conn.execute_batch("BEGIN").unwrap();
+        insert_photo(&conn, "rolled-back", "inbox", "a.jpg");
+        assert!(super::backup_pending(&conn).unwrap());
+        conn.execute_batch("ROLLBACK").unwrap();
+        assert!(!super::backup_pending(&conn).unwrap());
+        insert_photo(&conn, "committed", "inbox", "b.jpg");
+        let temp = crate::test_support::TempDir::new();
+        let path = temp.0.join("catalog.sqlite");
+        conn.execute("VACUUM INTO ?1", rusqlite::params![path.to_string_lossy()]).unwrap();
+        let reopened = rusqlite::Connection::open(path).unwrap();
+        assert!(super::backup_pending(&reopened).unwrap());
+        super::set_meta(&reopened, "manifest_dirty", "0").unwrap();
+        reopened.execute("UPDATE photos SET updated_at = 'edited' WHERE id = 'committed'", []).unwrap();
+        assert!(super::backup_pending(&reopened).unwrap());
+        super::set_meta(&reopened, "manifest_dirty", "0").unwrap();
+        reopened.execute("DELETE FROM photos", []).unwrap();
+        assert!(super::backup_pending(&reopened).unwrap());
+    }
+
+    #[test]
+    fn metadata_only_edits_also_need_a_backup() {
+        let conn = super::open_in_memory();
+        insert_photo(&conn, "p", "inbox", "a.jpg");
+        for sql in [
+            "INSERT INTO tags (id, name, created_at) VALUES ('t', 'Travel', 'now')",
+            "INSERT INTO photo_tags (photo_id, tag_id) VALUES ('p', 't')",
+            "INSERT INTO folder_covers (folder, photo_id, updated_at) VALUES ('inbox', 'p', 'now')",
+            "INSERT INTO collections (id, folder, title, created_at, updated_at) VALUES ('c', 'inbox', 'Trip', 'now', 'now')",
+            "INSERT INTO collection_photos (photo_id, collection_id) VALUES ('p', 'c')",
+        ] {
+            super::set_meta(&conn, "manifest_dirty", "0").unwrap();
+            conn.execute(sql, []).unwrap();
+            assert!(super::backup_pending(&conn).unwrap(), "{sql}");
+        }
+    }
     use super::*;
     use rusqlite::params;
 
@@ -544,7 +683,7 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 5);
+        assert_eq!(version, 7);
         assert_eq!(get_meta(&conn, "anything").unwrap(), None);
     }
 
@@ -672,7 +811,7 @@ mod tests {
     }
 
     #[test]
-    fn migrating_to_v3_marks_dimensionless_completed_rows_as_missing_variants() {
+    fn migrating_rechecks_all_completed_rows_for_the_full_variant_set() {
         let conn = Connection::open_in_memory().unwrap();
         conn.pragma_update(None, "foreign_keys", "ON").unwrap();
         conn.execute_batch(SCHEMA_V1).unwrap();

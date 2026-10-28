@@ -81,6 +81,20 @@ async function renderSettings() {
 }
 
 describe("Settings library refresh", () => {
+  it("cancels rebuild without calling the backend or the native confirm shim", async () => {
+    mockPendingCount.mockResolvedValue(0);
+    const confirm = vi.spyOn(window, "confirm");
+    await renderSettings();
+    fireEvent.click(screen.getByRole("button", { name: "Rebuild from bucket" }));
+    expect(screen.getByRole("dialog", { name: "Rebuild library?" })).toBeInTheDocument();
+    expect(mockRebuild).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(mockRebuild).not.toHaveBeenCalled();
+    expect(confirm).not.toHaveBeenCalled();
+    confirm.mockRestore();
+  });
+
   it("offers a refresh when photos may be missing thumbnails", async () => {
     mockPendingCount.mockResolvedValue(3);
     await renderSettings();
@@ -319,11 +333,12 @@ describe("Settings library refresh", () => {
     mockPendingCount.mockResolvedValue(2922);
     // Keep the rebuild in flight so the busy state stays observable.
     mockRebuild.mockReturnValue(new Promise(() => {}));
-    vi.spyOn(window, "confirm").mockReturnValue(true);
     await renderSettings();
     await screen.findByText(/2922 photos need thumbnails/);
 
     fireEvent.click(screen.getByRole("button", { name: "Rebuild from bucket" }));
+    expect(mockRebuild).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Rebuild" }));
 
     // The old catalog's pending count would only mislead mid-rebuild.
     await waitFor(() =>

@@ -95,13 +95,7 @@ fn unmatchable(name: &str) -> bool {
 /// an object the bucket policy doesn't expose, or a plain network blip all
 /// fall through to S3 rather than surfacing an error. That keeps a
 /// half-configured CDN from making the whole library unreadable.
-pub async fn get_object(app: &AppHandle, key: &str) -> Result<Vec<u8>> {
-    let state = app.state::<S3State>();
-    let guard = state.0.read().await;
-    let ctx = guard
-        .as_ref()
-        .ok_or_else(|| Error::msg("S3 is not configured — open Settings first"))?;
-
+pub async fn get_object_from(ctx: &S3Ctx, key: &str) -> Result<Vec<u8>> {
     if let Some(base) = ctx.cdn_read_base.as_deref() {
         if let Some(bytes) = get_via_cdn(base, key).await {
             return Ok(bytes);

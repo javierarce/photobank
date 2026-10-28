@@ -1,3 +1,4 @@
+import { ModalDialog } from "@/components/modal-dialog";
 import { useEffect, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import {
@@ -45,6 +46,8 @@ export default function SettingsPage() {
   const [hasSecret, setHasSecret] = useState(false);
   const [loading, setLoading] = useState(true);
   const [status, setStatus] = useState<Status>({ kind: "idle" });
+  const [rebuildConfirm, setRebuildConfirm] = useState(false);
+  const [backup, setBackup] = useState<SettingsInfo["backup"]>();
   const [rebuildStatus, setRebuildStatus] = useState<Status>({ kind: "idle" });
   const [refreshStatus, setRefreshStatus] = useState<Status>({ kind: "idle" });
   /** Photos still missing thumbnails/metadata; null until first loaded. */
@@ -71,6 +74,7 @@ export default function SettingsPage() {
   const [storageOpen, setStorageOpen] = useState(false);
 
   const applyInfo = (info: SettingsInfo) => {
+    setBackup(info.backup);
     setSettings(info.settings);
     setHasSecret(info.hasSecret);
     setCatalog({
@@ -164,6 +168,13 @@ export default function SettingsPage() {
     };
   }, []);
 
+  useEffect(() => {
+    const timer = setInterval(() => {
+      getSettings().then((info) => setBackup(info.backup)).catch(() => {});
+    }, 5000);
+    return () => clearInterval(timer);
+  }, []);
+
   const set = (patch: Partial<S3Settings>) =>
     setSettings((prev) => ({ ...prev, ...patch }));
 
@@ -194,13 +205,7 @@ export default function SettingsPage() {
   };
 
   const handleRebuild = async () => {
-    if (
-      !confirm(
-        "Replace the local catalog with the bucket's contents? Local-only rows will be lost."
-      )
-    ) {
-      return;
-    }
+    setRebuildConfirm(false);
     setRebuildScanned(null);
     setRebuildStatus({ kind: "busy", message: "Rebuilding from bucket…" });
     try {
@@ -526,6 +531,11 @@ export default function SettingsPage() {
 
         <section className="mt-12">
           <h2 className="text-lg font-semibold text-foreground">Library</h2>
+          {backup && <p className="mt-2 text-sm text-foreground/60" data-testid="backup-status">
+            {backup.pending ? (backup.error ? `Backup pending — ${backup.error}. Retrying automatically.` : "Changes are waiting to back up.")
+              : backup.lastSuccess ? `Last backup: ${new Date(backup.lastSuccess).toLocaleString()}` : "No backup has completed yet."}
+          </p>}
+
 
           {catalog.bucketMismatch && (
             <p
@@ -557,7 +567,7 @@ export default function SettingsPage() {
               </div>
               <button
                 type="button"
-                onClick={handleRebuild}
+                onClick={() => setRebuildConfirm(true)}
                 disabled={rebuildStatus.kind === "busy"}
                 className="shrink-0 rounded-lg border border-border px-4 py-2 text-sm font-medium text-foreground/70 transition hover:border-foreground/35 hover:text-foreground active:scale-[0.97] disabled:opacity-50"
               >
@@ -676,6 +686,11 @@ export default function SettingsPage() {
           )}
         </section>
       </main>
+      {rebuildConfirm && <ModalDialog title="Rebuild library?" onClose={() => setRebuildConfirm(false)} footer={{
+        confirmLabel: "Rebuild", onConfirm: () => { void handleRebuild(); },
+      }}>
+        <p className="text-sm">Replace the local catalog with the bucket’s contents? A local recovery copy will be saved first. Pending changes for this bucket must finish backing up before rebuilding.</p>
+      </ModalDialog>}
     </div>
   );
 }

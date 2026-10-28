@@ -9,31 +9,33 @@ import type { Tag } from "@/lib/types";
  * TagInput with their names, translating its add/remove edits into the
  * per-photo tag commands.
  */
-export function PhotoTags({
-  photoId,
-  disabled = false,
-  onTagsChange,
-}: {
-  photoId: string;
-  disabled?: boolean;
-  /** Fired after a tag is successfully added or removed on this photo. */
-  onTagsChange?: () => void;
-}) {
+type Props = { photoId: string; disabled?: boolean; onTagsChange?: () => void };
+
+export function PhotoTags(props: Props) {
+  return <PhotoTagEditor key={props.photoId} {...props} />;
+}
+
+function PhotoTagEditor({ photoId, disabled = false, onTagsChange }: Props) {
+  const [error, setError] = useState<string | null>(null);
+  const [loaded, setLoaded] = useState(false);
   const [tags, setTags] = useState<Tag[]>([]);
   const [allTags, setAllTags] = useState<Tag[]>([]);
 
   useEffect(() => {
+    let current = true;
     getPhotoTags(photoId)
-      .then(setTags)
-      .catch(() => {});
+      .then((tags) => { if (current) { setTags(tags); setLoaded(true); } })
+      .catch(() => { if (current) setError("Could not load tags. Reopen this photo to retry."); });
     listTags()
-      .then(setAllTags)
+      .then((loaded) => { if (current) setAllTags(loaded); })
       .catch(() => {});
+    return () => { current = false; };
   }, [photoId]);
 
   const addTag = async (name: string) => {
     const trimmed = name.trim();
     if (!trimmed) return;
+    setError(null);
     try {
       const tag = await addPhotoTag(photoId, trimmed);
       setTags((prev) => (prev.some((t) => t.id === tag.id) ? prev : [...prev, tag]));
@@ -42,17 +44,18 @@ export function PhotoTags({
       );
       onTagsChange?.();
     } catch {
-      // Adding failed; leave the tag list as it was so the user can retry.
+      setError("Could not add the tag. Try again.");
     }
   };
 
   const removeTag = async (tag: Tag) => {
+    setError(null);
     try {
       await removePhotoTag(photoId, tag.id);
       setTags((prev) => prev.filter((t) => t.id !== tag.id));
       onTagsChange?.();
     } catch {
-      // Keep the tag; removal failed.
+      setError("Could not remove the tag. Try again.");
     }
   };
 
@@ -69,12 +72,15 @@ export function PhotoTags({
   };
 
   return (
+    <>
     <TagInput
       tags={tags.map((t) => t.name)}
       onChange={handleChange}
       suggestions={allTags.map((t) => t.name)}
-      disabled={disabled}
+      disabled={disabled || !loaded}
       placeholder="Add tag..."
     />
+    {error && <p role="alert" className="mt-2 text-xs text-red-600">{error}</p>}
+    </>
   );
 }

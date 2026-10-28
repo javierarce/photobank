@@ -32,8 +32,11 @@ npm run dev        # http://localhost:5173
 On first launch the app opens **Settings** and stays there until you point it
 at an S3-compatible bucket (endpoint/region/bucket/key-id, and a secret access
 key). The secret is written to an owner-only (0600) file next to the catalog in
-`~/Library/Application Support/com.photobank.app/`; everything else lives in
-`settings.json` in the same folder.
+`~/Library/Application Support/com.photobank.app/development/` for debug builds;
+everything else lives in `settings.json` in the same folder. The development
+catalog and image cache are separate from the installed app. Use a disposable
+test bucket and leave the installed app's settings and credentials in place.
+Release builds use `~/Library/Application Support/com.photobank.app/`.
 
 ## Building a distributable bundle
 

@@ -1,3 +1,5 @@
+import { showExportResult } from "@/lib/export-result";
+import { message } from "@tauri-apps/plugin-dialog";
 import { exportPhotos, type ExportResolution } from "@/lib/api";
 import { ExportButton } from "@/components/export-button";
 import { useSelection } from "@/hooks/use-selection";
@@ -52,9 +54,9 @@ export function SelectionActionBar() {
 
   const handleDownload = async (resolution: ExportResolution) => {
     try {
-      await exportPhotos(selected.map((p) => p.id), resolution);
-    } catch {
-      alert("Failed to export photos");
+      await showExportResult(await exportPhotos(selected.map((p) => p.id), resolution));
+    } catch (err) {
+      await message(String(err), { title: "Export failed", kind: "error" });
     }
   };
 

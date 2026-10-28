@@ -1,3 +1,4 @@
+import { MoveDialogProvider } from "@/components/move-dialog";
 import { useEffect } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { Routes, Route, useNavigate } from "react-router-dom";
@@ -38,6 +39,7 @@ export default function App() {
 
   return (
     <SelectionProvider>
+      <MoveDialogProvider>
       <UploadProvider>
         <UpdateProvider>
           <Header />
@@ -56,6 +58,7 @@ export default function App() {
           <UpdatePrompt />
         </UpdateProvider>
       </UploadProvider>
+      </MoveDialogProvider>
     </SelectionProvider>
   );
 }
